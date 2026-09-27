@@ -1,0 +1,3 @@
+config_label,runs,total_wall_mean,total_wall_std,files_per_min_mean,per_file_mean,per_file_median,client_overhead_mean
+Local isabelle build,5,1254.576149,25.640571,4.449217,13.48165,12.340848,
+Server big-step,5,1328.964186,56.551713,4.204753,14.286643,12.956866,0.006738

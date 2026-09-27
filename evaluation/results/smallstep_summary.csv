@@ -1,0 +1,7 @@
+config_label,runs,total_wall_mean,files_per_min_mean,startup_mean,step_mean,step_p95_mean,theory_median_mean
+"Server small-step (8 workers, reuse on)",5,125.497165,7.65091,18.193214,0.261329,0.29126,38.05188
+"Server small-step (4 workers, reuse on)",5,129.074962,7.438107,7.469649,0.242869,0.240366,22.06645
+"Server small-step (1 worker, reuse on)",5,313.144466,3.065868,3.858982,0.238223,0.204957,10.378725
+"Server small-step (1 worker, reuse off)",5,333.820551,2.876024,4.766464,0.237321,0.203131,11.529187
+Local IsabelleGym,5,444.430883,2.160412,10.495591,0.128741,0.175505,18.03049
+QIsabelle,5,2196.600765,0.437042,7.690856,2.077256,2.077421,100.435232
