@@ -6,8 +6,8 @@ import uuid
 from collections import OrderedDict
 from typing import List, Optional, Tuple, Union
 
-from repl.src.python.repl_backend_gateway import ReplBackendGatewayProcess
-from repl.src.python.thy_init import ThyInit
+from server.repl.src.python.repl_backend_gateway import ReplBackendGatewayProcess
+from server.repl.src.python.thy_init import ThyInit
 from server.app.core.config import Memory, Server, Timeouts
 from server.app.core.logging import get_logger, logging_context
 from server.app.core import metrics

@@ -15,7 +15,7 @@ import time
 import uuid
 from typing import Any, Dict, List, Optional, Tuple, Union
 
-from repl.src.python.repl_backend_gateway import ReplBackendGatewayProcess
+from server.repl.src.python.repl_backend_gateway import ReplBackendGatewayProcess
 from server.app.core.config import Memory, Server
 from server.app.core.logging import get_logger, logging_context
 from server.app.core import metrics

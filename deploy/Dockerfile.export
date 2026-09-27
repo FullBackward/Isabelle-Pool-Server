@@ -27,4 +27,4 @@ EXPOSE 8000
 
 # Invoke via bash: robust even if the executable bit was lost on a Windows
 # checkout. Entrypoint: component registration -> ML heap cap -> foreground API.
-CMD ["bash", "./repl/Admin/container_entrypoint.sh"]
+CMD ["bash", "./server/repl/Admin/container_entrypoint.sh"]

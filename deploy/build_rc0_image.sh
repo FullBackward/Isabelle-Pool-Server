@@ -42,14 +42,14 @@ docker cp "$S/app" "$NAME":/app
 echo "==> pip install mcp<2 (mcp 2.0 removed FastMCP)"
 docker exec "$NAME" python -m pip install "mcp<2"
 
-echo "==> component registration (repl/Admin/init)"
+echo "==> component registration (server/repl/Admin/init)"
 docker exec "$NAME" bash -c "cd /app \
-  && find repl -type f \( -name '*.sh' -o -name 'init' -o -name 'gradlew' \) -exec sed -i 's/\r$//' {} \; \
-  && chmod +x repl/Admin/init repl/gradlew \
-  && ./repl/Admin/init"
+  && find server/repl -type f \( -name '*.sh' -o -name 'init' -o -name 'gradlew' \) -exec sed -i 's/\r$//' {} \; \
+  && chmod +x server/repl/Admin/init server/repl/gradlew \
+  && ./server/repl/Admin/init"
 
 echo "==> Scala backend build (gradle; JDK scoped to system java-21 for this step)"
-docker exec "$NAME" bash -c "cd /app/repl \
+docker exec "$NAME" bash -c "cd /app/server/repl \
   && chmod +x gradlew \
   && JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64 ./gradlew build"
 

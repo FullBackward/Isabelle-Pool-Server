@@ -26,7 +26,7 @@ cd /app
 
 # 1. Component registration (no-op when already registered). container_init
 #    execs its arguments, so `true` makes it a plain subroutine call here.
-./repl/Admin/container_init.sh true
+./server/repl/Admin/container_init.sh true
 
 # 2. ML heap cap in the user settings file.
 MAXHEAP_MB="${ISABELLE_ML_MAXHEAP_MB:-9216}"

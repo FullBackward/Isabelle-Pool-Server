@@ -19,7 +19,6 @@ SCANNED = ("server", "client", "mcp_servers", "mcp_lsp_server", "mcp_stepwise_se
 ALLOWED_OVER = {
     "server/app/services/session.py": 899,
     "server/app/services/heap_pool.py": 673,
-    "client/async_client.py": 647,
 }
 
 

@@ -4,7 +4,7 @@ the server package 2026-09-27 so the server has no dependency outside itself).
 """
 from typing import List, Optional, Tuple
 
-from repl.src.python.repl_backend_gateway import ReplResult
+from server.repl.src.python.repl_backend_gateway import ReplResult
 
 
 def get_raw_error_output(result: ReplResult) -> str:

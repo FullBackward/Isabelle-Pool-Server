@@ -15,7 +15,7 @@ import threading
 
 import pytest
 
-from repl.src.python import repl_backend_gateway as gw_mod
+from server.repl.src.python import repl_backend_gateway as gw_mod
 from server.app.core.config import Timeouts
 from server.app.errors import GatewayUnavailable
 from server.app.services.session_manager import SessionManager

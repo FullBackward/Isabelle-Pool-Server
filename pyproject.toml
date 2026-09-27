@@ -30,7 +30,7 @@ include-package-data = true
 # `pip install -e ./client`) and must stay independent of the server; the MCP
 # servers depend on the client only (tests/test_dependency_rules.py).
 [tool.setuptools.packages.find]
-include = ["repl*", "server*"]
+include = ["server*"]
 
 [tool.pylint.main]
 ignore-paths = [

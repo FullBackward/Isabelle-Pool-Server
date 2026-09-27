@@ -18,9 +18,12 @@ from server.app.core.logging import get_logger
 
 logger = get_logger(__name__)
 
-REPO_ROOT = Path(__file__).parent.parent.parent.parent.parent
-repl_gateway_path = REPO_ROOT / "app/repl/src/main/scala/repl/repl_backend_gateway.scala"
-isabelle_executable = REPO_ROOT / "opt" / "isabelle" / "bin" / "isabelle"
+# Locate the Scala gateway source RELATIVE TO THIS FILE (server/repl/src/python/
+# → server/repl), never via a hard-coded /app/repl: the REPL component moved
+# under server/ on 2026-09-27 and must keep working wherever the repo is mounted.
+REPL_ROOT = Path(__file__).resolve().parent.parent.parent
+repl_gateway_path = REPL_ROOT / "src" / "main" / "scala" / "repl" / "repl_backend_gateway.scala"
+isabelle_executable = Path(os.environ.get("ISABELLE_HOME", "/opt/isabelle")) / "bin" / "isabelle"
 
 
 def _gateway_log_dir() -> Path:

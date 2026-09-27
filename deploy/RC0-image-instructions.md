@@ -69,7 +69,7 @@ docker cp isabelle-gym-rc0:/root/.isabelle ~/isabelle2026-build/export_isabelle_
 docker build -f deploy/Dockerfile.export -t isabellegym:2026rc0-turnkey ~/isabelle2026-build
 #    Dockerfile.export (in the repo): FROM ...:2026rc0-clean,
 #    COPY export_isabelle_home /root/.isabelle, revision LABEL,
-#    server-default ENVs, CMD ["bash", "./repl/Admin/container_entrypoint.sh"]
+#    server-default ENVs, CMD ["bash", "./server/repl/Admin/container_entrypoint.sh"]
 
 # 3. Cold test WITHOUT the volume (this is the recipient experience)
 docker run -d --name turnkey-test -p 8002:8000 --memory 14g isabellegym:2026rc0-turnkey

@@ -7,7 +7,7 @@ import threading
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from repl.src.python.repl_backend_gateway import ReplBackend
+from server.repl.src.python.repl_backend_gateway import ReplBackend
 from server.app.core.config import Repl
 from server.app.core.logging import get_logger
 

@@ -46,13 +46,13 @@ services:
     # or the cgroup-aware gate goes blind — 24g on a 16 GB box means the VM
     # OOMs before the gate ever fires.
     mem_limit: 14g
-    # Entrypoint (repl/Admin/container_entrypoint.sh) re-registers Isabelle
+    # Entrypoint (server/repl/Admin/container_entrypoint.sh) re-registers Isabelle
     # components into the isabelle_user_data volume on every start
     # (docs/ISSUES.md Bug 7), ensures the ML heap cap in the user settings,
     # then starts the API server in the foreground — `docker compose up -d`
     # gives a running server, no manual exec needed. Logs:
     # `docker compose logs -f isabelle-gym`.
-    command: ./repl/Admin/container_entrypoint.sh
+    command: ./server/repl/Admin/container_entrypoint.sh
     restart: unless-stopped
 
   prometheus:

@@ -27,13 +27,13 @@ End every response with the exact string:
 
 The **testing and demonstration** artifacts Claude produces to show a task is done — ad-hoc test scripts, notebook runners, and the markdown write-up of what was verified — go under `claude-work/`, in a subfolder named for the task (one per feature or bug fix, e.g. `claude-work/impl-sledgehammer/`). Use `impl-<feature>` for features and a short descriptive kebab-case name for bug fixes; include a brief `NOTES.md` summarizing the change and how it was verified. Keep these for reference rather than deleting them.
 
-This is only for the demonstration/test artifacts — not every file touched during the task. Real source changes (e.g. `repl/src/ml/REPL.ML`, `examples/demo.ipynb`, files under `server/`, `client/`) stay in their normal locations.
+This is only for the demonstration/test artifacts — not every file touched during the task. Real source changes (e.g. `server/repl/src/ml/REPL.ML`, `examples/demo.ipynb`, files under `server/`, `client/`) stay in their normal locations.
 
 ## Project Overview
 
 **IsabelleGym Server** is a containerized system for machine learning research on formal theorem proving. It provides a RESTful API to interact with Isabelle 2025-2 theorem prover through a three-tier architecture:
 
-1. **Scala/ML backend** (repl/) - Isabelle REPL wrapping via Scala/ML, exposing interactive proof state operations
+1. **Scala/ML backend** (server/repl/) - Isabelle REPL wrapping via Scala/ML, exposing interactive proof state operations
 2. **FastAPI server** (server/) - RESTful HTTP service with session pooling, resource management, and lease-based concurrency
 3. **Python async client** (client/) - User-facing SDK for small-step (interactive) and big-step (batch) proof verification
 
@@ -70,23 +70,23 @@ Expected health response:
 
 ## Architecture & Key Components
 
-### Backend Layer: repl/ (Scala/ML)
+### Backend Layer: server/repl/ (Scala/ML)
 
 The REPL backend bridges Python ↔ Scala ↔ Isabelle/ML. It uses **Py4J** for Java/Python interop and exposes Isabelle's interactive proof state through a custom Scala gateway.
 
 **Key files:**
-- repl/src/main/scala/repl/repl_backend_gateway.scala - Entry point for Py4J gateway; exposes ReplBackendGateway object with factory methods for creating REPL backends with various configurations (caching, memory management, field selection)
-- repl/src/main/scala/repl/repl_backend.scala - Core backend class managing Isabelle sessions, state, and proof operations
-- repl/src/main/scala/repl/server_utils.scala - Low-level Isabelle server/session creation utilities
-- repl/src/main/scala/repl/repl_ml_communication.scala - Scala ↔ ML communication for fact extraction, subgoal retrieval, and the sledgehammer channel
-- repl/src/ml/REPL.ML - ML-side proof-state extraction and the sledgehammer entry point invoked from Scala (NOTE: path is src/ml/, not src/main/ml/)
-- repl/src/main/scala/repl/thy_*.scala - Theory parsing, status tracking, and checkpoint utilities
-- repl/src/python/repl_backend_gateway.py - Python wrapper (ReplBackendGatewayProcess) that spawns the Scala gateway as a subprocess and manages the Py4J bridge
-- repl/build.gradle - Gradle build config; depends on Isabelle JAR (auto-built via isabelle scala -e)
+- server/repl/src/main/scala/repl/repl_backend_gateway.scala - Entry point for Py4J gateway; exposes ReplBackendGateway object with factory methods for creating REPL backends with various configurations (caching, memory management, field selection)
+- server/repl/src/main/scala/repl/repl_backend.scala - Core backend class managing Isabelle sessions, state, and proof operations
+- server/repl/src/main/scala/repl/server_utils.scala - Low-level Isabelle server/session creation utilities
+- server/repl/src/main/scala/repl/repl_ml_communication.scala - Scala ↔ ML communication for fact extraction, subgoal retrieval, and the sledgehammer channel
+- server/repl/src/ml/REPL.ML - ML-side proof-state extraction and the sledgehammer entry point invoked from Scala (NOTE: path is src/ml/, not src/main/ml/)
+- server/repl/src/main/scala/repl/thy_*.scala - Theory parsing, status tracking, and checkpoint utilities
+- server/repl/src/python/repl_backend_gateway.py - Python wrapper (ReplBackendGatewayProcess) that spawns the Scala gateway as a subprocess and manages the Py4J bridge
+- server/repl/build.gradle - Gradle build config; depends on Isabelle JAR (auto-built via isabelle scala -e)
 
 **Build process:**
 ```bash
-cd repl
+cd server/repl
 chmod +x gradlew
 ./gradlew build  # Compiles Scala, packages into JAR
 ```
@@ -171,7 +171,7 @@ export PYTHONPATH="$PWD:${PYTHONPATH:-}"
 
 **Scala/REPL build:**
 ```bash
-cd repl
+cd server/repl
 ./gradlew build
 ```
 
@@ -367,7 +367,7 @@ The server maintains a pool of warm Isabelle sessions. Idle sessions (older than
 - **Big-step** (verify_bigstep_text): Batch verification via isabelle build, no session reuse, good for whole-theory checking and parallelization.
 
 ### Sledgehammer Integration
-Sledgehammer is exposed end-to-end as a small-step automation primitive: a dedicated channel in repl/src/ml/REPL.ML invokes Isabelle's sledgehammer, repl_ml_communication.scala relays it through the Py4J bridge, and the FastAPI endpoint POST /api/v1/sessions/{session_id}/sledgehammer (router.py, schemas SledgehammerRequest/SledgehammerResponse) runs it on the current proof goal under a lease. The call requires the session to already be in an active proof state. NOTE: sledgehammer is intentionally NOT defined inside the REPL ML struct — that placement conflicts with other ML functions (see commit ca73379); keep it at top level.
+Sledgehammer is exposed end-to-end as a small-step automation primitive: a dedicated channel in server/repl/src/ml/REPL.ML invokes Isabelle's sledgehammer, repl_ml_communication.scala relays it through the Py4J bridge, and the FastAPI endpoint POST /api/v1/sessions/{session_id}/sledgehammer (router.py, schemas SledgehammerRequest/SledgehammerResponse) runs it on the current proof goal under a lease. The call requires the session to already be in an active proof state. NOTE: sledgehammer is intentionally NOT defined inside the REPL ML struct — that placement conflicts with other ML functions (see commit ca73379); keep it at top level.
 
 ### Caching (Optional)
 Session caching can be enabled to reuse initialized sessions for the same import dependencies. By default disabled to avoid stale state issues.
@@ -379,8 +379,8 @@ Session caching can be enabled to reuse initialized sessions for the same import
 
 **Server starts but commands fail immediately**
 - Inside container: verify which isabelle, java -version, python --version are correct.
-- Run ./repl/Admin/init to ensure Isabelle components are initialized.
-- Run ./repl/gradlew build to rebuild Scala components.
+- Run ./server/repl/Admin/init to ensure Isabelle components are initialized.
+- Run ./server/repl/gradlew build to rebuild Scala components.
 
 **pip install -r requirements.txt fails**
 - This repo uses requirement.txt (singular), not requirements.txt (plural).
@@ -397,7 +397,7 @@ Session caching can be enabled to reuse initialized sessions for the same import
 
 ```
 repo_root/
-├── repl/                          # Scala/ML backend with Py4J gateway
+├── server/repl/                   # Scala/ML backend with Py4J gateway (Isabelle component; moved under server/ 2026-09-27)
 │   ├── src/main/scala/repl/       # Core backend (13 .scala files)
 │   ├── src/ml/REPL.ML             # ML-side fact/subgoal extraction + sledgehammer channel
 │   ├── src/python/                # Python wrappers for gateway

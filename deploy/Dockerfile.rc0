@@ -13,7 +13,7 @@
 #
 # NOTE: the declarative BuildKit path below is currently BLOCKED by the
 # "Unknown JAVA_HOME -- Java unavailable" environment quirk in the
-# `repl/Admin/init` step (the ENV HOME/JAVA_HOME workaround is insufficient).
+# `server/repl/Admin/init` step (the ENV HOME/JAVA_HOME workaround is insufficient).
 # The canonical RC0 image build is the scripted assembly in
 # `build_rc0_image.sh` (docker cp into a base container + commit) — the path
 # that actually validated. This Dockerfile remains as documentation of the
@@ -48,11 +48,11 @@ ENV HOME=/root
 RUN python -m pip install "mcp<2"
 
 COPY app /app/
-RUN find repl -type f \( -name "*.sh" -o -name "init" -o -name "gradlew" \) -exec sed -i 's/\r$//' {} \; \
- && chmod +x repl/Admin/init repl/gradlew \
- && ./repl/Admin/init
+RUN find server/repl -type f \( -name "*.sh" -o -name "init" -o -name "gradlew" \) -exec sed -i 's/\r$//' {} \; \
+ && chmod +x server/repl/Admin/init server/repl/gradlew \
+ && ./server/repl/Admin/init
 
-WORKDIR /app/repl
+WORKDIR /app/server/repl
 # gradle gets a JDK via JAVA_HOME scoped to this step only; Isabelle's own
 # scala compile resolves the bundled component JDK.
 RUN chmod +x gradlew && JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64 ./gradlew build

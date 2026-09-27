@@ -33,7 +33,7 @@ It is based on IsabelleGym 1.0 by Tom Milan (University of Cambridge) and Isabel
 
 The system has three layers:
 
-1. **Scala/ML backend** (`repl/`) — wraps Isabelle as an interactive REPL using Isabelle/Scala and Isabelle/ML, exposed to Python via Py4J.
+1. **Scala/ML backend** (`server/repl/`) — wraps Isabelle as an interactive REPL using Isabelle/Scala and Isabelle/ML, exposed to Python via Py4J.
 2. **FastAPI server** (`server/`) — HTTP service with session pooling, lease-based concurrency, big-step/small-step verification, sledgehammer, checkpoints, and Prometheus metrics.
 3. **Python client & MCP layer** (`client/`, `mcp_servers/`) — user-facing SDK and agent bridge.
 
@@ -44,7 +44,7 @@ Design rationale for the architecture lives in `DESIGN_CHOICES.md`; the living b
 ## Technology stack
 
 - **Python**: 3.12 in Docker; 3.10+ acceptable for local dev.
-- **Scala**: Scala 3.3.4 / Scala 2.13.14, built with Gradle (`repl/gradlew`).
+- **Scala**: Scala 3.3.4 / Scala 2.13.14, built with Gradle (`server/repl/gradlew`).
 - **Theorem prover**: Isabelle 2025-2.
 - **Interop**: Py4J (`repl` ↔ `server`).
 - **Web framework**: FastAPI + Uvicorn.
@@ -60,11 +60,11 @@ Design rationale for the architecture lives in `DESIGN_CHOICES.md`; the living b
 |------|---------|
 | `pyproject.toml` | setuptools package `isabelle-gym` v0.1.0; core deps (`py4j`, `numpy`, `matplotlib`, `tqdm`); tool config for black/isort/mypy/pylint/pytest/coverage. Packages found: `repl*`, `server*` (the client is its own distribution, `client/pyproject.toml`). |
 | `requirement.txt` | **Singular** runtime + dev + server dependency list (the repo does **not** use `requirements.txt`). Adds fastapi/uvicorn/httpx/prometheus libs and the dev toolset on top of the pyproject deps. |
-| `deploy/Dockerfile` | Python 3.12 slim + OpenJDK 21 + Isabelle 2025-2 (x86-64 or ARM tarball picked by build arch); installs deps, runs `repl/Admin/init`, builds `repl/gradlew build`. `CMD ["bash"]` — the server is not auto-started. |
+| `deploy/Dockerfile` | Python 3.12 slim + OpenJDK 21 + Isabelle 2025-2 (x86-64 or ARM tarball picked by build arch); installs deps, runs `server/repl/Admin/init`, builds `server/repl/gradlew build`. `CMD ["bash"]` — the server is not auto-started. |
 | `docker-compose.yml` | Defines `isabelle-gym` (builds natively for host arch — do not pin `platform: linux/amd64`, qemu emulation makes Isabelle 5–20x slower), `prometheus`, `grafana`, `cadvisor`; mounts `.env` and the named volume `isabelle_user_data`; sets `mem_limit: 24g` so the cgroup memory gate bites at a known limit. |
 | `.env` | Server/scala environment variables loaded by docker-compose. Can also be sourced manually. |
-| `repl/build.gradle` | Scala build: depends on `isabelle.jar`, Scala 3/2.13, Py4J, spliff; runs `isabelle scala -e` first. |
-| `repl/settings.gradle` | Root project name `IsabelleREPL`. |
+| `server/repl/build.gradle` | Scala build: depends on `isabelle.jar`, Scala 3/2.13, Py4J, spliff; runs `isabelle scala -e` first. |
+| `server/repl/settings.gradle` | Root project name `IsabelleREPL`. |
 | `.scalafmt.conf` | scalafmt 3.8.3, Scala 3 dialect, max column 100. |
 | `.pre-commit-config.yaml` | Currently **commented out**; previously only ran pytest. |
 | `.clinerules/` | Project workflow rules mirrored in "Universal Workflow Rules" above (bug-fix workflow, response signature). |
@@ -129,19 +129,19 @@ python -m pip install -e .
 export PYTHONPATH="$PWD:${PYTHONPATH:-}"
 
 # Build the Scala backend once
-cd repl
+cd server/repl
 chmod +x gradlew
 ./gradlew build
 cd ..
 
 # Register the Isabelle component (needed after rebuilds or when volumes shadow it)
-./repl/Admin/init
+./server/repl/Admin/init
 
 # Start the server
 python -m server.app.main
 ```
 
-> **Note on stale volumes**: if you rebuild the Docker image while the named volume `isabelle_user_data` still exists, `repl/Admin/init` state from the old volume may shadow the new image and the gateway will fail with `Not found: py4j`. Fix by re-running `./repl/Admin/init` inside the container before starting the server.
+> **Note on stale volumes**: if you rebuild the Docker image while the named volume `isabelle_user_data` still exists, `server/repl/Admin/init` state from the old volume may shadow the new image and the gateway will fail with `Not found: py4j`. Fix by re-running `./server/repl/Admin/init` inside the container before starting the server.
 
 ## Code organisation
 
@@ -165,7 +165,7 @@ repo_root/
 │   ├── common/                     # env helpers, GymClientMixin (shared client factory), is_not_found, dump_json
 │   └── requirements.txt            # mcp>=1.2,<2
 ├── mcp_lsp_server/, mcp_stepwise_server/   # DEPRECATED shims re-exporting mcp_servers.* (one release)
-├── repl/                           # Scala/ML Isabelle REPL backend
+├── server/repl/                    # Scala/ML Isabelle REPL backend (Isabelle component; launched only by the server)
 │   ├── src/main/scala/repl/        # Core Scala backend (~13 files)
 │   │   ├── repl_backend_gateway.scala   # Py4J entry point / factories
 │   │   ├── repl_backend.scala           # per-session backend logic
@@ -246,7 +246,7 @@ The legacy `mcp_bench_results*.json` outputs were folded into `evaluation/result
 
 - **FastAPI lifespan** (`server/app/main.py`) constructs `SessionManager`, warms `ISABELLE_INITIAL_SESSIONS` sessions, starts a background cleanup task, and registers Prometheus pool gauges. An HTTP middleware attaches a request id (`X-Request-ID` header or generated) to the logging context and logs request start/finish.
 - **Session pool** (`server/app/services/session_manager.py`) keeps warm Isabelle sessions in an `OrderedDict` LRU. Each session is an `_Isabelle_Session` wrapping a `ThreadedBackend`, which serialises all Py4J calls on a single worker thread.
-- **Gateway** (`repl/src/python/repl_backend_gateway.py`) spawns one shared Scala JVM via `isabelle scala <repl_backend_gateway.scala>` and exposes factory methods on `repl.ReplBackendGateway`. The server calls `get_repl_backend_with_initial_theories(...)` to create a backend per session.
+- **Gateway** (`server/repl/src/python/repl_backend_gateway.py`) spawns one shared Scala JVM via `isabelle scala <repl_backend_gateway.scala>` and exposes factory methods on `repl.ReplBackendGateway`. The server calls `get_repl_backend_with_initial_theories(...)` to create a backend per session.
 - **Lease model**: clients acquire a session with a `lease_id` (via `X-Lease-Id` header). A session can have multiple leases; releasing a lease returns the session to the pool. Abandoned leased sessions are force-closed after `ISABELLE_MAX_LEASE_AGE`.
 - **Memory gate**: `MemoryMonitor` reads cgroup memory (subtracting reclaimable `inactive_file` page cache); under pressure the manager evicts idle LRU sessions before admitting new ones, returning HTTP 503 if nothing can be evicted. Eviction waits `ISABELLE_MEMORY_EVICTION_SETTLE_S` for cgroup accounting to settle and retries admission `ISABELLE_MEMORY_ADMISSION_RETRIES` times before 503ing.
 - **Gateway recovery**: if the shared JVM dies, `SessionManager` detects it and rebuilds the gateway on the next request.
@@ -324,7 +324,7 @@ pylint repl server client evaluation mcp_servers
 Scala build sanity:
 
 ```bash
-cd repl
+cd server/repl
 ./gradlew build
 ```
 
@@ -371,7 +371,7 @@ For the cross-MCP comparison harness, see `MCP-comparison/README.md` (needs `pip
 - The Docker image is large because it bundles Isabelle 2025-2 and the JDK. Recent trimming removed unused CUDA wheels; keep the image lean by not adding heavy ML training frameworks to `requirement.txt` unless required.
 - The Dockerfile downloads the Isabelle tarball matching the build architecture (x86-64 or ARM) and retries across several mirrors. Do not pin `platform: linux/amd64` in compose — qemu emulation on Apple Silicon makes Isabelle 5–20x slower.
 - The compose service does **not** auto-start Uvicorn; you must open a shell and run `python -m server.app.main`.
-- After rebuilding the image, run `./repl/Admin/init` inside the container if the `isabelle_user_data` volume shadows component registration.
+- After rebuilding the image, run `./server/repl/Admin/init` inside the container if the `isabelle_user_data` volume shadows component registration.
 - The compose service sets `mem_limit: 24g`; the cgroup memory admission gate and cAdvisor OOM reporting depend on this real ceiling. Raise it for bigger concurrent sweeps.
 - Logs rotate by size (`ISABELLE_SERVER_MAX_LOG_SIZE_BYTES`, default 10 MB) with 5 backups in `logs/server.log`.
 - **JVM observability (Bug 11):** `ISABELLE_SCALA_JAVA_OPTIONS` in `.env` is **dead config** — nothing in the Isabelle toolchain consumes it, and neither `JAVA_TOOL_OPTIONS` (filtered) nor env-set `ISABELLE_TOOL_JAVA_OPTIONS` (clobbered by settings evaluation) reaches the JVM. The only reliable channel for JVM/ML options is the Isabelle user settings file (`$ISABELLE_HOME_USER/etc/settings`), which the container entrypoint manages: it writes the `ML_OPTIONS` heap cap and an `-Xlog:gc*` line producing per-PID rotated GC logs at `logs/isabelle-jvm-gc-<pid>.log`; JVM stdout/stderr land in `logs/gateway-jvm.log`. Note the gateway JVM runs **ZGC with `-Xmx4g`** (launcher defaults) — with two heavy sessions, ZGC allocation stalls are the prime suspect for the 2026-09-10 slow window; read the GC log before tuning.

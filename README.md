@@ -16,7 +16,7 @@ Components:
 | Path | What it is |
 |---|---|
 | `server/` | FastAPI service: session pool, leases, memory admission, metrics (`server/app/api/v1/routes/` holds the endpoints) |
-| `repl/` | Scala/ML Isabelle REPL backend (PIDE sessions, one shared gateway JVM); launched only by the server |
+| `server/repl/` | Scala/ML Isabelle REPL backend (PIDE sessions, one shared gateway JVM); launched only by the server |
 | `client/` | Async Python HTTP client (`IsabelleGymAsyncClient`); its own package (`pip install -e ./client`), httpx only, never imports server code |
 | `mcp_servers/` | MCP servers for LLM agents: `lsp/` (file-sync, the one the humanize harness uses), `stepwise/` (chunk-centric), `common/` shared bits. `mcp_lsp_server/` and `mcp_stepwise_server/` are deprecated launch/import shims |
 | `deploy/` | Dockerfiles, `setup.sh`, RC0 image scripts, Prometheus/Grafana/cAdvisor configs (`docker-compose.yml` stays at the root) |
@@ -176,8 +176,8 @@ docker compose exec isabelle-gym isabelle build -b HOL-Computational_Algebra
   `docker compose up -d --force-recreate isabelle-gym`.
 - **After an image rebuild**, if the server fails with `Not found: py4j`: a pre-existing
   named volume shadows the component registration. The container entrypoint
-  (`repl/Admin/container_entrypoint.sh`) re-registers automatically on every start; the
-  manual fix is `docker compose exec isabelle-gym ./repl/Admin/init`
+  (`server/server/repl/Admin/container_entrypoint.sh`) re-registers automatically on every start; the
+  manual fix is `docker compose exec isabelle-gym ./server/repl/Admin/init`
   (docs/ISSUES.md Bug 7).
 - **Remote access:** the API listens on `0.0.0.0:8000` with no authentication — keep it
   firewalled (`sudo ufw allow from <your-ip> to any port 8000`) or tunnel over SSH.

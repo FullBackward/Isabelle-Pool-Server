@@ -28,8 +28,14 @@ ENV PATH=$JAVA_HOME/bin:$PATH
 # Download Isabelle BEFORE copying the source tree so this heavy, network-bound
 # layer stays cached across code changes. Pick the tarball matching the BUILD
 # architecture — running the x86-64 bundle under qemu on Apple Silicon made
-# Isabelle 5-20x slower. isabelle.in.tum.de is sometimes unstable (its dist
-# redirect target refuses connections), so retry hard and fall back to a mirror.
+# Isabelle 5-20x slower.
+#
+# Mirror order (measured 2026-09-27): Cambridge ~8 MB/s, Proofcraft ~0.9 MB/s,
+# TUM (the official host) redirects to dist.isabelle.cit.tum.de which refuses
+# connections or trickles at ~150 KB/s, Clarkson ~170 KB/s. A merely SLOW
+# mirror never "fails", so a plain fallback chain would sit on it for hours:
+# curl's --speed-limit/--speed-time abandon any mirror that drops below 1 MB/s
+# for 30 s and the loop moves to the next one.
 RUN mkdir -p /opt \
  && cd /opt \
  && case "$(uname -m)" in \
@@ -37,12 +43,15 @@ RUN mkdir -p /opt \
       *)             TARBALL=Isabelle2025-2_linux.tar.gz ;; \
     esac \
  && for url in \
-      "https://isabelle.in.tum.de/dist/$TARBALL" \
-      "https://mirror.clarkson.edu/isabelle/dist/$TARBALL" \
       "https://www.cl.cam.ac.uk/research/hvg/Isabelle/dist/$TARBALL" \
       "https://proofcraft.systems/isabelle/dist/$TARBALL" \
+      "https://isabelle.in.tum.de/dist/$TARBALL" \
+      "https://mirror.clarkson.edu/isabelle/dist/$TARBALL" \
     ; do \
-      wget --tries=2 --waitretry=5 --retry-connrefused "$url" && break ; \
+      rm -f "$TARBALL"; \
+      echo "==> trying $url"; \
+      curl -fL --retry 2 --retry-connrefused --connect-timeout 20 \
+           --speed-limit 1000000 --speed-time 30 -o "$TARBALL" "$url" && break ; \
     done \
  && test -s "$TARBALL" \
  && tar -xf "$TARBALL" \
@@ -61,16 +70,16 @@ RUN python -m pip install --upgrade pip \
 COPY . /app/
 
 # Windows 
-RUN find repl -type f \( -name "*.sh" -o -name "init" -o -name "gradlew" \) -exec sed -i 's/\r$//' {} \; \
- && chmod +x repl/Admin/init repl/gradlew \
- && ./repl/Admin/init
+RUN find server/repl -type f \( -name "*.sh" -o -name "init" -o -name "gradlew" \) -exec sed -i 's/\r$//' {} \; \
+ && chmod +x server/repl/Admin/init server/repl/gradlew \
+ && ./server/repl/Admin/init
 
 # Linux/MacOS
-#RUN chmod +x repl/Admin/init \
-#    && ./repl/Admin/init \
+#RUN chmod +x server/repl/Admin/init \
+#    && ./server/repl/Admin/init \
 #    && find /root/.isabelle/Isabelle2025-2/contrib -path "*/etc/settings" -type f -exec sed -i 's/\r$//' {} \;
 
-RUN cd repl \
+RUN cd server/repl \
     && chmod +x gradlew \
     && ./gradlew build
 
