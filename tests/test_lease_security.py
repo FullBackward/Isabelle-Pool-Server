@@ -67,7 +67,7 @@ def test_admin_listing_has_lease_id():
 
 def _admin_endpoint():
     pytest.importorskip("fastapi")
-    from server.app.api.v1.router import list_sessions_admin
+    from server.app.api.v1.routes.sessions import list_sessions_admin
 
     return list_sessions_admin
 
@@ -119,7 +119,7 @@ def _recording_manager():
 def test_delete_unleased_requires_admin_token(monkeypatch):
     pytest.importorskip("fastapi")
     from fastapi import HTTPException
-    from server.app.api.v1.router import close_session as endpoint
+    from server.app.api.v1.routes.sessions import close_session as endpoint
 
     monkeypatch.setattr(Server, "ADMIN_TOKEN", "secret-token")
     mgr = _recording_manager()
@@ -136,7 +136,7 @@ def test_delete_unleased_requires_admin_token(monkeypatch):
 
 def test_delete_unleased_with_admin_token(monkeypatch):
     pytest.importorskip("fastapi")
-    from server.app.api.v1.router import close_session as endpoint
+    from server.app.api.v1.routes.sessions import close_session as endpoint
 
     monkeypatch.setattr(Server, "ADMIN_TOKEN", "secret-token")
     mgr = _recording_manager()

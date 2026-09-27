@@ -19,6 +19,13 @@ Design (claude-work/2026-8-8-research-lsp-readonly-mode/IMPORT_SYNC_PLAN.md):
 
 NOTE: the HTTP API has no authentication — task groups are namespace isolation
 for workflow organization and accident-proofing, NOT a security boundary.
+Input hardening (2026-09-22): ``task_group`` / ``session_name`` / image
+``session`` / ``platform`` must be path-segment-safe identifiers, ``project``
+must resolve under ``Heap.ALLOWED_ROOTS`` (constructor ``allowed_roots``
+overrides, for tests), manifest and image paths are containment-checked before
+any write/delete, and project sources are scanned for code-executing Isar
+commands unless ``ISABELLE_ALLOW_ML_COMMANDS`` is set (``isabelle build``
+executes them as the container user). See ``server.app.core.input_guards``.
 """
 from __future__ import annotations
 
@@ -32,8 +39,14 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from server.app.core.config import Heap
+from server.app.core.config import Heap, Server
 from server.app.core import metrics
+from server.app.core.input_guards import (
+    assert_within,
+    find_code_execution,
+    validate_project_path,
+    validate_safe_name,
+)
 from server.app.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -79,6 +92,14 @@ class HeapBuildFailed(HeapPoolError):
     status_code = 500
 
 
+class HeapRejected(HeapPoolError):
+    """Input refused by policy: unsafe name, project outside the allowed
+    roots, path escaping its container, or code-executing Isar in the
+    project sources (ISABELLE_ALLOW_ML_COMMANDS=false)."""
+
+    status_code = 422
+
+
 def _project_hash(project: str) -> str:
     return hashlib.sha256(project.encode("utf-8")).hexdigest()[:16]
 
@@ -106,9 +127,16 @@ def _default_session_name(project: Path) -> str:
 class HeapPool:
     """In-memory registry over persisted manifests; see module docstring."""
 
-    def __init__(self, state_dir: Optional[str] = None, isabelle: str = ISABELLE):
+    def __init__(
+        self,
+        state_dir: Optional[str] = None,
+        isabelle: str = ISABELLE,
+        allowed_roots: Optional[List[str]] = None,
+    ):
         self.state_dir = Path(state_dir or Heap.STATE_DIR)
         self.isabelle = isabelle
+        # None → Heap.ALLOWED_ROOTS at check time (so env/monkeypatch applies).
+        self.allowed_roots: Optional[List[str]] = list(allowed_roots) if allowed_roots else None
         self._entries: Dict[Tuple[str, str], Dict[str, Any]] = {}
         self._locks: Dict[Tuple[str, str], asyncio.Lock] = {}
         self._build_semaphore = asyncio.Semaphore(Heap.MAX_CONCURRENT_BUILDS)
@@ -119,7 +147,46 @@ class HeapPool:
     # ---------------------------------------------------------- persistence
 
     def _manifest_path(self, task_group: str, project: str) -> Path:
-        return self.state_dir / task_group / f"{_project_hash(project)}.json"
+        # task_group is a path segment: validate + contain (defense in depth
+        # behind the request-model validator — manifests are also loaded from
+        # disk, and other callers may bypass the API layer).
+        try:
+            validate_safe_name(task_group, "task_group")
+            path = self.state_dir / task_group / f"{_project_hash(project)}.json"
+            self.state_dir.mkdir(parents=True, exist_ok=True)
+            assert_within(path, self.state_dir, "manifest path")
+        except ValueError as e:
+            raise HeapRejected(str(e)) from e
+        return path
+
+    def _check_inputs(self, task_group: str, project: str, session_name: Optional[str]) -> None:
+        """Policy checks shared by build(): safe names + project under roots."""
+        try:
+            validate_safe_name(task_group, "task_group")
+            if session_name is not None:
+                validate_safe_name(session_name, "session_name")
+            validate_project_path(project, self.allowed_roots)
+        except ValueError as e:
+            raise HeapRejected(str(e)) from e
+
+    @staticmethod
+    def _scan_for_code_execution(project: Path) -> None:
+        """Refuse a project whose theories (recursively — a user ROOT may pull
+        in subdirectories) contain ML / setup / file-IO commands, unless the
+        server policy allows ML. `isabelle build` would execute them."""
+        if Server.ALLOW_ML_COMMANDS:
+            return
+        for thy in sorted(project.rglob("*.thy")):
+            try:
+                text = thy.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            kw = find_code_execution(text)
+            if kw is not None:
+                raise HeapRejected(
+                    f"{thy}: contains the code-executing command '{kw}'; heap builds "
+                    "of such projects are disabled (ISABELLE_ALLOW_ML_COMMANDS=false)"
+                )
 
     def _persist(self, entry: Dict[str, Any]) -> None:
         path = self._manifest_path(entry["task_group"], entry["project"])
@@ -250,6 +317,7 @@ class HeapPool:
         Raises HeapBuildInProgress (409) if a build for this key is running,
         HeapBuildFailed on a failed isabelle build (entry recorded as failed).
         """
+        self._check_inputs(task_group, project, session_name)
         key = (task_group, project)
         lock = self._locks.setdefault(key, asyncio.Lock())
         if lock.locked():
@@ -270,6 +338,7 @@ class HeapPool:
         project_path = Path(project)
         if not project_path.is_dir():
             raise HeapNotFound(f"project dir not found: {project}")
+        self._scan_for_code_execution(project_path)
 
         # Rebuild without an explicit session_name keeps the existing entry's
         # name — re-deriving it from the project dir would rename the heap and
@@ -420,6 +489,14 @@ class HeapPool:
 
         Returns {"deleted", "platform", "freed_mb"}; raises HeapNotFound.
         """
+        try:
+            validate_safe_name(session, "session")
+            if platform is not None:
+                validate_safe_name(platform, "platform")
+        except ValueError as e:
+            raise HeapRejected(str(e)) from e
+        if session == "log" or platform == "log":
+            raise HeapRejected("'log' is not a heap image")
         home = self._isabelle_home_user()
         if home is None:
             raise HeapNotFound("ISABELLE_HOME_USER unavailable")
@@ -430,6 +507,13 @@ class HeapPool:
         for pattern in patterns:
             for img in heaps.glob(pattern):
                 if not (img.is_file() or img.is_dir()):
+                    continue
+                # Containment: the image must be exactly heaps/<platform>/<session>.
+                try:
+                    assert_within(img, heaps, "heap image")
+                except ValueError as e:
+                    raise HeapRejected(str(e)) from e
+                if img.parent.parent.resolve() != heaps.resolve():
                     continue
                 hit_platform = img.parent.name
                 if img.is_dir():

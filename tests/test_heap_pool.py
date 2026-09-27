@@ -59,7 +59,7 @@ def _project(tmp_path, name="proj"):
 
 def _pool(tmp_path, monkeypatch, **fake_kwargs):
     _fake_exec(monkeypatch, **fake_kwargs)
-    return HeapPool(state_dir=str(tmp_path / "heap_state"))
+    return HeapPool(state_dir=str(tmp_path / "heap_state"), allowed_roots=[str(tmp_path)])
 
 
 # ------------------------------------------- list_available_heaps (admin)
@@ -269,8 +269,8 @@ def test_schema_defaults_and_validation():
     acq = SessionAcquireRequest()
     assert acq.task_group is None and acq.heap_session is None
     with pytest.raises(ValidationError):
-        HeapBuildRequest(project="/tmp/x")  # task_group is required
-    ok = HeapBuildRequest(task_group="alpha", project="/tmp/x")
+        HeapBuildRequest(project="/app/x")  # task_group is required
+    ok = HeapBuildRequest(task_group="alpha", project="/app/x")
     assert ok.session_name is None
 
 

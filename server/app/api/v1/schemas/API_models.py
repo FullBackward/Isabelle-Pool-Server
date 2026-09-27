@@ -3,6 +3,27 @@ from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field, field_validator, model_validator
 from server.app.core.config import Timeouts
 from server.app.core.diagnostic_guard import validate_diagnostic_command
+from server.app.core.input_guards import (
+    reject_code_execution,
+    validate_import_names,
+    validate_project_path,
+    validate_safe_name,
+)
+
+
+def _opt_safe_name(what: str):
+    """Field validator factory: optional path-segment-safe identifier."""
+    def _v(cls, v):
+        return None if v is None else validate_safe_name(v, what)
+    return _v
+
+
+def _opt_project(cls, v):
+    return None if v is None else validate_project_path(v)
+
+
+def _opt_imports(cls, v):
+    return None if v is None else validate_import_names(v)
 
 
 class SessionCreateRequest(BaseModel):
@@ -28,6 +49,11 @@ class SessionCreateRequest(BaseModel):
         default=None,
         description="Project dir of a heap-pool entry (alternative to heap_session).",
     )
+
+    check_theories = field_validator("theories")(classmethod(_opt_imports))
+    check_task_group = field_validator("task_group")(classmethod(_opt_safe_name("task_group")))
+    check_heap_session = field_validator("heap_session")(classmethod(_opt_safe_name("heap_session")))
+    check_project = field_validator("project")(classmethod(_opt_project))
 
 
 class SessionAcquireRequest(BaseModel):
@@ -57,6 +83,11 @@ class SessionAcquireRequest(BaseModel):
                     "holder rather than the original creator.",
     )
 
+    check_theories = field_validator("theories")(classmethod(_opt_imports))
+    check_task_group = field_validator("task_group")(classmethod(_opt_safe_name("task_group")))
+    check_heap_session = field_validator("heap_session")(classmethod(_opt_safe_name("heap_session")))
+    check_project = field_validator("project")(classmethod(_opt_project))
+
 
 class SessionResponse(BaseModel):
     session_id: str
@@ -72,6 +103,13 @@ class CommandRequest(BaseModel):
     command: str
     timeout: Optional[float] = Timeouts.COMMAND_DEFAULT
 
+    @field_validator("command")
+    @classmethod
+    def _no_code_execution(cls, v: str) -> str:
+        # ML / setup / file-IO commands are rejected (422) unless
+        # ISABELLE_ALLOW_ML_COMMANDS=true — see core.input_guards.
+        return reject_code_execution(v, what="command")
+
 
 class EnterTheoryRequest(BaseModel):
     imports: Optional[List[str]] = Field(
@@ -80,6 +118,8 @@ class EnterTheoryRequest(BaseModel):
                     "'theory <name> imports ... begin' header. If omitted, the caller must "
                     "supply the header itself (e.g. a corpus .thy file).",
     )
+
+    check_imports = field_validator("imports")(classmethod(_opt_imports))
 
 
 class DocumentLoadRequest(BaseModel):
@@ -108,6 +148,13 @@ class DocumentLoadRequest(BaseModel):
                     "state stays for inspection). On budget timeout the edit is "
                     "still discarded to cancel runaway commands.",
     )
+
+    check_imports = field_validator("imports")(classmethod(_opt_imports))
+
+    @field_validator("text")
+    @classmethod
+    def _no_code_execution(cls, v: str) -> str:
+        return reject_code_execution(v, what="document text")
 
     @model_validator(mode="after")
     def _name_required_with_imports(self):
@@ -182,6 +229,15 @@ class BigStepTheoryRequest(BaseModel):
     field: str | None = None
     theory: str
     timeout: float = Timeouts.BIGSTEP_DEFAULT
+
+    check_dependencies = field_validator("dependencies")(classmethod(_opt_imports))
+
+    @field_validator("theory")
+    @classmethod
+    def _no_code_execution(cls, v: str) -> str:
+        # bigstep is lease-free and runs `isabelle build` on this text, so it
+        # is the most exposed ML-execution path — same guard as the others.
+        return reject_code_execution(v, what="theory text")
 
 
 class SledgehammerRequest(BaseModel):
@@ -350,7 +406,7 @@ class ChunkVerifyRequest(BaseModel):
         # zero commands and no error — indistinguishable from a real failure.
         if not v or not v.strip():
             raise ValueError("chunk must contain at least one Isar command")
-        return v
+        return reject_code_execution(v, what="chunk")
 
 
 class ChunkVerifyResponse(BaseModel):
@@ -406,6 +462,14 @@ class HeapBuildRequest(BaseModel):
         description="Isabelle session name for the heap. Default: parsed from a "
                     "user-provided ROOT, else derived from the project dir name.",
     )
+
+    check_task_group = field_validator("task_group")(classmethod(_opt_safe_name("task_group")))
+    check_session_name = field_validator("session_name")(classmethod(_opt_safe_name("session_name")))
+
+    @field_validator("project")
+    @classmethod
+    def _project_under_allowed_roots(cls, v: str) -> str:
+        return validate_project_path(v)
 
 
 class HeapTheoryFile(BaseModel):

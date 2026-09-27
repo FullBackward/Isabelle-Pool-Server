@@ -18,7 +18,8 @@ import uuid
 import pytest
 from pydantic import ValidationError
 
-from server.app.api.v1.router import _ascii, _parse_command_range
+from server.app.api.v1.serializers import parse_command_range as _parse_command_range
+from server.app.api.v1.serializers import to_ascii as _ascii
 from server.app.core.config import Server
 from server.app.api.v1.schemas.API_models import (
     CommandAtLineResponse,
@@ -395,7 +396,7 @@ def test_ascii_passthrough_when_disabled(monkeypatch):
 def test_ascii_converts_when_enabled(monkeypatch):
     monkeypatch.setattr(Server, "ASCII_OUTPUT", True)
     monkeypatch.setattr(
-        "server.app.api.v1.router.normalise_for_isabelle",
+        "server.app.api.v1.serializers.normalise_for_isabelle",
         lambda t: t.replace("⟹", "\\<Longrightarrow>").replace("∧", "\\<and>"),
     )
     assert _ascii("1. A ⟹ B ⟹ A ∧ B") == "1. A \\<Longrightarrow> B \\<Longrightarrow> A \\<and> B"
@@ -408,6 +409,6 @@ def test_ascii_falls_back_to_raw_without_symbol_table(monkeypatch):
     def _no_table(text):
         raise FileNotFoundError("no symbols file")
 
-    monkeypatch.setattr("server.app.api.v1.router.normalise_for_isabelle", _no_table)
+    monkeypatch.setattr("server.app.api.v1.serializers.normalise_for_isabelle", _no_table)
     raw = "1. A ⟹ B"
     assert _ascii(raw) == raw

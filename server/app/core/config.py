@@ -42,6 +42,15 @@ class Server:
     # the admin console's force-close). The first and only credential on an
     # otherwise unauthenticated server — opt-in per the lease-leak fix.
     ADMIN_TOKEN: Final = os.getenv("ISABELLE_ADMIN_TOKEN", "")
+    # Code-execution policy for client-supplied Isar text (commands,
+    # verify_chunk, PUT /document, bigstep, heap-pool project sources). Default
+    # false: `ML`, `ML_file`, `setup`, `*_setup`, `oracle`, `*_file`, ... are
+    # rejected with 422 by server.app.core.input_guards (the denylist is shared
+    # with the /diagnostic guard). Set true only for deployments whose theories
+    # genuinely need ML — any client can then run arbitrary code in the container.
+    ALLOW_ML_COMMANDS: Final = os.getenv("ISABELLE_ALLOW_ML_COMMANDS", "false").lower() in {
+        "1", "true", "yes", "on",
+    }
     HOST: Final = os.getenv("ISABELLE_SERVER_HOST", "0.0.0.0")
     PORT: Final = int(os.getenv("ISABELLE_SERVER_PORT", "8000"))
     MAX_LEASE_AGE: Final = int(os.getenv("ISABELLE_MAX_LEASE_AGE", "7200")) # 2 hours
@@ -66,6 +75,13 @@ class Heap:
     # Remove the on-disk heap image + build logs when a heap record is deleted
     # and no other pool entry references the same session name.
     GC_IMAGES: Final = os.getenv("ISABELLE_HEAP_GC_IMAGES", "true").lower() == "true"
+    # Directories under which heap `project` dirs may live (colon-separated).
+    # `isabelle build -d <project>` executes whatever theories/ROOT are there,
+    # so the set is operator-chosen; anything else is 422. Default: the repo
+    # mount and the Isabelle user-data volume.
+    ALLOWED_ROOTS: Final = [
+        r for r in os.getenv("ISABELLE_HEAP_ALLOWED_ROOTS", "/app:/root/.isabelle").split(":") if r
+    ]
 
 class Repl:
     SUBGOALS_TIMEOUT_S: Final       = int(os.getenv("ISABELLE_REPL_SUBGOALS_TIMEOUT", "20"))

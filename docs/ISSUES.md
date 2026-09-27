@@ -512,6 +512,79 @@ the GC log instead of guesswork.
 
 ---
 
+### Bug 12: Unauthenticated ML Execution Through Every Text Endpoint — RESOLVED
+
+**Files:** `server/app/core/input_guards.py` (new), `server/app/api/v1/schemas/API_models.py`,
+`server/app/services/heap_pool.py`, `server/app/core/config.py`
+**Severity:** Critical (remote code execution in the container by any client)
+**Found:** 2026-09-21 code audit (`claude-work/2026-9-21-research-code-audit/FINDINGS.md` SEC-2)
+**Status:** ✅ Resolved 2026-09-22.
+
+#### Root cause
+
+`diagnostic_guard.py` protected only `POST /diagnostic`. `POST /sessions/{id}/commands`,
+`.../verify_chunk`, `PUT .../document` and the **lease-free** `POST /api/v1/sessions/bigstep`
+accepted arbitrary Isar including `ML ‹OS.Process.system "…"›`; bigstep's only filter was a
+regex stripping `ML_val` lines (a build-compat hack). The heap pool ran `isabelle build -d
+<caller-chosen dir>`, executing whatever theories were there. The MCP tools
+`isabelle_run_code` / `isabelle_sync` / `isabelle_multi_attempt` reach the same endpoints.
+Additionally `_build_theory_header` quoted import names without escaping, so an import
+name containing `"` could break out of the header and inject commands.
+
+#### Fix
+
+- `input_guards.reject_code_execution(text)`: reduce the text to its *command skeleton*
+  (nested comments removed, string/cartouche/alt-string bodies blanked) and scan for the
+  denylist shared with `diagnostic_guard._DANGEROUS_RE` at token boundaries. Wired as
+  Pydantic validators on `CommandRequest.command`, `ChunkVerifyRequest.chunk`,
+  `DocumentLoadRequest.text`, `BigStepTheoryRequest.theory` → HTTP 422 naming the keyword.
+  `HeapPool._scan_for_code_execution` applies it recursively to project `.thy` files before
+  `isabelle build`. Policy switch `ISABELLE_ALLOW_ML_COMMANDS` (default false).
+- `validate_import_names` on `theories` / `imports` / `dependencies` fields (no quotes,
+  whitespace or control characters).
+- Tests: `tests/test_input_guards.py` (detection matrix, literal/comment false-positive
+  matrix, every model → 422, policy switch, header injection).
+
+Server-side probe `ML_val` inserts (`Backend_Probes`) never pass through the request models
+and are unaffected. Legacy documents carrying a leaked probe `ML_val` (REPL-1 in the audit)
+will now be rejected by bigstep instead of silently stripped — fix REPL-1 to stop the leak.
+
+### Bug 13: Heap-Pool Path Traversal and Unauthenticated Destructive Heap Endpoints — RESOLVED
+
+**Files:** `server/app/services/heap_pool.py`, `server/app/api/v1/router.py`,
+`server/app/api/v1/schemas/API_models.py`, `server/app/core/config.py`
+**Severity:** Critical (arbitrary file write/delete as the container user)
+**Found:** 2026-09-21 code audit (FINDINGS SEC-3)
+**Status:** ✅ Resolved 2026-09-22.
+
+#### Root cause
+
+`task_group` from the request body was used unvalidated as a directory component for the
+manifest write (`state_dir / task_group / …` + `mkdir(parents=True)`); `DELETE
+/api/v1/heaps/images/{session}?platform=` globbed raw `platform`/`session` into
+`shutil.rmtree`/`unlink`; `project` was any absolute path handed to `isabelle build -d`;
+none of the "Admin:" heap deletes checked a token.
+
+#### Fix
+
+- `validate_safe_name` (`^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`, fullmatch) on `task_group`,
+  `session_name`, `heap_session`, image `session`/`platform` — request models and path
+  parameters (422). `validate_project_path`: absolute and resolved under
+  `ISABELLE_HEAP_ALLOWED_ROOTS` (default `/app:/root/.isabelle`; `HeapPool(allowed_roots=…)`
+  for tests). `assert_within` containment on manifest paths and image paths before any
+  write/delete; `HeapRejected` (422) error class.
+- Owner decision: `DELETE heap`, `DELETE heap image`, `DELETE heap group` require
+  `X-Admin-Token` (`router._require_admin_token`, mismatches logged); `POST /heaps/build`
+  stays open (the LSP MCP's `isabelle_build_heap` keeps working) but is path-restricted.
+- Tests: `tests/test_input_guards.py` (traversal payloads for every input, containment,
+  admin gate 403/422, build stays open); `tests/test_heap_pool.py` adjusted to pass
+  `allowed_roots=[tmp_path]` and an allowed project path.
+
+#### Deferred (owner decision 2026-09-22)
+
+FINDINGS SEC-1 — `GET /admin` inlines the admin token into an unauthenticated page — is
+**not** fixed: a real admin login is future work; keep the port firewalled.
+
 ### [To-do]Issue 1: How Isabelle do parallel
 When have parallel "have x" statements, can we do this in step. And how do we retrive information when one line is stucked in loop. That is, we need error retrieval for a proof chunk, the server should not just return a timeout error, it should tell, when we build the MCP server, the agent what part of that proof chunk just went wrong.
 
@@ -569,4 +642,9 @@ disk; the entries are kept as the historical record. Summary of work completed:
 | 2026-09-13 | **Issue 5 log dig + resilience recs 1–3 (Bug 11)** | Full server-log dig of the 2026-09-10 incident rewrote the handoff narrative: the 06:21 "JVM death" was a ~64 s accept stall with NO gateway restart (the IndexError deque cluster was misattributed from the 03:39 incident); the real gateway death hung an acquire 57 min because Py4J reads are unbounded and the cleanup loop's probe never fired; the 95-min slowdown was two heavy sessions contending — recovery the instant the lease reaper closed one (08:00:18). Implemented: durable JVM logs (`logs/gateway-jvm.log` + per-PID rotated GC logs `logs/isabelle-jvm-gc-<pid>.log` via user-settings `ISABELLE_TOOL_JAVA_OPTIONS`), Py4J `read_timeout` (`ISABELLE_PY4J_READ_TIMEOUT`, 900 s), acquire wall timeout (`ISABELLE_TIMEOUT_SESSION_CREATE`, 600 s → 503), probe-exception logging. **Bug 11** discovered and documented: `ISABELLE_SCALA_JAVA_OPTIONS` is dead config (nothing consumes it); gateway JVM runs ZGC at `-Xmx4g` — allocation stall is the prime suspect for the slow window. | `tests/test_gateway_resilience.py` (6); ISSUES.md Bug 11 |
 | 2026-09-15 | **B1: incremental PIDE document edits (Option B)** | New channel aside the step path: `Repl_Session.replace_document` (spliff diff → `Text.Edit` list → `session.update`; PIDE re-processes only from the first changed command), Py4J `sync_document`, `load_document` fast path (same-theory `report=True` loads; header/theory-name change → reset fallback; checkpoints invalidated both sides; absolute line semantics). Key audit insight: append-only was a repo-side invariant, not PIDE — checkpoint restore already pushed mid-document spliff diffs through the same funnel. Benchmark on the 1059-line IMO file: **full load 137.6 s → tip edit 0.1 s (~1000×)**, mid-file edit 32.3 s, no-op 0.1 s, all success=True. Backported to main (`c86f79a`), merged both ways (`f32c6e7`); clean image rebuilt from the committed branch and the container recreated with entrypoint auto-start + `--restart unless-stopped` (Docker Desktop restarts no longer take the gym down). | `735e171` (RC0), `c86f79a` (main); `tests/test_document_sync.py` (12) |
 
-*Last updated: 2026-09-15.*
+| 2026-09-21 | **Full code audit + roadmap** | Read-only audit of server/, repl/, both MCP servers, client, docs/config, the `isabelle-humanize` harness's documented pain points, and a web survey of the Sept-2026 Lean/Isabelle MCP frontier. Ranked findings (3 critical: `/admin` token disclosure, unauthenticated ML execution, heap path traversal; 10 high incl. REPL probe double-insert, unbounded `stable_node_snapshot`, event-loop-blocking cleanup, LSP scratch-slot leak/hang, checkpoint soundness, dead `mcp_server` rename, `mcp<2` pin), 20-row frontier gap matrix, humanize asks with status, P0/P1/P2 roadmap. | `claude-work/2026-9-21-research-code-audit/` (FINDINGS.md + appendices A–E) |
+| 2026-09-22 | **Bug 12 + Bug 13 fixes (audit SEC-2/SEC-3)** | New `server/app/core/input_guards.py`: code-execution guard on every text endpoint + heap sources (`ISABELLE_ALLOW_ML_COMMANDS`), import-name validation (header injection), safe-name validation for heap identifiers, `project` under `ISABELLE_HEAP_ALLOWED_ROOTS`, containment checks on manifest/image paths, admin token on destructive heap endpoints (build stays open). SEC-1 (`/admin` token) deferred by owner. Host tests: 128 passed (7 FastAPI-dependent skipped on host; container run pending Docker). | `claude-work/2026-9-22-fix-ml-exec-and-heap-traversal/`, `tests/test_input_guards.py` |
+
+| 2026-09-27 | **Refactor: router.py → route package** | The 1,067-line `server/app/api/v1/router.py` split into `routes/{health,sessions,execution,inspection,positional,automation,checkpoints,heaps}.py` + `deps.py` (`LeasedSession` dependency replaces 25 copies of the lease/get_session/logging preamble; `sledgehammer_slot` shared by both sledgehammer endpoints) + `serializers.py`; `router.py` is an 88-line aggregate + compat facade. Largest file now 267 lines. Behaviour-preserving: OpenAPI diff 39/39 paths identical (tags aside). New `tests/test_source_limits.py` gate (600 lines, ratcheting allow-list for session.py/heap_pool.py/async_client.py). In-container: 235 passed; 1 pre-existing unrelated failure (`test_gateway_resilience` caplog vs non-propagating logger). Discovered: container `/app` is a WSL staging copy, not the working tree — uncommitted code must be `docker cp`'d in. | `claude-work/2026-9-27-refactor-router-package/` |
+
+*Last updated: 2026-09-27.*

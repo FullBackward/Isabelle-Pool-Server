@@ -360,7 +360,7 @@ Expected: the tool list, then `success=True proof_open=False used_sorry=False ..
 
 ## Beyond the basics
 
-- **HTTP API directly** (no MCP): see the endpoint list in `server/app/api/v1/router.py`
+- **HTTP API directly** (no MCP): see the endpoint modules in `server/app/api/v1/routes/`
   and the client in `client/async_client.py`; API reference PDFs are in the repo root.
 - **MCP comparison harness** (this MCP vs Isabelle-MCP vs AutoCorrode I/Q):
   [evaluation/MCP-comparison/README.md](evaluation/MCP-comparison/README.md).
