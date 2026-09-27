@@ -14,7 +14,7 @@ from typing import List, Optional, Tuple
 from server.app.core.config import Timeouts
 from server.app.core.logging import get_logger
 from server.app.services.theory_parsing import extract_theory_name
-from server_gym.success_checker import get_error_message, is_syntax_successful
+from server.app.services.success_checker import get_error_message, is_syntax_successful
 
 from .internal_models import BigStepExecuteResult
 

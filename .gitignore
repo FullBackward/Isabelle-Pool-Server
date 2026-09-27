@@ -207,12 +207,9 @@ pyrightconfig.json
 .cm/
 
 ### VisualStudioCode ###
-.vscode/*
-!.vscode/settings.json
-!.vscode/tasks.json
-!.vscode/launch.json
-!.vscode/extensions.json
-!.vscode/*.code-snippets
+# Whole directory ignored, no exceptions (editor state is per-developer and
+# kept landing in the tree by accident — see commits ad315e6, e04cd9c).
+.vscode/
 
 # Local History for Visual Studio Code
 .history/
@@ -271,12 +268,6 @@ metals.sbt
 **/HOL_corpus/**/*.ML
 **/HOL_corpus/**/**/
 
-.vscode/*
-.vscode/settings.json
-!.vscode/tasks.json
-!.vscode/launch.json
-!.vscode/extensions.json
-!.vscode/*.code-snippets
 !*.code-workspace
 
 .claude
@@ -288,7 +279,8 @@ repl/thys/wrap_*.thy
 
 AGENTS.md
 
-.clinerules/**
+# Cline agent rules: local-only, never tracked.
+.clinerules/
 
 **/MCP-comparison/runs/**
 **/MCP-comparison/iq_token.txt

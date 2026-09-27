@@ -1,4 +1,7 @@
-"""Success evaluation helper functions with explicit warning separation."""
+"""Success evaluation helpers with explicit warning separation (server-side
+classifier for small-step / bigstep results; formerly server_gym/, moved into
+the server package 2026-09-27 so the server has no dependency outside itself).
+"""
 from typing import List, Optional, Tuple
 
 from repl.src.python.repl_backend_gateway import ReplResult

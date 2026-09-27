@@ -14,7 +14,7 @@ from server.app.core.config import Logging, Timeouts, RegularExp
 from server.app.core.logging import get_logger, logging_context
 from server.app.errors import SessionError, SessionLeaseError, SessionNotFound
 from server.app.services.threaded_backend import ThreadedBackend
-from server_gym.success_checker import (
+from server.app.services.success_checker import (
     get_error_message,
     get_output_message,
     is_syntax_successful,

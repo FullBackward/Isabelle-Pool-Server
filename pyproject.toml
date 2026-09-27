@@ -27,7 +27,7 @@ dev = [
 include-package-data = true
 
 [tool.setuptools.packages.find]
-include = ["client*", "repl*", "server_gym*"]
+include = ["client*", "repl*", "server*"]
 
 [tool.pylint.main]
 ignore-paths = [
@@ -54,7 +54,7 @@ profile = "black"
 line-length = 88
 
 [tool.coverage.run]
-source = ["server", "client", "server_gym"]
+source = ["server", "client"]
 
 [tool.pytest.ini_options]
 addopts = ""

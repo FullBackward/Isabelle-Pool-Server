@@ -81,7 +81,7 @@ def main() -> None:
 
     sys.path.insert(0, str(args.repo_root))
     from evaluation.local_gym.isabelle_gym import IsabelleGym
-    from server_gym.success_checker import get_error_message, is_syntax_successful
+    from server.app.services.success_checker import get_error_message, is_syntax_successful
 
     files = sorted(args.corpus.glob("*.thy"))
     if not files:
