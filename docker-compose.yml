@@ -24,6 +24,7 @@ services:
     # Dockerfile selects the matching Isabelle tarball (x86-64 vs ARM) itself.
     build:
       context: .
+      dockerfile: deploy/Dockerfile
     container_name: isabelle-gym
     volumes:
       - .:/app
@@ -58,7 +59,7 @@ services:
     image: prom/prometheus:latest
     container_name: isabelle-prometheus
     volumes:
-      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./deploy/monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus_data:/prometheus
     ports:
       - "9090:9090"
@@ -72,7 +73,7 @@ services:
       - GF_SECURITY_ADMIN_PASSWORD=admin
       - GF_USERS_ALLOW_SIGN_UP=false
     volumes:
-      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./deploy/monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
       - grafana_data:/var/lib/grafana
     ports:
       - "3000:3000"

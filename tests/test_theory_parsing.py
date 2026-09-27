@@ -91,11 +91,23 @@ def test_suggested_field():
 
 
 def test_mcp_header_imports_delegates():
+    """The LSP MCP delegates to the server parser THROUGH the HTTP endpoint
+    (client.parse_theory_header), never by importing server code — the
+    MCP/client must stay independent of the server (tests/test_dependency_rules.py).
+    A fake client that answers with the server's own parser stands in for the endpoint."""
+    import asyncio
+
     from mcp_lsp_server.pool import header_imports
 
-    assert header_imports(TASK_TEXT) == ["Complex_Main", "HOL-Analysis.Derivative"]
-    assert header_imports("theory T imports Main begin\nlemma a: True by simp") == ["Main"]
-    assert header_imports("lemma a: True by simp") == []
+    class _FakeClient:
+        async def parse_theory_header(self, text):
+            name, imports = parse_theory_header(text)
+            return {"theory_name": name, "imports": imports, "suggested_field": None}
+
+    fake = _FakeClient()
+    assert asyncio.run(header_imports(fake, TASK_TEXT)) == ["Complex_Main", "HOL-Analysis.Derivative"]
+    assert asyncio.run(header_imports(fake, "theory T imports Main begin\nlemma a: True by simp")) == ["Main"]
+    assert asyncio.run(header_imports(fake, "lemma a: True by simp")) == []
 
 
 def test_build_verify_extract_imports_delegates():

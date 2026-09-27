@@ -68,6 +68,13 @@ class FakeClient:
         self.closed.append(session_id)
         return {"success": True}
 
+    async def parse_theory_header(self, text):
+        # Emulates POST /api/v1/parse_theory_header with the server's own
+        # parser (tests may import server code; the MCP itself may not).
+        from server.app.services.theory_parsing import parse_theory_header
+        name, imports = parse_theory_header(text)
+        return {"theory_name": name, "imports": imports, "suggested_field": None}
+
     async def load_document(self, session_id, text, thy_name=None, imports=None,
                             timeout=None, report=False, lease_id=None):
         if self.fail_next_load_404:
@@ -246,9 +253,12 @@ def test_attempt_prefix_truncation():
 
 
 def test_header_imports_parsing():
+    # header_imports goes through the server endpoint (client.parse_theory_header)
+    # so the MCP never imports server code; FakeClient emulates the endpoint.
+    fake = FakeClient()
     text = 'theory T imports Main "HOL-Library.Multiset" Sub/Dir begin\nlemma a: True by simp'
-    assert header_imports(text) == ["Main", "HOL-Library.Multiset", "Sub/Dir"]
-    assert header_imports("lemma a: True by simp") == []
+    assert asyncio.run(header_imports(fake, text)) == ["Main", "HOL-Library.Multiset", "Sub/Dir"]
+    assert asyncio.run(header_imports(fake, "lemma a: True by simp")) == []
 
 
 # ------------------------------------------- theories-at-acquire (issue fix)

@@ -7,7 +7,7 @@
 # script is the canonical RC0 image build.
 #
 # Usage:
-#   ./build_rc0_image.sh [staging-dir] [tag]
+#   ./deploy/build_rc0_image.sh [staging-dir] [tag]
 #     staging-dir  default ~/isabelle2026-build — must contain:
 #                    isabelle/      prebuilt RC0 Isabelle tree
 #                    isabelle_user/ installed components (contrib/, etc/)

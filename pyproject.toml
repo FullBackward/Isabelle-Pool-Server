@@ -26,8 +26,11 @@ dev = [
 [tool.setuptools]
 include-package-data = true
 
+# The async client is its own distribution (client/pyproject.toml,
+# `pip install -e ./client`) and must stay independent of the server; the MCP
+# servers depend on the client only (tests/test_dependency_rules.py).
 [tool.setuptools.packages.find]
-include = ["client*", "repl*", "server*"]
+include = ["repl*", "server*"]
 
 [tool.pylint.main]
 ignore-paths = [

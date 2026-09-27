@@ -6,7 +6,7 @@
 # export_isabelle_home/ (heaps/ + etc/ extracted from the live volume, pruned —
 # contribs are already in the base image layer, verified byte-identical):
 #
-#   docker build -f Dockerfile.export -t isabellegym:2026rc0-turnkey <staging>
+#   docker build -f deploy/Dockerfile.export -t isabellegym:2026rc0-turnkey <staging>
 
 FROM isabellegym-isabelle-gym:2026rc0-clean
 

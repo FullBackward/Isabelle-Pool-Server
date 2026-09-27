@@ -44,3 +44,12 @@ htmlcov/
 .env
 .env.local
 node_modules/
+
+# not needed inside the image
+archive/
+claude-work/
+examples/
+evaluation/results/
+evaluation/MCP-comparison/runs/
+docs/
+*.pdf

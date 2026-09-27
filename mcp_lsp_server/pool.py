@@ -28,7 +28,6 @@ from typing import Any, Dict, List, Optional, Tuple
 import httpx
 
 from client.async_client import IsabelleGymAsyncClient
-from server.app.services.theory_parsing import parse_theory_header
 
 from .config import Config
 
@@ -36,15 +35,16 @@ def canonical_path(file_path: str) -> str:
     return os.path.realpath(os.path.expanduser(file_path))
 
 
-def header_imports(text: str) -> List[str]:
+async def header_imports(client: IsabelleGymAsyncClient, text: str) -> List[str]:
     """Import names from a full .thy source's header (quotes stripped).
 
-    Delegates to the canonical parser (server.app.services.theory_parsing):
-    comments (nested) are stripped first, so a leading `(* TASK: ... *)`
-    comment can never pollute the imports — see
-    isabellegym-header-imports-issue.md."""
-    _, imports = parse_theory_header(text)
-    return imports
+    Asks the server's canonical parser (`POST /api/v1/parse_theory_header`,
+    comments stripped first so a leading `(* TASK: ... *)` comment can never
+    pollute the imports — isabellegym-header-imports-issue.md). Going through
+    the endpoint keeps the MCP free of server code and guarantees it parses
+    headers exactly as the server it talks to does."""
+    resp = await client.parse_theory_header(text)
+    return list(resp.get("imports") or [])
 
 
 def attempt_prefix(text: str, line: int) -> str:
@@ -111,9 +111,11 @@ class LspPool:
         imports: Optional[List[str]] = None
         try:
             with open(canon, encoding="utf-8") as f:
-                imports = header_imports(f.read()) or None
+                text = f.read()
         except OSError:
-            imports = None
+            text = None
+        if text is not None:
+            imports = await header_imports(c, text) or None
         # Acquire (not create): sessions released by other bindings with the
         # same dependency key (task_group + heap / imports, default field)
         # are reused WARM instead of building a fresh session per file. Safe

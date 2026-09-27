@@ -325,12 +325,12 @@ async def isabelle_multi_attempt(
     binding, _ = await _bound_synced(file_path)
     text = binding.cached_text or ""
     prefix = attempt_prefix(text, line)
-    imports = header_imports(text)
+    c = await pool.client()
+    imports = await header_imports(c, text)
     key = pool.scratch_key(binding.task_group, binding.heap_session, imports, None)
     budget = timeout or Config.ATTEMPT_TIMEOUT
     cap = max(1, min(Config.MAX_PARALLEL, len(candidates)))
     sem = asyncio.Semaphore(cap)
-    c = await pool.client()
 
     async def try_one(candidate: str) -> Dict[str, Any]:
         async with sem:
@@ -386,10 +386,10 @@ async def isabelle_run_code(
     source; anything else runs as the body of a scratch theory importing
     `imports` (default ["Main"]). heap_session runs it in that heap's import
     context. Returns {success, output, error, failed commands}."""
-    key = pool.scratch_key(
-        task_group, heap_session, imports or header_imports(chunk) or ["Main"], None)
-    budget = timeout or Config.ATTEMPT_TIMEOUT
     c = await pool.client()
+    key = pool.scratch_key(
+        task_group, heap_session, imports or await header_imports(c, chunk) or ["Main"], None)
+    budget = timeout or Config.ATTEMPT_TIMEOUT
     sid = lease = None
     try:
         sid, lease = await pool.acquire_scratch(key)

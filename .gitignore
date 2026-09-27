@@ -271,13 +271,15 @@ metals.sbt
 !*.code-workspace
 
 .claude
-ClAUDE.md
 claude-work/
+# server log rotation output (server/app/logs/ is runtime-only; a rotated
+# server.log.1 was once committed by accident — keep every variant ignored)
+*.log.*
+server/app/logs/
+logs/
 repl/thys/wrap_*.thy
 
 **/miniF2F/**
-
-AGENTS.md
 
 # Cline agent rules: local-only, never tracked.
 .clinerules/

@@ -1,5 +1,0 @@
-theory init.thy
-  imports 
-begin
-ML_file \<open>/src/ml/REPL.ML\<close>
-end

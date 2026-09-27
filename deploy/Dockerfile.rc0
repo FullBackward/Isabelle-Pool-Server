@@ -5,7 +5,7 @@
 #   isabelle_user/  the installed components (~/isabelle2026-build/isabelle_user)
 #   app/            the repo content (git archive of the 2026-RC0 branch)
 #
-#   docker build -f Dockerfile.rc0 -t isabellegym-isabelle-gym:2026rc0 <ctx>
+#   docker build -f deploy/Dockerfile.rc0 -t isabellegym-isabelle-gym:2026rc0 <ctx>
 #
 # Base is the LOCAL 2025-2 gym image (already has python3.12, openjdk-21,
 # curl/git/tar, and the app Python deps incl. the prometheus patch) — NOT

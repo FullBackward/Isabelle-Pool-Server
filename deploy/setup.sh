@@ -3,16 +3,17 @@
 # IsabelleGym one-shot setup: configure .env, build the image, start the
 # server, wait for health. Run from the repo root (Linux/macOS/WSL/Git Bash):
 #
-#   ./setup.sh                          # configure + build + start + health-wait
-#   ./setup.sh --verify                 # ...plus a smoke test (acquire + prove "lemma True by simp")
-#   ./setup.sh --build-heaps "HOL-Library HOL-Analysis"   # ...plus prebuild session heaps
-#   ./setup.sh --no-build               # skip the image build (fast restart)
+#   ./deploy/setup.sh                          # configure + build + start + health-wait
+#   ./deploy/setup.sh --verify                 # ...plus a smoke test (acquire + prove "lemma True by simp")
+#   ./deploy/setup.sh --build-heaps "HOL-Library HOL-Analysis"   # ...plus prebuild session heaps
+#   ./deploy/setup.sh --no-build               # skip the image build (fast restart)
 #
 # Heaps are built INSIDE the running container on the idle stack and persist
 # in the isabelle_user_data volume (they survive restarts, not volume deletion).
 
 set -euo pipefail
-cd "$(dirname "$0")"
+# lives in deploy/; everything below runs from the repo root (compose, .env)
+cd "$(dirname "$0")/.."
 
 PORT="${ISABELLE_SERVER_PORT:-8000}"
 DO_BUILD=1

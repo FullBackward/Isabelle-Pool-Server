@@ -15,11 +15,17 @@ Components:
 
 | Path | What it is |
 |---|---|
-| `repl/` | Scala/ML Isabelle REPL backend (PIDE sessions, one shared gateway JVM) |
-| `server/` | FastAPI service: session pool, leases, memory admission, metrics |
-| `client/` | Async Python HTTP client (`IsabelleGymAsyncClient`) |
-| `mcp_server/` | MCP server for LLM agents (stdio / streamable-HTTP) |
-| `evaluation/` | Benchmark CLIs and corpora; `evaluation/MCP-comparison/` is the harness comparing this MCP against other Isabelle MCP servers |
+| `server/` | FastAPI service: session pool, leases, memory admission, metrics (`server/app/api/v1/routes/` holds the endpoints) |
+| `repl/` | Scala/ML Isabelle REPL backend (PIDE sessions, one shared gateway JVM); launched only by the server |
+| `client/` | Async Python HTTP client (`IsabelleGymAsyncClient`); its own package (`pip install -e ./client`), httpx only, never imports server code |
+| `mcp_lsp_server/` | File-sync (LSP-style) MCP server for LLM agents — the one the humanize harness uses |
+| `mcp_stepwise_server/` | Chunk-centric MCP server (`verify_chunk` as the single execution tool) |
+| `deploy/` | Dockerfiles, `setup.sh`, RC0 image scripts, Prometheus/Grafana/cAdvisor configs (`docker-compose.yml` stays at the root) |
+| `evaluation/` | Benchmark CLIs, `results/benchmark_runs.json` (consolidated runs), `MCP-comparison/` harness |
+| `examples/` | Demo notebook, figures, heap demo project |
+| `tests/` | Unit tests (no Isabelle needed); run the full suite inside the container |
+| `docs/` | `DESIGN_CHOICES.md`, `ISSUES.md` (bug log + work log), `devnote.md` (experiment notes) |
+| `archive/` | Read-only history: IsabelleGym 1.0 sources, the 2.0 in-process gym and its baseline scripts, the unmaintained `install.sh` |
 
 Design rationale for the architecture lives in [DESIGN_CHOICES.md](docs/DESIGN_CHOICES.md);
 the living bug log is [ISSUES.md](docs/ISSUES.md).
@@ -39,7 +45,7 @@ health check in one go:
 ```bash
 git clone https://github.com/FullBackward/IsabelleGym.git
 cd IsabelleGym
-./setup.sh            # add --verify for a smoke test, --build-heaps "HOL-Library" to prebuild heaps
+./deploy/setup.sh            # add --verify for a smoke test, --build-heaps "HOL-Library" to prebuild heaps
 ```
 
 The manual equivalent is documented below (the script does exactly these steps).
@@ -97,7 +103,7 @@ cd IsabelleGym
 ```
 
 Runtime configuration lives in `.env` at the repo root (loaded into the container via
-`env_file`). `./setup.sh` creates it from the annotated **`.env.example`** (which
+`env_file`). `./deploy/setup.sh` creates it from the annotated **`.env.example`** (which
 documents every knob) and generates a random `ISABELLE_ADMIN_TOKEN` for the admin
 console. To do it by hand: `cp .env.example .env` and review. The knobs you most
 likely want to check:
@@ -137,7 +143,7 @@ curl http://localhost:8000/            # full health: gateway_alive, pool, memor
 With `ISABELLE_INITIAL_SESSIONS=0`, the first session request pays the session-creation
 cost (~1 min). Optional but recommended if your workload imports heavy sessions (e.g.
 `HOL-Computational_Algebra`): prebuild their heaps once so session creation and big-step
-verification start from a cached image (`./setup.sh --build-heaps "..."` wraps this):
+verification start from a cached image (`./deploy/setup.sh --build-heaps "..."` wraps this):
 
 ```bash
 docker compose exec isabelle-gym isabelle build -b HOL-Computational_Algebra
@@ -181,10 +187,10 @@ docker compose exec isabelle-gym isabelle build -b HOL-Computational_Algebra
 
 `main` tracks Isabelle 2025-2. The `2026-RC0` branch carries the same server features
 plus the compatibility patch set for the Isabelle 2026 release candidate (its own
-`Dockerfile.rc0`, Scala API adjustments). Everything above applies identically — check
+`deploy/Dockerfile.rc0`, Scala API adjustments). Everything above applies identically — check
 out that branch and run the same commands. A pre-built turnkey image (heaps included,
 for reproducing published results) is distributed separately; see
-`Isabelle2026-RC0_version_docker_image_instruction.md`.
+`deploy/RC0-image-instructions.md`.
 
 ---
 
