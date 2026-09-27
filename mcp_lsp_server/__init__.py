@@ -1,6 +1,6 @@
-"""LSP-like MCP server package: file-synced read-only tools + scratch execution.
+"""DEPRECATED shim — the LSP MCP server moved to ``mcp_servers.lsp`` (2026-09-27).
 
-Strictly additive over IsabelleGymAsyncClient — no server-core edits. State is
-keyed by CANONICAL FILE PATH (not MCP connection): each open file binds to a
-leased session, re-synced from disk before every query. See README.md.
+``python -m mcp_lsp_server.app`` and ``from mcp_lsp_server.pool import LspPool``
+keep working for one release via the re-exports in this package; switch to
+``mcp_servers.lsp.app`` / ``mcp_servers.lsp.pool``.
 """

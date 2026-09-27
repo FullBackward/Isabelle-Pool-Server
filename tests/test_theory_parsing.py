@@ -97,7 +97,7 @@ def test_mcp_header_imports_delegates():
     A fake client that answers with the server's own parser stands in for the endpoint."""
     import asyncio
 
-    from mcp_lsp_server.pool import header_imports
+    from mcp_servers.lsp.pool import header_imports
 
     class _FakeClient:
         async def parse_theory_header(self, text):

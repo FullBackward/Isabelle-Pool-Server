@@ -426,8 +426,8 @@ repo_root/
 ├── client/                        # Async Python client — own package (client/pyproject.toml), httpx only,
 │   ├── async_client.py            #   never imports server code (tests/test_dependency_rules.py)
 │   └── __init__.py
-├── mcp_lsp_server/                # file-sync MCP (used by the humanize harness); imports client only
-├── mcp_stepwise_server/           # chunk-centric MCP; imports client only
+├── mcp_servers/                   # lsp/ (file-sync MCP, used by the humanize harness), stepwise/ (chunk-centric), common/;
+├── mcp_lsp_server/, mcp_stepwise_server/  # deprecated shims re-exporting mcp_servers.*; imports client only
 ├── deploy/                        # Dockerfile, setup.sh, RC0 image scripts, monitoring/ configs
 ├── docker-compose.yml             # root; build context . with dockerfile deploy/Dockerfile
 ├── evaluation/                    # Benchmarking and analysis (imports client only)

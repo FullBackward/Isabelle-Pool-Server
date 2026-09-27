@@ -8,7 +8,7 @@ import asyncio
 import httpx
 import pytest
 
-from mcp_lsp_server.pool import (
+from mcp_servers.lsp.pool import (
     LspPool,
     attempt_prefix,
     canonical_path,

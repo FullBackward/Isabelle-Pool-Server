@@ -162,7 +162,7 @@ def test_mcp_pool_falls_back_to_stable_sentinel():
 
 
 def test_render_chunk_pending_qed_note():
-    from mcp_stepwise_server.app import _render_chunk
+    from mcp_servers.stepwise.app import _render_chunk
 
     report = {
         "success": True, "proof_open": True, "pending_qed": True,
@@ -177,7 +177,7 @@ def test_render_chunk_pending_qed_note():
 
 
 def test_render_chunk_open_without_pending_qed_keeps_open_note():
-    from mcp_stepwise_server.app import _render_chunk
+    from mcp_servers.stepwise.app import _render_chunk
 
     report = {
         "success": True, "proof_open": True, "pending_qed": False,

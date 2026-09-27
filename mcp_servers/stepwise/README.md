@@ -30,14 +30,14 @@ client wrappers added in Phase 0); it does **not** modify or patch Isabelle.
 Prereq: a running IsabelleGym server (default `http://localhost:8000`).
 
 ```bash
-pip install -r mcp_server/requirements.txt   # + the repo's client deps (httpx)
+pip install -r mcp_servers/requirements.txt   # + the repo's client deps (httpx)
 export PYTHONPATH=$PWD                        # so `client` imports
 
 # local (stdio) — for Claude Desktop/Code, Cursor:
-python -m mcp_server.app
+python -m mcp_servers.stepwise.app
 
 # remote (Streamable HTTP):
-ISABELLE_MCP_TRANSPORT=streamable-http ISABELLE_MCP_PORT=8848 python -m mcp_server.app
+ISABELLE_MCP_TRANSPORT=streamable-http ISABELLE_MCP_PORT=8848 python -m mcp_servers.stepwise.app
 ```
 
 ### Register (stdio, e.g. Claude Code / Desktop `mcp` config)
@@ -46,7 +46,7 @@ ISABELLE_MCP_TRANSPORT=streamable-http ISABELLE_MCP_PORT=8848 python -m mcp_serv
   "mcpServers": {
     "isabellegym": {
       "command": "python",
-      "args": ["-m", "mcp_server.app"],
+      "args": ["-m", "mcp_servers.stepwise.app"],
       "env": { "PYTHONPATH": "/path/to/IsabelleGym", "ISABELLE_MCP_GYM_URL": "http://localhost:8000" }
     }
   }
@@ -71,7 +71,7 @@ results back). Token usage is the only metric that requires the model in the loo
 - A running IsabelleGym server (default `http://localhost:8000`) — the MCP layer wraps it.
 - `ANTHROPIC_API_KEY` exported in the environment (the model must be in the loop).
 - Host deps: `anthropic`, `mcp`, plus the repo's client deps (`httpx`).
-- `PYTHONPATH` set to the repo root so `mcp_server` / `client` import (the harness forwards it
+- `PYTHONPATH` set to the repo root so `mcp_servers` / `client` import (the harness forwards it
   to the spawned MCP server as the subprocess's `PYTHONPATH`).
 
 **Commands**

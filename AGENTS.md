@@ -35,7 +35,7 @@ The system has three layers:
 
 1. **Scala/ML backend** (`repl/`) — wraps Isabelle as an interactive REPL using Isabelle/Scala and Isabelle/ML, exposed to Python via Py4J.
 2. **FastAPI server** (`server/`) — HTTP service with session pooling, lease-based concurrency, big-step/small-step verification, sledgehammer, checkpoints, and Prometheus metrics.
-3. **Python client & MCP layer** (`client/`, `mcp_server/`) — user-facing SDK and agent bridge.
+3. **Python client & MCP layer** (`client/`, `mcp_servers/`) — user-facing SDK and agent bridge.
 
 The repository also contains evaluation/benchmarking scripts and consolidated results (`evaluation/`, incl. the cross-MCP comparison harness `evaluation/MCP-comparison/`), the deployment files and monitoring stack (`deploy/`), a demo notebook (`examples/`), read-only history (`archive/`), and implementation notes/artifacts from prior agent sessions (`claude-work/`, gitignored).
 
@@ -50,7 +50,7 @@ Design rationale for the architecture lives in `DESIGN_CHOICES.md`; the living b
 - **Web framework**: FastAPI + Uvicorn.
 - **HTTP client**: `httpx`.
 - **Metrics**: `prometheus-client`, `prometheus-fastapi-instrumentator`, Prometheus + Grafana + cAdvisor.
-- **MCP**: `mcp` package (`mcp_server/requirements.txt`).
+- **MCP**: `mcp>=1.2,<2` (`mcp_servers/requirements.txt`; mcp 2.0 removed `mcp.server.fastmcp`).
 - **Formatting/linting/type-checking**: `black`, `isort`, `pylint`, `mypy`.
 - **Testing**: `pytest`, `pytest-cov`.
 
@@ -58,9 +58,9 @@ Design rationale for the architecture lives in `DESIGN_CHOICES.md`; the living b
 
 | File | Purpose |
 |------|---------|
-| `pyproject.toml` | setuptools package `isabelle-gym` v0.1.0; core deps (`py4j`, `numpy`, `matplotlib`, `tqdm`); tool config for black/isort/mypy/pylint/pytest/coverage. Packages found: `client*`, `repl*`, `server*`. |
+| `pyproject.toml` | setuptools package `isabelle-gym` v0.1.0; core deps (`py4j`, `numpy`, `matplotlib`, `tqdm`); tool config for black/isort/mypy/pylint/pytest/coverage. Packages found: `repl*`, `server*` (the client is its own distribution, `client/pyproject.toml`). |
 | `requirement.txt` | **Singular** runtime + dev + server dependency list (the repo does **not** use `requirements.txt`). Adds fastapi/uvicorn/httpx/prometheus libs and the dev toolset on top of the pyproject deps. |
-| `Dockerfile` | Python 3.12 slim + OpenJDK 21 + Isabelle 2025-2 (x86-64 or ARM tarball picked by build arch); installs deps, runs `repl/Admin/init`, builds `repl/gradlew build`. `CMD ["bash"]` — the server is not auto-started. |
+| `deploy/Dockerfile` | Python 3.12 slim + OpenJDK 21 + Isabelle 2025-2 (x86-64 or ARM tarball picked by build arch); installs deps, runs `repl/Admin/init`, builds `repl/gradlew build`. `CMD ["bash"]` — the server is not auto-started. |
 | `docker-compose.yml` | Defines `isabelle-gym` (builds natively for host arch — do not pin `platform: linux/amd64`, qemu emulation makes Isabelle 5–20x slower), `prometheus`, `grafana`, `cadvisor`; mounts `.env` and the named volume `isabelle_user_data`; sets `mem_limit: 24g` so the cgroup memory gate bites at a known limit. |
 | `.env` | Server/scala environment variables loaded by docker-compose. Can also be sourced manually. |
 | `repl/build.gradle` | Scala build: depends on `isabelle.jar`, Scala 3/2.13, Py4J, spliff; runs `isabelle scala -e` first. |
@@ -157,10 +157,14 @@ repo_root/
 │   ├── pyproject.toml              #   `pip install -e ./client`), httpx only, never imports server code
 │   ├── async_client.py             # IsabelleGymAsyncClient (httpx wrapper)
 │   └── __init__.py                 # exports IsabelleGymAsyncClient
-├── mcp_lsp_server/                 # file-sync (LSP-style) MCP: bindings keyed by file path, scratch pool,
-│   ├── app.py / pool.py / config.py   #   heap tools; the one the humanize harness uses
-├── mcp_stepwise_server/            # chunk-centric MCP: verify_chunk as the single execution tool
-│   ├── app.py / pool.py / config.py / requirements.txt (mcp>=1.2,<2)
+├── mcp_servers/                    # MCP servers (import `client` only; NOT named `mcp` — that is the SDK)
+│   ├── lsp/                        # file-sync (LSP-style) MCP: bindings keyed by file path, scratch pool,
+│   │   app.py / pool.py / config.py / README.md   #   heap tools; the one the humanize harness uses
+│   ├── stepwise/                   # chunk-centric MCP: verify_chunk as the single execution tool
+│   │   app.py / pool.py / config.py / README.md
+│   ├── common/                     # env helpers, GymClientMixin (shared client factory), is_not_found, dump_json
+│   └── requirements.txt            # mcp>=1.2,<2
+├── mcp_lsp_server/, mcp_stepwise_server/   # DEPRECATED shims re-exporting mcp_servers.* (one release)
 ├── repl/                           # Scala/ML Isabelle REPL backend
 │   ├── src/main/scala/repl/        # Core Scala backend (~13 files)
 │   │   ├── repl_backend_gateway.scala   # Py4J entry point / factories
@@ -279,7 +283,7 @@ All variables are read from `server/app/core/config.py` unless noted.
 | `ISABELLE_SERVER_REQUEST_ID_HEADER` | X-Request-ID | Header used for request correlation. |
 | `ISABELLE_REPL_*` / `ISABELLE_BACKEND_*` | various | REPL timeouts (subgoals/facts) and gateway poll/exit settings. |
 
-MCP-specific variables are in `mcp_server/config.py` (`ISABELLE_MCP_GYM_URL`, `ISABELLE_MCP_FIELD`, `ISABELLE_MCP_MAX_PARALLEL`, etc.). The `MCP-comparison/` harness additionally uses `KIMI_API_KEY` (required) and `IQ_AUTH_TOKEN` / `IQ_MCP_ALLOWED_ROOTS` (optional, for the AutoCorrode I/Q runner).
+MCP-specific variables are in `mcp_servers/stepwise/config.py` (prefix `ISABELLE_MCP_`: `ISABELLE_MCP_GYM_URL`, `ISABELLE_MCP_FIELD`, `ISABELLE_MCP_MAX_PARALLEL`, etc.). The `MCP-comparison/` harness additionally uses `KIMI_API_KEY` (required) and `IQ_AUTH_TOKEN` / `IQ_MCP_ALLOWED_ROOTS` (optional, for the AutoCorrode I/Q runner).
 
 ## Code style guidelines
 
@@ -311,10 +315,10 @@ The pytest config in `pyproject.toml` adds `--cov --cov=gym --cov-report=term --
 Run static checks from the repo root:
 
 ```bash
-black repl server client evaluation mcp_server
-isort repl server client evaluation mcp_server
-mypy repl server client evaluation mcp_server
-pylint repl server client evaluation mcp_server
+black repl server client evaluation mcp_servers
+isort repl server client evaluation mcp_servers
+mypy repl server client evaluation mcp_servers
+pylint repl server client evaluation mcp_servers
 ```
 
 Scala build sanity:
@@ -360,7 +364,7 @@ python -m evaluation.scripts.eval_bigstep_server_client_ver \
 
 Preprocessing helpers: `evaluation/scripts/process.py` (normalise Analysis imports) and `evaluation/scripts/clean_example_dir.py` (strip document keywords).
 
-For the cross-MCP comparison harness, see `MCP-comparison/README.md` (needs `pip install -r mcp_server/requirements.txt` plus `openai pyyaml`, and `KIMI_API_KEY`).
+For the cross-MCP comparison harness, see `MCP-comparison/README.md` (needs `pip install -r mcp_servers/requirements.txt` plus `openai pyyaml`, and `KIMI_API_KEY`).
 
 ## Deployment notes
 
@@ -423,5 +427,5 @@ gateway `Event_Timer` wedge (ISSUES.md Bug 9 — root cause fixed upstream in
 - Known issues & recent fixes: `ISSUES.md`.
 - Development notes / TODOs: `devnote.md`.
 - Per-feature implementation artifacts: `claude-work/<feature>/NOTES.md` (and `FINDINGS.md` for research tasks).
-- MCP usage: `mcp_server/README.md`.
+- MCP usage: `mcp_servers/lsp/README.md` (file-sync server) and `mcp_servers/stepwise/README.md` (chunk-centric server).
 - Cross-MCP comparison harness: `MCP-comparison/README.md`; protocol: `horizontal-comparison-framework/Framework.md`.

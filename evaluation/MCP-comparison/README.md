@@ -45,7 +45,7 @@ MCP-comparison/
 From the repo root:
 
 ```bash
-pip install -r mcp_server/requirements.txt   # mcp + httpx
+pip install -r mcp_servers/requirements.txt   # mcp + httpx
 pip install openai pyyaml
 ```
 
@@ -102,7 +102,7 @@ budgets:
 
 mcp_servers:
   isabellegym:
-    command: [python, -m, mcp_server.app]
+    command: [python, -m, mcp_servers.stepwise.app]
   isabelle_mcp:
     command: [docker, exec, -i, isabelle-eval, isabelle-mcp]   # container mode
   autocorrode_iq:

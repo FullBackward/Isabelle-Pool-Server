@@ -35,7 +35,7 @@ system_prompt: |
 # Per-system command/transport settings
 mcp_servers:
   isabellegym:
-    command: [python, -m, mcp_server.app]
+    command: [python, -m, mcp_servers.stepwise.app]
     env:
       PYTHONPATH: .
       ISABELLE_MCP_GYM_URL: http://localhost:8000
@@ -43,7 +43,7 @@ mcp_servers:
   isabellegym_lsp:
     # The LSP-like file-sync MCP (mcp_lsp_server); read-only MCP tools — the
     # runner adds local read_file/write_file tools over a per-attempt workdir.
-    command: [python, -m, mcp_lsp_server.app]
+    command: [python, -m, mcp_servers.lsp.app]
     env:
       PYTHONPATH: .
       ISABELLE_MCP_LSP_GYM_URL: http://localhost:8000

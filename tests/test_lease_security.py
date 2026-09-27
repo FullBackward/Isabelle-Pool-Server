@@ -15,7 +15,7 @@ import pytest
 
 from server.app.core.config import Server
 from server.app.services.session_manager import SessionManager
-from mcp_lsp_server.pool import LspPool
+from mcp_servers.lsp.pool import LspPool
 from test_mcp_lsp_server import FakeClient
 
 
