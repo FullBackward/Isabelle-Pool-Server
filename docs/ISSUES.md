@@ -626,6 +626,46 @@ no residue, and works again once the command finishes. Unit suite 280 passed / 1
 
 ---
 
+### Bug 15: Unbounded Settle Waits Wedge the Session Worker — RESOLVED
+
+**Severity:** High (audit REPL-2)
+**Status:** ✅ Resolved 2026-09-30 (owner decision: Option A — roll back on timeout).
+
+**Symptom:** `Document_Utils.stable_node_snapshot` looped until EVERY command in the node
+was consolidated, with no deadline, and eight helpers used it — including `output_node_results`
+behind `POST /commands` (`step`), `rollback`, `probe_transient`, and the purely syntactic
+`last_end_offset` / `header_end_offset` / `command_containing_line` / hover / definition. A
+looping `by metis` sent through small-step, or a runaway deliberately left in place by a
+timed-out `sync_document`, blocked the session's single worker thread for the command's whole
+runtime: the Python future timed out, the JVM thread never returned, every later request
+queued behind it, and the session was dead until the reaper closed it.
+
+**Fix:**
+- `document_utils.scala`: `node_snapshot` (waits only for a stable session, never for
+  evaluation) for every syntactic / read-what-is-there query; `settled_node_snapshot(budget_ms)`
+  returning `(snapshot, settled)` for the printing helpers (`output_node_results`,
+  `output_command_at_offset`). `await_all_processed` deleted.
+- `step(isar, wall_budget_ms)` and `probe_transient(isar, wall_budget_ms)` take the request's
+  timeout (Py4J protocol change; Python passes `int(timeout*1000)` and keeps its own future
+  timeout a grace period ABOVE the budget — `ISABELLE_TIMEOUT_BACKEND_GRACE`, 10 s — so the
+  backend's answer always arrives first). On expiry `step` DISCARDS the command it inserted
+  (removing the edit is the only cancellation primitive and frees the worker; same rule as
+  `verify_chunk`) and returns `success=false` with `Command timed out after N ms (still
+  running) — rolled back …`. `rollback` / `vector_step` use `ISABELLE_REPL_SETTLE_TIMEOUT`
+  (default 60 s) and report a still-running node instead of waiting.
+- Contract change for the small-step API: a command exceeding its timeout no longer keeps
+  running in the background — it is rolled back and can be retried with a larger timeout.
+  `sync_document` keeps its documented "leave it running" semantics, but nothing blocks
+  behind the runaway any more (the LSP reads return what exists; `isabelle_sync` is the barrier).
+
+**Verified (in-container, RC2 image):** `smoke_step_timeout.py` 12/12 — a 40 s spinning ML
+command with `timeout: 3` returns at 3.2 s, rolled back, document unchanged, next command
+runs in 0.2 s, diagnostic bounded on both paths; the Bug 14 smokes re-run green (27/27 +
+bounded-wait); unit suite 281 passed / 1 skipped. Remaining related items: REPL-3 (no
+cancellation beyond edit removal), SRV-3 (timeout clock starts at enqueue).
+
+---
+
 ### [To-do]Issue 1: How Isabelle do parallel
 When have parallel "have x" statements, can we do this in step. And how do we retrive information when one line is stucked in loop. That is, we need error retrieval for a proof chunk, the server should not just return a timeout error, it should tell, when we build the MCP server, the agent what part of that proof chunk just went wrong.
 
@@ -644,8 +684,8 @@ Status vocabulary: `open` · `in progress` · `fixed` · `verified` · `deferred
 
 | ID | Sev | Title | Where | Status | Fix commit | Test | Notes folder |
 |---|---|---|---|---|---|---|---|
-| REPL-1 | High | Probe double-insert: `with_probe_settle` retries on any exception without discarding the first `ML_val` edit | `server/repl/src/main/scala/repl/repl_backend.scala:57-64` | fixed + verified 2026-09-30 by design change (state queries are PIDE overlays; `with_probe_settle`/channels deleted) — commit pending; see Bug 14 | (pending) | `claude-work/2026-9-30-impl-overlay-probes/smoke_overlay_probes.py`, `smoke_overlay_timeout.py` (live-server) | `claude-work/2026-9-30-impl-overlay-probes/` |
-| REPL-2 | High | Unbounded settle loop: `stable_node_snapshot` spins with no deadline; a timed-out command left by `sync_document` wedges the worker | `server/repl/src/main/scala/repl/document_utils.scala:56-77` | open — PARTIAL 2026-09-30: `node_ends_with_end` (every state query's guard) no longer waits, and the overlay queries bound their own wait; still waiting unboundedly: `output_node_results`, `last_end_offset`, `header_end_offset`, `output_command_at_offset`, `command_containing_line`, `hover_at_json`, `definition_at_json` | | | |
+| REPL-1 | High | Probe double-insert: `with_probe_settle` retries on any exception without discarding the first `ML_val` edit | `server/repl/src/main/scala/repl/repl_backend.scala:57-64` | fixed + verified 2026-09-30 by design change (state queries are PIDE overlays; `with_probe_settle`/channels deleted); see Bug 14 | 27ea15c02025b4d3690327cdef5210425e4d4940 | `claude-work/2026-9-30-impl-overlay-probes/smoke_overlay_probes.py`, `smoke_overlay_timeout.py` (live-server) | `claude-work/2026-9-30-impl-overlay-probes/` |
+| REPL-2 | High | Unbounded settle loop: `stable_node_snapshot` spins with no deadline; a timed-out command left by `sync_document` wedges the worker | `server/repl/src/main/scala/repl/document_utils.scala:56-77` | fixed + verified 2026-09-30 — every wait is wall-bounded (`settled_node_snapshot`), read-only queries never wait, `step`/`diagnostic` take the request timeout and roll back on expiry (owner: Option A); see Bug 15 — commit pending | (pending) | `claude-work/2026-9-30-impl-overlay-probes/smoke_step_timeout.py` (+ the two overlay smokes re-run) | `claude-work/2026-9-30-impl-overlay-probes/` (Part 2) |
 | SRV-1 | High | Cleanup coroutine calls sync `close_session` and `time.sleep` on the event loop | `server/app/services/session_manager_helpers.py:186,252` | open | | | |
 | MCP-1 | High | LSP scratch-slot leak → permanent hang: release outside `finally`, `await queue.get()` without timeout | `mcp_servers/lsp/app.py`, `mcp_servers/lsp/pool.py:254` | open | | | |
 | MCP-2 | High | Binding registered before the `isfile` check; a bogus path pins a leased session | `mcp_servers/lsp/pool.py:125,149` | open | | | |
@@ -656,6 +696,7 @@ Status vocabulary: `open` · `in progress` · `fixed` · `verified` · `deferred
 | SEC-1 | Crit | `/admin` inlines the admin token into an unauthenticated page | `server/app/main.py` | deferred (owner, 2026-09-22; keep the port firewalled) | | | |
 | RC2-1 | — | Isabelle2026-RC2 image: in-container unit suite, route smoke, MCP stdio smoke not yet run on the new image | `deploy/Dockerfile` | open | | | `claude-work/2026-9-29-impl-isabelle2026-image/`, `claude-work/rc2-fontconfig/` |
 | RC2-2 | — | Retire `deploy/Dockerfile.rc0`, `build_rc0_image.sh`; make `Dockerfile.export` a heap-baking stage; rewrite `RC0-image-instructions.md` for the 2026 image | `deploy/` | open (after RC2-1; RC0 image itself is kept until the Isabelle2026 release) | | | |
+| ENV-1 | Low | `ISABELLE_REPL_*_TIMEOUT` (now overlay budgets) set on the `python -m server.app.main` command line did not reach the gateway JVM in the RC2 dev container (budget stayed at the 20 s default); Python's own `Timeouts` read the same names, so the two sides can disagree. Check how `repl_backend_gateway.py` spawns `isabelle scala` (env inheritance / Isabelle settings scrubbing) | `server/repl/src/python/repl_backend_gateway.py:120` | open (noted 2026-09-30; owner: not important now) | | | `claude-work/2026-9-30-impl-overlay-probes/NOTES.md` |
 
 Closed since the audit (for reference): SEC-2, SEC-3 (Bug 12, Bug 13, 2026-09-22);
 DOC-1, DEP-1 (MCP package merge + `mcp<2` pin installed in the image, 2026-09-27/29);
@@ -737,5 +778,7 @@ disk; the entries are kept as the historical record. Summary of work completed:
 | 2026-09-30 | **RC2 image fix + findings tracker** | `deploy/Dockerfile`: `fontconfig fonts-dejavu-core` added — Isabelle 2026 `Build.build_store` calls `Isabelle_Fonts.init()` on every session start, and the slim `--no-install-recommends` rewrite had dropped the packages, so every session died with "Fontconfig head is null". Rebuilt `isabellegym-isabelle-gym:2026rc2`, cold-tested standalone (healthz, fresh-session step proofs). Docker disk moved to `D:`; 2025-2 image, hand-assembled `2026rc0`, scratch `isabelle-rc2-base` removed; `2026rc0-clean` kept until the Isabelle2026 release. Added the [Open Findings Tracker](#open-findings-tracker) section for the remaining audit P0 items. | `claude-work/rc2-fontconfig/` |
 
 | 2026-09-30 | **Bug 14 / REPL-1: state probes → PIDE overlay queries** | Owner decision (Option B): instead of patching `with_probe_settle`, the five stepwise state probes were migrated from `ML_val` insert-and-discard to overlay Query_Operations hosted on the document's last command (same machinery as the LSP `sledgehammer_at`, which now shares the operation). `repl_ml_communication.scala` + `Scala_Functions` service + the ML channel senders deleted (net −300 lines); `node_ends_with_end` made non-blocking; `probe_transient` is the only insertion probe left. Verified live on the RC2 image (27/27 + bounded-wait smoke), unit suite green. DESIGN_CHOICES.md gained 1.14 and was reviewed for stale claims. | `claude-work/2026-9-30-impl-overlay-probes/` |
+
+| 2026-09-30 | **Bug 15 / REPL-2: wall-bounded waits, small-step rollback on timeout** | `stable_node_snapshot`'s unbounded consolidation loop replaced by `node_snapshot` (no evaluation wait; used by every syntactic/read-only query) + `settled_node_snapshot(budget_ms)`. `step` and `probe_transient` now take the request timeout as a JVM wall budget (Py4J protocol change; Python future timeout = budget + `ISABELLE_TIMEOUT_BACKEND_GRACE`); on expiry `step` rolls the command back (owner: Option A). `rollback`/`vector_step` bounded by `ISABELLE_REPL_SETTLE_TIMEOUT`. Verified live (runaway returns at 3.2 s, next command 0.2 s), all smokes + unit suite green. DESIGN_CHOICES.md 1.15. | `claude-work/2026-9-30-impl-overlay-probes/` (Part 2) |
 
 *Last updated: 2026-09-30.*

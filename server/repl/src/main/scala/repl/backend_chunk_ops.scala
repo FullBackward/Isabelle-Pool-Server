@@ -16,17 +16,38 @@ import scala.jdk.CollectionConverters._
 trait Backend_Chunk_Ops { this: ReplBackend =>
 
   /** Remove the most recent text edit and report the resulting node output;
-   *  consumed via POST .../rollback. */
+   *  consumed via POST .../rollback. The settle wait is bounded by the env
+   *  default (Repl_Session.SETTLE_BUDGET_MS); a node still running afterwards
+   *  is reported, not waited for. */
   def rollback(): Repl_Result = build_result {
     repl_session.rollback_last_text_edit()
-    repl_session.output_current_node_results()
+    if (!repl_session.output_current_node_results(Repl_Session.SETTLE_BUDGET_MS))
+      Repl_Output.add_error(
+        s"Node still processing ${Repl_Session.SETTLE_BUDGET_MS} ms after rollback (a command is still running); output is partial")
   }
 
-  /** Insert one command (or chunk) as a single edit and report its output;
-   *  consumed via POST .../commands. */
-  def step(isar_string: String): Repl_Result = build_result {
+  /** Insert one command (or chunk) as a single edit and report its output under a
+   *  wall budget; consumed via POST .../commands (`wall_budget_ms` = the request's
+   *  timeout). TRANSACTIONAL ON TIMEOUT (owner decision 2026-09-30, same rule as
+   *  verify_chunk): if the node has not settled when the budget expires, the
+   *  just-inserted command is discarded — removing its edit is the only cancellation
+   *  primitive, and it is what frees this session's worker thread instead of leaving
+   *  a looping `metis` churning behind every later request (docs/ISSUES.md Bug 15).
+   *  The result then carries an error naming the timeout and `success=false`; the
+   *  caller may retry with a larger timeout. Only an edit this call actually inserted
+   *  is discarded (send_edit can reject the text before inserting, e.g. a header whose
+   *  name does not match the entered theory). */
+  def step(isar_string: String, wall_budget_ms: Long): Repl_Result = build_result {
+    val before = repl_session.last_text_edit
     repl_session.send_edit(isar_string)
-    repl_session.output_current_node_results()
+    val inserted = repl_session.last_text_edit.exists(e => !before.exists(_ eq e))
+    if (!repl_session.output_current_node_results(wall_budget_ms)) {
+      if (inserted) repl_session.discard_last_edit()
+      Repl_Output.add_error(
+        s"Command timed out after ${wall_budget_ms} ms (still running)" +
+          (if (inserted) " — rolled back, the document is unchanged; retry with a larger timeout"
+           else ""))
+    }
   }
 
   /**
@@ -94,6 +115,8 @@ trait Backend_Chunk_Ops { this: ReplBackend =>
   /** Apply one command per duplicate environment created by `vectorise`. */
   def vector_step(isar_strings: java.util.List[String]): Repl_Result = build_result {
     repl_session.send_vector_edit(isar_strings.asScala.toList)
-    repl_session.output_current_node_results()
+    if (!repl_session.output_current_node_results(Repl_Session.SETTLE_BUDGET_MS))
+      Repl_Output.add_error(
+        s"vector_step: node still processing after ${Repl_Session.SETTLE_BUDGET_MS} ms; output is partial")
   }
 }

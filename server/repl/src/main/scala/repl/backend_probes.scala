@@ -168,23 +168,32 @@ trait Backend_Probes { this: ReplBackend =>
    *  allowlist/denylist gatekeeping is enforced upstream on the server side.
    *  Consumed via POST .../diagnostic by both MCP servers.
    *
+   *  The wait for the command's evaluation is bounded by `wall_budget_ms` (the
+   *  request's timeout): on expiry the output is whatever was produced so far, an
+   *  error names the timeout, and the edit is removed as always — which cancels the
+   *  runaway (e.g. a `find_theorems` over a huge fact base).
+   *
    *  On a FINISHED theory (trailing `end`) the command is inserted BEFORE the `end`
    *  (an appended command would never execute) and removed again afterwards, leaving
    *  the document byte-identical. */
-  def probe_transient(isar_string: String): Repl_Result = build_result {
+  def probe_transient(isar_string: String, wall_budget_ms: Long): Repl_Result = build_result {
+    def note_timeout(settled: Boolean): Unit =
+      if (!settled)
+        Repl_Output.add_error(
+          s"Diagnostic timed out after ${wall_budget_ms} ms (still running) — removed; output is partial")
     if (!repl_session.current_thy_begun)
       Repl_Output.add_error("Cannot run probe without beginning theory.")
     else if (repl_session.current_thy_ended) {
       repl_session.with_probe_before_end { insert =>
         insert(isar_string).foreach { offset =>
-          repl_session.output_command_at_offset(offset)  // read the probe's output
+          note_timeout(repl_session.output_command_at_offset(offset, wall_budget_ms))
         }
       }  // bracket removes the probe afterwards (try/finally)
     }
     else {
       repl_session.send_edit(isar_string)
-      repl_session.output_current_node_results()  // read the probe's output first
-      repl_session.discard_last_edit()             // then drop the transient command
+      note_timeout(repl_session.output_current_node_results(wall_budget_ms))  // read output first
+      repl_session.discard_last_edit()  // then drop the transient command (cancels it if still running)
     }
   }
 

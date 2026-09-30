@@ -338,6 +338,45 @@ against a still-running 45 s command failing cleanly at its 20 s budget with no 
 the async unit now) and the `ISABELLE_REPL_*_TIMEOUT` knobs' old meaning as channel poll
 timeouts — same names, now overlay wall budgets.
 
+### 1.15 Every prover wait is wall-bounded; a timed-out small step rolls back (2026-09-30)
+
+**Old:** one helper, `stable_node_snapshot`, waited until *every* command in the node was
+consolidated, with no deadline, and almost every read went through it — including the
+purely syntactic ones (where does the header end, is the last command `end`, which command
+contains line N). `verify_chunk` had its own budgeted loop; nothing else did. A looping
+`metis` sent through `POST /commands` therefore blocked the session's single worker thread
+for as long as the loop ran: the Python future timed out, the JVM never returned, and every
+later request queued behind it (audit REPL-2, ISSUES.md Bug 15).
+**Chosen:** two snapshot primitives with different contracts — `node_snapshot` waits only
+for a *stable* session (no pending edits) and is used by every syntactic or
+read-what-is-there query; `settled_node_snapshot(budget_ms)` waits for consolidation under a
+deadline and reports whether it settled, and is used only where a command's *results* are
+printed. The budget is the request's own timeout, threaded from Python into `step` and
+`diagnostic` (the Python future timeout sits a grace period above it, so the backend's
+answer always arrives first). Waits with no request behind them (`rollback`, `vector_step`)
+use one env default. **On expiry, `step` discards the command it inserted** — the same rule
+`verify_chunk` has always applied — and returns `success=false` with an error naming the
+timeout.
+**Alternative (Option B, rejected by the owner):** keep the timed-out command running and
+report "still running"; the worker is freed, but PIDE evaluates strictly in document order,
+so every later command would queue behind the runaway inside the prover and the client would
+have to `rollback` by hand before doing anything useful.
+
+- *Roll-back pros:* the session is immediately usable, the retry story is one line ("retry
+  with a larger timeout"), and it matches the chunk path agents already know. *cons:* a slow
+  but eventually-successful command no longer completes in the background — the small-step
+  contract changed, and clients that relied on "timeout means still running" must adapt.
+- *Read-only queries never waiting:* `goals_at_line`, hover, definition and the header /
+  `end` checks now return what exists at that moment (jEdit semantics); the LSP `sync` is the
+  barrier, which is what the file-sync contract already said.
+
+**Why:** removing the edit is the only cancellation primitive PIDE gives us (REPL-3 is still
+open), so "bounded wait + remove on expiry" is the strongest guarantee available without new
+machinery, and it turns the worst failure mode (a wedged worker until the lease reaper) into
+an ordinary error result. **Given up:** background completion of timed-out small steps.
+`sync_document` deliberately keeps its "leave the replace in place on timeout" semantics
+(there is no single insert to remove), but nothing blocks behind it any more.
+
 ---
 
 ## 2. MCP server — agent-facing design

@@ -233,6 +233,13 @@ ISABELLE_SESSION_THREADS=4         # Isabelle `threads` per session (default 4).
                                    # actually cap per-session threads it must be set at the gateway/
                                    # prover launch layer. See claude-work/impl-parallel-sessions/.
 
+# Prover wait budgets (Scala side; every wait on the prover is wall-bounded — ISSUES.md Bug 15)
+ISABELLE_REPL_SETTLE_TIMEOUT=60    # Settle budget (s) for waits with no request timeout (rollback, vector_step)
+ISABELLE_REPL_SUBGOALS_TIMEOUT=20  # Overlay query budgets (s): subgoals/in_proof/state; also
+ISABELLE_REPL_LOCAL_FACTS_TIMEOUT=20        #   LOCAL_FACTS, GLOBAL_FACTS_TIMEOUT_MINUTES (5)
+ISABELLE_TIMEOUT_BACKEND_GRACE=10  # Python-side future timeout = request timeout + this grace,
+                                   # so the JVM's own timeout result (with rollback) arrives first
+
 # Caching and memory
 ISABELLE_ENABLE_CACHE=false        # Enable session caching (default false)
 ISABELLE_MAX_CACHE_SIZE=1          # Max cached sessions per key (default 1)
@@ -363,7 +370,7 @@ Sessions support multiple "leases" (client holds identified by X-Lease-Id header
 The server maintains a pool of warm Isabelle sessions. Idle sessions (older than IDLE_TIMEOUT_SECONDS) are automatically cleaned up by a background task. When the pool is exhausted, new sessions are created on-demand up to POOL_SIZE, then LRU eviction occurs.
 
 ### Small-step vs Big-step Verification
-- **Small-step** (execute_command): Interactive, maintains session state, allows checkpoints and rollback. Used for step-by-step proof development.
+- **Small-step** (execute_command): Interactive, maintains session state, allows checkpoints and rollback. Used for step-by-step proof development. The request `timeout` is a JVM wall budget: a command still running when it expires is ROLLED BACK and reported as `success=false` with a timeout error (retry with a larger timeout) — it never keeps running in the background (ISSUES.md Bug 15).
 - **Big-step** (verify_bigstep_text): Batch verification via isabelle build, no session reuse, good for whole-theory checking and parallelization.
 
 ### Sledgehammer Integration

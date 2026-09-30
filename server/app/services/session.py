@@ -184,7 +184,8 @@ class _Isabelle_Session(BigStepMixin):
             logger.debug("ignoring empty command")
             return None
         logger.debug("backend step submitted preview=%s", preview_text(command, Logging.COMMAND_PREVIEW_CHARS))
-        return self._call_backend(lambda: self.backend.raw.step(command), timeout=timeout)
+        budget_s = timeout if timeout is not None else Timeouts.COMMAND_DEFAULT  # JVM-enforced; rolls back on expiry
+        return self._call_backend(lambda: self.backend.raw.step(command, int(budget_s * 1000)), timeout=budget_s + Timeouts.BACKEND_GRACE_S)
 
     def open_subgoals(self, timeout: Optional[float] = None) -> List[str]:
         subgoals = self._call_backend(lambda: list(self.backend.raw.open_subgoals()), timeout=timeout)
@@ -371,9 +372,8 @@ class _Isabelle_Session(BigStepMixin):
 
     @staticmethod
     def _ends_with_theory_end(text: str) -> bool:
-        """True when the document's last non-empty line is theory `end`: the state
-        queries (in_proof/open_subgoals) are then skipped — a successful `end` means
-        no proof is open (the backend short-circuits these too; belt-and-braces)."""
+        """True when the document's last non-empty line is theory `end`: the state queries
+        are then skipped — a successful `end` means no proof is open (backend agrees)."""
         lines = [ln.strip() for ln in text.strip().splitlines() if ln.strip()]
         return bool(lines) and lines[-1] == "end"
 
@@ -702,11 +702,11 @@ class _Isabelle_Session(BigStepMixin):
         """Run a single READ-ONLY diagnostic command (thm, term, find_theorems, print_*, ...)
         TRANSIENTLY and return its output.
 
-        The backend inserts the command, reads its writeln/state output, then discards the
-        edit (the same transient-probe pattern as get_proof_state), so the proof script and
-        rollback chain are untouched. Unlike execute_command, this computes no subgoals and
-        does not append to command_history — a diagnostic is a query, not a proof step. The
-        caller (router) MUST have validated the command against core.diagnostic_guard first.
+        The backend inserts the command, reads its output (waiting at most `timeout`), then
+        discards the edit, so the proof script and rollback chain are untouched. Unlike
+        execute_command, this computes no subgoals and does not append to command_history —
+        a diagnostic is a query, not a proof step. The caller (router) MUST have validated
+        the command against core.diagnostic_guard first.
         """
         self.update_activity()
         self._acquire_request()
@@ -720,8 +720,8 @@ class _Isabelle_Session(BigStepMixin):
                 )
                 try:
                     result = self._call_backend(
-                        lambda: self.backend.raw.probe_transient(command), timeout=timeout
-                    )
+                        lambda: self.backend.raw.probe_transient(command, int(timeout * 1000)),
+                        timeout=timeout + Timeouts.BACKEND_GRACE_S)
                     execution_time = time.time() - start_time
                 except SessionError:
                     raise  # already typed (e.g. SessionNotFound) — keep its HTTP mapping

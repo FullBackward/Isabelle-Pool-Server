@@ -124,6 +124,9 @@ class Memory:
 
 class Timeouts:
     COMMAND_DEFAULT: Final      = float(os.getenv("ISABELLE_TIMEOUT_COMMAND", "30.0"))
+    # Added ABOVE a JVM-enforced wall budget (step / diagnostic) for the Python-side
+    # future timeout, so the backend's own timeout result always arrives first.
+    BACKEND_GRACE_S: Final      = float(os.getenv("ISABELLE_TIMEOUT_BACKEND_GRACE", "10.0"))
     BIGSTEP_DEFAULT: Final      = float(os.getenv("ISABELLE_TIMEOUT_BIGSTEP", "300.0"))
     IDLE_DEFAULT: Final       = float(os.getenv("ISABELLE_TIMEOUT_STATUS", "300.0"))
     PROOF_STATE: Final          = float(os.getenv("ISABELLE_TIMEOUT_PROOF_STATE", "30.0"))

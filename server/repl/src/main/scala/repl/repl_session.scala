@@ -13,6 +13,13 @@ import isabelle._
  *  the session's single worker thread on the Python side. */
 type EnvStateID = Long
 
+object Repl_Session {
+  /** Default wall budget for settle waits that carry no per-request timeout
+   *  (rollback, vector_step). Env `ISABELLE_REPL_SETTLE_TIMEOUT` (seconds), default 60. */
+  val SETTLE_BUDGET_MS: Long =
+    sys.env.get("ISABELLE_REPL_SETTLE_TIMEOUT").flatMap(_.toLongOption).getOrElse(60L) * 1000L
+}
+
 class Repl_Session(session_manager: Session_Manager, initial_thys: List[String] = List("$ISABELLE_REPL_HOME/thys/IsabelleREPL"), field: String = "HOL", session_dirs: List[String] = Nil) {
   //private val helper_thy = "$ISABELLE_REPL_HOME/thys/IsabelleREPL"
   private val helper_thy = initial_thys.headOption.getOrElse("$ISABELLE_REPL_HOME/thys/IsabelleREPL")
@@ -92,23 +99,23 @@ class Repl_Session(session_manager: Session_Manager, initial_thys: List[String] 
     update_session_with_edits(List(required_edit))
   }
 
-  def output_current_node_results(): Unit =
-    current_thy_info.foreach(thy_info =>
+  /** Print the current node's results into Repl_Output after waiting at most
+   *  `budget_ms` for it to settle; false when the budget expired with a command
+   *  still running (output partial). True when no theory is entered. */
+  def output_current_node_results(budget_ms: Long): Boolean =
+    current_thy_info.forall(thy_info =>
       Document_Utils.output_node_results(
         session,
         current_thy_node_name,
-        thy_info.last_insertion_line
+        thy_info.last_insertion_line,
+        budget_ms
       )
     )
 
-  /** Sequencing barrier for INSERTED transient commands (probe_transient before a
-   *  trailing `end`): wait until every command in the current node, including the
-   *  just-evaluated insert, is consolidated BEFORE it is removed, so the removal
-   *  cannot cancel its remaining evaluation (see Document_Utils.await_all_processed).
-   *  Overlay queries do not need this — their bracket bounds and cancels itself. */
-  def await_current_node_settled(): Unit =
-    current_thy_info.foreach(_ =>
-      Document_Utils.await_all_processed(session, current_thy_node_name))
+  /** The current theory's most recent text edit (None when nothing was inserted
+   *  yet, or after replace_document re-based the bookkeeping). Lets `step` tell
+   *  whether its send_edit actually inserted before rolling back on timeout. */
+  def last_text_edit = current_thy_info.flatMap(_.last_text_edit)
 
   /** Wall-bounded per-command status report for the just-inserted chunk: JSON + success. */
   def chunk_status_report(wall_budget_ms: Long): Chunk_Report =
@@ -215,20 +222,19 @@ class Repl_Session(session_manager: Session_Manager, initial_thys: List[String] 
 
   /** Bracket for the INSERTED transient command (probe_transient) on a FINISHED
    *  theory: `body` receives an inserter that places the command immediately before
-   *  the trailing `end` and returns its offset. The command's evaluation is awaited
-   *  BEFORE removal (await_current_node_settled: removing a still-running command
-   *  would cancel it mid-way), and the insert is ALWAYS removed (try/finally, also
-   *  when `body` throws), leaving the document byte-identical. Thy_Info bookkeeping
-   *  is bypassed, so discard_last_edit must NOT be called for these inserts. */
+   *  the trailing `end` and returns its offset. `body` is responsible for the
+   *  (wall-bounded) wait on the command's evaluation — output_command_at_offset does
+   *  it — and the insert is ALWAYS removed afterwards (try/finally, also when `body`
+   *  throws), leaving the document byte-identical; removing a still-running command
+   *  cancels it, which is the intended outcome on a timeout. Thy_Info bookkeeping is
+   *  bypassed, so discard_last_edit must NOT be called for these inserts. */
   def with_probe_before_end[T](body: (String => Option[Text.Offset]) => T): T = {
     var inserted: Option[(Text.Offset, String)] = None
     try {
-      val result = body { text =>
+      body { text =>
         inserted = insert_before_end(text)
         inserted.map(_._1)
       }
-      await_current_node_settled()
-      result
     } finally {
       inserted.foreach { case (offset, text) => remove_before_end(offset, text) }
     }
@@ -237,9 +243,9 @@ class Repl_Session(session_manager: Session_Manager, initial_thys: List[String] 
   /** Output the results of the single command starting at `offset` — for mid-document
    *  probes (with_probe_before_end), where output_current_node_results'
    *  last-insertion-line filter would hide them. */
-  def output_command_at_offset(offset: Text.Offset): Unit =
-    current_thy_info.foreach(_ =>
-      Document_Utils.output_command_at_offset(session, current_thy_node_name, offset))
+  def output_command_at_offset(offset: Text.Offset, budget_ms: Long): Boolean =
+    current_thy_info.forall(_ =>
+      Document_Utils.output_command_at_offset(session, current_thy_node_name, offset, budget_ms))
 
   /** INCREMENTAL whole-document replacement (jEdit-style file sync, Phase B1):
    *  diff `new_text` against the node's CURRENT source (spliff, the same

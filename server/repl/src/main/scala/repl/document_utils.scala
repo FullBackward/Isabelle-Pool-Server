@@ -2,8 +2,8 @@ package repl
 
 import isabelle._
 
-/** PIDE document snapshot utilities beneath [[Repl_Session]]: stable-snapshot
- *  barriers, per-command output extraction, source retrieval, and the
+/** PIDE document snapshot utilities beneath [[Repl_Session]]: node snapshots (never
+ *  waiting for evaluation) and WALL-BOUNDED settle barriers, per-command output extraction, source retrieval, and the
  *  wall-bounded per-command status report (`node_status_report` /
  *  [[Chunk_Report]]) that backs both `verify_chunk` (chunk-centric MCP) and
  *  `step_chunk_report` (LSP-like file-sync via PUT .../document). Shared
@@ -26,46 +26,33 @@ object Document_Utils {
     Document.Node.Name(s"$qualifier.$thy_name", theory = thy_name)
   }
 
-  // private def stable_node_snapshot(
-  //     session: Headless.Session,
-  //     node_name: Document.Node.Name,
-  //     wait_until_all_commands_processed: Boolean = true
-  // ): Document.Snapshot = {
-  //   val node_snapshot =
-  //     session.await_stable_snapshot().switch(node_name)
-  //   val version = node_snapshot.version
-  //   var commands_to_process = node_snapshot.node.commands
+  /** Fresh snapshot of the node: waits only until the session is STABLE (no pending
+   *  edits — the latest version is assigned), NEVER for command evaluation. Use it
+   *  for every syntactic or read-what-is-there query (command structure, source,
+   *  markup, results already present): those must not block behind a running command. */
+  private def node_snapshot(session: Headless.Session, node_name: Document.Node.Name): Document.Snapshot =
+    session.await_stable_snapshot().switch(node_name)
 
-  //   def all_commands_processed = {
-  //     val state = session.get_state()
-  //     commands_to_process = commands_to_process.filterNot { command =>
-  //       val states = state.command_states(version, command)
-  //       // Try with both `maybe_consolidated` and `consolidated` for showing sledgehammer outputs
-  //       // states.exists(st => st.maybe_consolidated || st.consolidated)
-  //       states.exists(st => st.consolidated)
-  //     }
-  //     commands_to_process.isEmpty
-  //   }
-
-  //   while (wait_until_all_commands_processed && !all_commands_processed)
-  //     session.output_delay.sleep()
-
-  //   node_snapshot
-  // }
-
-  private def stable_node_snapshot(
+  /** Snapshot after waiting — at most `budget_ms` — for EVERY command in the node to be
+   *  consolidated. Returns (snapshot, settled). Never unbounded: a still-running command
+   *  (a looping `metis`, or a runaway left in place by a timed-out sync_document) makes
+   *  this return settled=false at the deadline instead of wedging the session's single
+   *  worker thread for the command's whole runtime (docs/ISSUES.md Bug 15 / audit REPL-2).
+   *  Callers that PRINT a command's results use this; on settled=false they must not
+   *  assume the results are final. */
+  private def settled_node_snapshot(
       session: Headless.Session,
       node_name: Document.Node.Name,
-      wait_until_all_commands_processed: Boolean = true
-  ): Document.Snapshot = {
-    var node_snapshot =
-      session.await_stable_snapshot().switch(node_name)
+      budget_ms: Long
+  ): (Document.Snapshot, Boolean) = {
+    val deadline = System.currentTimeMillis() + budget_ms
+    var snapshot = node_snapshot(session, node_name)
 
-    def all_commands_processed: Boolean = {
-      node_snapshot = session.await_stable_snapshot().switch(node_name)
-      val version = node_snapshot.version
+    def all_processed: Boolean = {
+      snapshot = node_snapshot(session, node_name)
+      val version = snapshot.version
       val state   = session.get_state()
-      node_snapshot.node.commands.forall { command =>
+      snapshot.node.commands.forall { command =>
         scala.util.Try(state.command_states(version, command))
           .fold(
             _   => true,  // version no longer tracked → PIDE advanced → done
@@ -74,22 +61,12 @@ object Document_Utils {
       }
     }
 
-    while (wait_until_all_commands_processed && !all_commands_processed)
+    var settled = all_processed
+    while (!settled && System.currentTimeMillis() < deadline) {
       session.output_delay.sleep()
-
-    node_snapshot
-  }
-
-  /** Wait until EVERY command in the node is consolidated (maybe_consolidated or
-   *  consolidated). Used as a sequencing barrier after ML probes: the probe's
-   *  channel reply arrives DURING the probe command's evaluation, so discarding
-   *  the probe immediately can cancel its remainder and race the NEXT probe's
-   *  evaluation (stale state -> empty results, or a canceled probe -> blind
-   *  channel timeout). Awaiting consolidation before the discard serialises
-   *  consecutive probes. */
-  def await_all_processed(session: Headless.Session, node_name: Document.Node.Name): Unit = {
-    stable_node_snapshot(session, node_name)
-    ()
+      settled = all_processed
+    }
+    (snapshot, settled)
   }
 
   private def pretty_print_results(
@@ -119,12 +96,18 @@ object Document_Utils {
       })
   }
 
+  /** Print every command's results into Repl_Output (state messages only for commands
+   *  at/after `last_insertion_start_line`), after waiting at most `budget_ms` for the
+   *  node to settle. Returns false when the budget expired with a command still running
+   *  — the printed output is then partial and the caller decides what to do with the
+   *  runaway (step rolls it back). */
   def output_node_results(
       session: Headless.Session,
       node_name: Document.Node.Name,
-      last_insertion_start_line: Int
-  ): Unit = {
-    val node_snapshot = stable_node_snapshot(session, node_name)
+      last_insertion_start_line: Int,
+      budget_ms: Long
+  ): Boolean = {
+    val (node_snapshot, settled) = settled_node_snapshot(session, node_name, budget_ms)
     val node_commands = node_snapshot.node.commands
 
     node_commands.foreach { command =>
@@ -137,12 +120,13 @@ object Document_Utils {
         hide_state_messages = hide_state_messages
       )
     }
+    settled
   }
 
   /** Absolute start offset of the node's LAST `end` command (theory or block end),
    *  if any. Used to place probes before a trailing theory `end`. */
   def last_end_offset(session: Headless.Session, node_name: Document.Node.Name): Option[Text.Offset] = {
-    val snapshot = stable_node_snapshot(session, node_name)
+    val snapshot = node_snapshot(session, node_name)  // syntactic: no evaluation wait
     snapshot.node.command_iterator().toList
       .collect { case (command, offset) if command.span.name == "end" => offset }
       .lastOption
@@ -153,7 +137,7 @@ object Document_Utils {
    *  Repl_Session.replace_document to detect diffs that touch the header —
    *  those are NOT applied incrementally (the caller falls back to reset). */
   def header_end_offset(session: Headless.Session, node_name: Document.Node.Name): Option[Text.Offset] = {
-    val snapshot = stable_node_snapshot(session, node_name)
+    val snapshot = node_snapshot(session, node_name)  // syntactic: no evaluation wait
     snapshot.node.command_iterator().toList
       .collectFirst { case (command, offset) if command.span.name == "theory" =>
         offset + command.length
@@ -165,29 +149,31 @@ object Document_Utils {
    *  a trailing theory `end` never execute). Drives the post-`end` probe handling in
    *  Backend_Probes / Backend_File_Ops. */
   def node_ends_with_end(session: Headless.Session, node_name: Document.Node.Name): Boolean = {
-    // Syntactic question (command structure only): do NOT wait for consolidation,
-    // or a still-running command (e.g. left by a timed-out sync_document) would
-    // block every state query behind it for the command's whole runtime.
-    val snapshot = stable_node_snapshot(session, node_name, wait_until_all_commands_processed = false)
+    // Syntactic question (command structure only): no evaluation wait, or a
+    // still-running command would block every state query behind it.
+    val snapshot = node_snapshot(session, node_name)
     snapshot.node.commands.reverse.iterator
       .find(command => !command.is_ignored)
       .exists(_.span.name == "end")
   }
 
   /** Output the results of the single command STARTING AT `offset` — for mid-document
-   *  probes (inserted before a trailing `end`), where output_node_results'
-   *  last-insertion-line filter would hide them. */
+   *  inserts (the diagnostic probe placed before a trailing `end`), where
+   *  output_node_results' last-insertion-line filter would hide them. Waits at most
+   *  `budget_ms` for the node to settle; returns false on expiry (output partial). */
   def output_command_at_offset(
       session: Headless.Session,
       node_name: Document.Node.Name,
-      offset: Text.Offset
-  ): Unit = {
-    val snapshot = stable_node_snapshot(session, node_name)
+      offset: Text.Offset,
+      budget_ms: Long
+  ): Boolean = {
+    val (snapshot, settled) = settled_node_snapshot(session, node_name, budget_ms)
     snapshot.node.command_iterator().toList
       .find { case (_, command_offset) => command_offset == offset }
       .foreach { case (command, _) =>
         pretty_print_results(command, snapshot.command_results(command), hide_state_messages = false)
       }
+    settled
   }
 
   /**
@@ -370,7 +356,7 @@ object Document_Utils {
   ): Option[(Document.Snapshot, Line.Document, Command, Text.Offset)] =
     if (line < 1) None
     else {
-      val snapshot = stable_node_snapshot(session, node_name)
+      val snapshot = node_snapshot(session, node_name)  // read-only: results as they are now
       val line_doc = Line.Document(snapshot.node.source)
       for {
         offset <- line_doc.offset(Line.Position(line = line - 1, column = 0))
@@ -481,7 +467,7 @@ object Document_Utils {
       line: Int,
       col: Int
   ): String = {
-    val snapshot = stable_node_snapshot(session, node_name)
+    val snapshot = node_snapshot(session, node_name)  // read-only: markup as it is now
     val line_doc = Line.Document(snapshot.node.source)
     offset_at(line_doc, line, col) match {
       case None => Json_Reports.line_query_not_found(s"no position at line $line col $col")
@@ -544,7 +530,7 @@ object Document_Utils {
       line: Int,
       col: Int
   ): String = {
-    val snapshot = stable_node_snapshot(session, node_name)
+    val snapshot = node_snapshot(session, node_name)  // read-only: markup as it is now
     val line_doc = Line.Document(snapshot.node.source)
     offset_at(line_doc, line, col) match {
       case None => Json_Reports.line_query_not_found(s"no position at line $line col $col")
@@ -605,7 +591,7 @@ object Document_Utils {
       node_name: Document.Node.Name,
       skip_end: Boolean
   ): Option[Command] = {
-    val snapshot = stable_node_snapshot(session, node_name, wait_until_all_commands_processed = false)
+    val snapshot = node_snapshot(session, node_name)
     snapshot.node.commands.reverse.iterator
       .find(command => !command.is_ignored && !(skip_end && command.span.name == "end"))
   }
@@ -695,9 +681,6 @@ object Document_Utils {
           JSON.Format(JSON.Object("found" -> true, "results" -> content))
     }
 
-  def node_source(session: Headless.Session, node_name: Document.Node.Name) = stable_node_snapshot(
-    session,
-    node_name,
-    wait_until_all_commands_processed = false
-  ).node.source
+  def node_source(session: Headless.Session, node_name: Document.Node.Name): String =
+    node_snapshot(session, node_name).node.source
 }

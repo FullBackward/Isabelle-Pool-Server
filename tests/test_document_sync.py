@@ -72,7 +72,7 @@ class _FakeRaw:
         self.entered.append(name)
         return None
 
-    def step(self, text):
+    def step(self, text, budget_ms=None):
         self.steps.append(text)
         return None  # success checkers degrade None -> no error output
 
