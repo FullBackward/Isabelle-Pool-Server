@@ -518,7 +518,10 @@ schemas cost tokens on every round — mitigated by keeping per-call outputs ter
 FILE (isabelle-humanize style) rather than emitting chunks: `isabelle_open(path)` binds the
 file to a leased session (one `FileBinding` per canonical path), `isabelle_sync` pushes the
 file's current text through `PUT /document` (incremental spliff-diffed replace since Phase
-B1 — a tip edit re-processes only the changed tail), and the read-only tools are
+B1 — a tip edit re-processes only the changed tail; NOTE the diff→edit conversion silently
+corrupted the node whenever an insert sat next to a deletion until 2026-09-30, ISSUES.md
+Bug 18 — spliff's ops are simultaneous base-coordinate ops, PIDE edits are sequential, and
+the shared `Edit_Utils.diff_edits` now does that mapping in one place), and the read-only tools are
 position-explicit: `isabelle_goal` / `isabelle_command_at_line` (snapshot-based), `hover_info`
 / `definition` (Rendering), `isabelle_sledgehammer` (overlay, 1.14), `diagnostic_messages` /
 `last_report` (the stored per-command report), plus facts, source, checkpoints, `run_code`

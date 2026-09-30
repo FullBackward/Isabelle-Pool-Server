@@ -4,7 +4,6 @@ import scala.language.unsafeNulls
 
 import isabelle._
 
-import io.bullet.spliff.Diff
 
 import scala.collection.mutable
 
@@ -86,23 +85,12 @@ case class Thy_Status(
       val nca = nearest_common_ancestor(base_status)
       val insertions_base = insertions_from_ancestor(base_status, nca)
       val insertions_target = insertions_from_ancestor(this, nca)
-      val diff = Diff(insertions_base, insertions_target)
-      var base_offset = nca.map(_.insertion_point).getOrElse(0)
-      diff.delInsOpsSorted.map {
-        case Diff.Op.Insert(baseIx, targetIx, count) =>
-          val edit = Text.Edit.insert(
-            base_offset + baseIx,
-            insertions_target.nn.substring(targetIx, targetIx + count)
-          )
-          base_offset += count
-          edit
-        case Diff.Op.Delete(baseIx, count) =>
-          val edit = Text.Edit.remove(
-            base_offset + baseIx,
-            insertions_base.nn.substring(baseIx, baseIx + count)
-          )
-          base_offset -= count
-          edit
-      }.toList
+      // Shared sequential-edit conversion (Edit_Utils.diff_edits): the old
+      // per-op cumulative shift here had the same offset bug as the document
+      // sync path (Bug 18 / SYNC-1) — checkpoint restores across multi-hunk
+      // diffs could corrupt the node text.
+      Edit_Utils.diff_edits(
+        insertions_base.nn, insertions_target.nn,
+        origin = nca.map(_.insertion_point).getOrElse(0))._1
     }
 }

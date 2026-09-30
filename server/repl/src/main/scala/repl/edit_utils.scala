@@ -31,39 +31,74 @@ object Edit_Utils {
       text_edits
     )
 
+  /** Convert a spliff diff of `base` → `target` into a SEQUENTIAL PIDE edit list:
+   *  PIDE (Thy_Syntax.edit_text) applies the edits one after another, each
+   *  against the text as left by the previous ones, so every edit must carry
+   *  its offset in that EVOLVING text. spliff's `delInsOpsSorted` instead
+   *  describes a SIMULTANEOUS script in base coordinates: `Delete(b, c)` removes
+   *  base[b, b+c); `Insert(b, t, k)` puts target[t, t+k) before base[b] — and
+   *  `b` may lie INSIDE or at the end of a preceding deleted range, which means
+   *  "at the start of that (now removed) range" (e.g. `(simp)` → `auto` comes
+   *  out as Delete(69,6) Insert(74,…,3) Insert(75,…,1)). The old cumulative
+   *  shift (`offset = b + shift`, shift updated by every op) mapped such inserts
+   *  one deletion-width too early and CORRUPTED the node text — `by simp`
+   *  became `imp  by s` (docs/ISSUES.md Bug 18 / tracker SYNC-1).
+   *
+   *  Mapping rule: a base position after all processed ops is `b + delta`; a
+   *  position inside/at the end of the last deleted range collapses to that
+   *  range's start in the current text, and successive collapsed inserts chain
+   *  after one another. `origin` is added to every position (the node offset at
+   *  which `base`/`target` start; 0 for whole-node texts). Returns the edits and
+   *  the base offset (origin-relative) of the first op, None when identical.
+   *  (`.nn` on substring: the RC0-track compiler types it nullable.) */
+  def diff_edits(
+      base: String,
+      target: String,
+      origin: Int = 0
+  ): (List[Text.Edit], Option[Text.Offset]) =
+    if (base == target) (List(), None)
+    else {
+      val ops = Diff(base, target).delInsOpsSorted.toList
+      var delta = 0                                   // current = base + delta past all ops
+      var del: Option[(Int, Int, Int)] = None         // last delete: (base start, base end, next current insert pos)
+      var first_change: Option[Text.Offset] = None
+      val edits = ops.map { op =>
+        val b = op match {
+          case Diff.Op.Insert(baseIx, _, _) => baseIx
+          case Diff.Op.Delete(baseIx, _)    => baseIx
+        }
+        if (first_change.isEmpty) first_change = Some(origin + b)
+        op match {
+          case Diff.Op.Delete(baseIx, count) =>
+            val pos = baseIx + delta
+            delta -= count
+            del = Some((baseIx, baseIx + count, pos))
+            Text.Edit.remove(origin + pos, base.substring(baseIx, baseIx + count).nn)
+          case Diff.Op.Insert(baseIx, targetIx, count) =>
+            val pos = del match {
+              case Some((s, e, next)) if baseIx >= s && baseIx <= e =>
+                del = Some((s, e, next + count))     // chain the next collapsed insert after this one
+                next
+              case _ =>
+                del = None
+                baseIx + delta
+            }
+            delta += count
+            Text.Edit.insert(origin + pos, target.substring(targetIx, targetIx + count).nn)
+        }
+      }
+      (edits, first_change)
+    }
+
   /** Minimal insert/remove edit sequence transforming `old_text` into
-   *  `new_text`, computed with the bundled spliff diff — the SAME mechanism as
-   *  Thy_Status.difference_edits (offsets are adjusted cumulatively, so the
-   *  edits apply in list order against the evolving text). Also returns the
-   *  base offset of the FIRST change (None when the texts are identical); ops
-   *  are emitted in ascending offset order, so this is the minimum offset any
-   *  edit touches. (The trailing `.nn` mirrors Thy_Status.difference_edits:
-   *  the RC0 track's compiler flags type String.substring results as
-   *  nullable.) Backs Repl_Session.replace_document (incremental PIDE
-   *  document sync). */
+   *  `new_text` (see `diff_edits`; whole-node texts, origin 0). Also returns
+   *  the offset in `old_text` of the FIRST change (None when identical).
+   *  Backs Repl_Session.replace_document (incremental PIDE document sync). */
   def text_diff_edits(
       old_text: String,
       new_text: String
   ): (List[Text.Edit], Option[Text.Offset]) =
-    if (old_text == new_text) (List(), None)
-    else {
-      val diff = Diff(old_text, new_text)
-      var base_offset = 0
-      var first_change: Option[Text.Offset] = None
-      val edits = diff.delInsOpsSorted.map {
-        case Diff.Op.Insert(baseIx, targetIx, count) =>
-          val offset = base_offset + baseIx
-          if (first_change.isEmpty) first_change = Some(offset)
-          base_offset += count
-          Text.Edit.insert(offset, new_text.substring(targetIx, targetIx + count).nn)
-        case Diff.Op.Delete(baseIx, count) =>
-          val offset = base_offset + baseIx
-          if (first_change.isEmpty) first_change = Some(offset)
-          base_offset -= count
-          Text.Edit.remove(offset, old_text.substring(baseIx, baseIx + count).nn)
-      }.toList
-      (edits, first_change)
-    }
+    diff_edits(old_text, new_text)
 
   def set_required_edit(required: Boolean): Edit =
     Document.Node.Perspective[Text.Edit, Text.Perspective](
