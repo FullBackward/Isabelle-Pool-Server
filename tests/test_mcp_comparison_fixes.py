@@ -6,9 +6,15 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "evaluation" / "MCP-comparison"))
 
-from common.model import NUDGE_LIMIT, RoundResult, no_tool_call_action
+# The harness imports the OpenAI SDK at module level; the server image does not
+# ship it. Skip cleanly instead of breaking collection (tracker RC2-1 note).
+pytest.importorskip("openai", reason="openai SDK not installed (harness-only dependency)")
+
+from common.model import NUDGE_LIMIT, RoundResult, no_tool_call_action  # noqa: E402
 from common.problems import derive_session
 
 
