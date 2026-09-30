@@ -797,6 +797,31 @@ opens with `success=true`.
 
 ---
 
+### Bug 20: Concurrent First Calls on One File Created Two Sessions and Released One Mid-Use — RESOLVED
+
+**Severity:** High (audit MCP-3)
+**Status:** ✅ Resolved 2026-09-30.
+
+**Symptom:** `LspPool.get_binding` read `_bindings` with an unlocked `dict.get`; when two
+tool calls on the same not-yet-bound file ran concurrently (a harness firing `isabelle_goal`
+and `isabelle_diagnostic_messages` together right after writing the file), both missed, both
+acquired a session, and the second `_create_binding` popped the first binding and RELEASED
+its session while the first caller was still using it.
+
+**Fix (`mcp_servers/lsp/pool.py`):** the lookup runs under `_bindings_lock`; a missing
+binding is created SINGLE-FLIGHT per path — the first caller owns an `asyncio.Future` in
+`_creating`, concurrent callers `await` it (shielded) and get the same binding or the same
+error; the entry is removed in `finally`, so a failed creation is never cached and a later
+call retries cleanly. The rebind-on-404 paths are unchanged.
+
+**Verified:** `tests/test_mcp_lsp_server.py` (+2): three concurrent first calls with a slow
+fake acquire → one acquire, one shared binding object, nothing released; a failing acquire
+is seen by both waiters and the next call succeeds with `_creating` empty. Live: three tools
+fired concurrently on a fresh file → leased count +1, one binding, no errors. Suite 289 passed
+/ 1 skipped.
+
+---
+
 ### [To-do]Issue 1: How Isabelle do parallel
 When have parallel "have x" statements, can we do this in step. And how do we retrive information when one line is stucked in loop. That is, we need error retrieval for a proof chunk, the server should not just return a timeout error, it should tell, when we build the MCP server, the agent what part of that proof chunk just went wrong.
 
@@ -819,8 +844,8 @@ Status vocabulary: `open` · `in progress` · `fixed` · `verified` · `deferred
 | REPL-2 | High | Unbounded settle loop: `stable_node_snapshot` spins with no deadline; a timed-out command left by `sync_document` wedges the worker | `server/repl/src/main/scala/repl/document_utils.scala:56-77` | fixed + verified 2026-09-30 — every wait is wall-bounded (`settled_node_snapshot`), read-only queries never wait, `step`/`diagnostic` take the request timeout and roll back on expiry (owner: Option A); see Bug 15 | 1d9f026f0e9d1436f6d03b61040e9b7fdf8c3dd1 | `claude-work/2026-9-30-impl-overlay-probes/smoke_step_timeout.py` (+ the two overlay smokes re-run) | `claude-work/2026-9-30-impl-overlay-probes/` (Part 2) |
 | SRV-1 | High | Cleanup coroutine calls sync `close_session` and `time.sleep` on the event loop | `server/app/services/session_manager_helpers.py:186,252` | fixed + verified 2026-09-30 — sweep refactored to `cleanup_once()` with every blocking step in `asyncio.to_thread`; `/` and `/readyz` probe off the loop; see Bug 16 | c4ade5100b1a9e571f6b2dc40ff3f4105ddcbec7 | `tests/test_cleanup_offloop.py` (3), `claude-work/2026-9-30-impl-overlay-probes/smoke_cleanup_offloop.py` (live) | `claude-work/2026-9-30-impl-overlay-probes/` (Part 3) |
 | MCP-1 | High | LSP scratch-slot leak → permanent hang: release outside `finally`, `await queue.get()` without timeout | `mcp_servers/lsp/app.py`, `mcp_servers/lsp/pool.py:254` | fixed + verified 2026-09-30 — `LspPool.scratch_session` bracket (always returns the slot, drops on 404/cancellation, deferred close of busy sessions) + bounded `acquire_scratch` wait; see Bug 17 | c3b1326fb4751b68aa1d74fa12737352bb0e1006 | `tests/test_mcp_lsp_server.py` (+3), `claude-work/2026-9-30-impl-overlay-probes/smoke_mcp1_scratch.py` (live) | `claude-work/2026-9-30-impl-overlay-probes/` (Part 4) |
-| MCP-2 | High | Binding registered before the `isfile` check; a bogus path pins a leased session | `mcp_servers/lsp/pool.py:125,149` | fixed + verified 2026-09-30 — `_create_binding` checks `isfile` before acquiring; see Bug 19 — commit pending | (pending) | `tests/test_mcp_lsp_server.py::test_binding_missing_file_acquires_nothing`, `claude-work/2026-9-30-impl-overlay-probes/smoke_mcp2_missing_file.py` (live) | `claude-work/2026-9-30-impl-overlay-probes/` (Part 6) |
-| MCP-3 | High | `get_binding` reads `_bindings` outside the lock; two first calls → two sessions | `mcp_servers/lsp/pool.py:136` | open | | | |
+| MCP-2 | High | Binding registered before the `isfile` check; a bogus path pins a leased session | `mcp_servers/lsp/pool.py:125,149` | fixed + verified 2026-09-30 — `_create_binding` checks `isfile` before acquiring; see Bug 19 | 4e5128d0a4d3b0667cc9154f71c08a5a398067d6 | `tests/test_mcp_lsp_server.py::test_binding_missing_file_acquires_nothing`, `claude-work/2026-9-30-impl-overlay-probes/smoke_mcp2_missing_file.py` (live) | `claude-work/2026-9-30-impl-overlay-probes/` (Part 6) |
+| MCP-3 | High | `get_binding` reads `_bindings` outside the lock; two first calls → two sessions | `mcp_servers/lsp/pool.py:136` | fixed + verified 2026-09-30 — `get_binding` looks up under the lock and is single-flight per path (`_creating` futures); see Bug 20 — commit pending | (pending) | `tests/test_mcp_lsp_server.py` (+2), `claude-work/2026-9-30-impl-overlay-probes/smoke_mcp3_single_flight.py` (live) | `claude-work/2026-9-30-impl-overlay-probes/` (Part 7) |
 | REPL-4 | High | Checkpoint soundness: `valid` accepts `state_id == count`; unknown id restores empty edits and reports success | `server/repl/src/main/scala/repl/repl_session.scala:45`, `thy_info.scala:92` | open | | | |
 | MCP-4 | Med | LSP pool acquires with default `reuse_dirty=True` (stepwise uses `False`); stale errors leak across attempts (reproduced 2026-09-30 during the RC2 smoke test) | `mcp_servers/lsp/pool.py` | open | | | |
 | TEST-1 | P0 | Missing regression suites: in-process MCP `list_tools()` smoke; security-inputs (`../`, `ML <...>`, quote injection) — `tests/test_input_guards.py` covers part | `tests/` | open | | | |
@@ -920,5 +945,7 @@ disk; the entries are kept as the historical record. Summary of work completed:
 | 2026-09-30 | **Bug 18 / SYNC-1: diff→edit offset corruption (sync + checkpoint restore)** | Found while verifying Bug 17 (reused scratch sessions verified garbage). spliff ops are a simultaneous base-coordinate script (inserts may sit inside a preceding deletion = "at its start"); the two cumulative-shift converters placed them one deletion-width early. New shared `Edit_Utils.diff_edits` (correct evolving-text mapping) backs `text_diff_edits` and `Thy_Status.difference_edits`. 10,003-case Scala round-trip property check + live sync repro + checkpoint back-and-forth all green. | `claude-work/2026-9-30-impl-overlay-probes/` (Part 5) |
 
 | 2026-09-30 | **Bug 19 / MCP-2: bogus path no longer pins a session** | `_create_binding` validates the path before acquiring; test rewritten to the new contract; live check: three tools on a missing path raise, zero sessions leased, real file opens. | `claude-work/2026-9-30-impl-overlay-probes/` (Part 6) |
+
+| 2026-09-30 | **Bug 20 / MCP-3: single-flight binding creation** | `get_binding` lookup under the lock + per-path in-flight future; +2 tests; live: three concurrent tools on a new file lease one session. With MCP-1..3 closed, the LSP MCP P0 group is done; MCP-4 (`reuse_dirty`) remains. | `claude-work/2026-9-30-impl-overlay-probes/` (Part 7) |
 
 *Last updated: 2026-09-30.*

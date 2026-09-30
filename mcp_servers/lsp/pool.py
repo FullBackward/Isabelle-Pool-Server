@@ -73,6 +73,7 @@ class LspPool(GymClientMixin):
         self._init_client(Config.GYM_URL, Config.HTTP_TIMEOUT)
         self._bindings: Dict[str, FileBinding] = {}
         self._bindings_lock = asyncio.Lock()
+        self._creating: Dict[str, asyncio.Future] = {}  # in-flight binding creations (single-flight)
         # scratch pool: context key -> (queue of idle sessions, created count)
         self._scratch: Dict[Tuple, asyncio.Queue] = {}
         self._scratch_counts: Dict[Tuple, int] = {}
@@ -139,12 +140,44 @@ class LspPool(GymClientMixin):
         self, file_path: str, task_group: Optional[str] = None,
         heap_session: Optional[str] = None, label: Optional[str] = None,
     ) -> FileBinding:
-        """The binding for a file; AUTO-OPENS with defaults on first use."""
+        """The binding for a file; AUTO-OPENS with defaults on first use.
+
+        SINGLE-FLIGHT per path: the lookup happens under `_bindings_lock`, and
+        when no binding exists the first caller creates it while concurrent
+        callers await the same in-flight creation. Before this, the unlocked
+        `dict.get` let two concurrent first calls on one file (typical: a
+        harness firing `isabelle_goal` and `isabelle_diagnostic_messages`
+        together right after writing the file) each acquire a session; the
+        second registration popped the first binding and released its session
+        while the first caller was still using it (docs/ISSUES.md Bug 20,
+        audit MCP-3)."""
         canon = canonical_path(file_path)
-        binding = self._bindings.get(canon)
-        if binding is None:
+        async with self._bindings_lock:
+            binding = self._bindings.get(canon)
+            if binding is not None:
+                return binding
+            fut = self._creating.get(canon)
+            owner = fut is None
+            if owner:
+                fut = asyncio.get_running_loop().create_future()
+                self._creating[canon] = fut
+        if not owner:
+            return await asyncio.shield(fut)  # the creator's result (or error)
+        try:
             binding = await self._create_binding(canon, task_group, heap_session, label)
-        return binding
+        except BaseException as e:
+            if isinstance(e, Exception):
+                fut.set_exception(e)
+            else:
+                fut.cancel()  # cancellation: waiters see CancelledError and may retry
+            raise
+        else:
+            fut.set_result(binding)
+            return binding
+        finally:
+            async with self._bindings_lock:
+                if self._creating.get(canon) is fut:
+                    del self._creating[canon]
 
     async def sync(self, binding: FileBinding) -> bool:
         """Re-read the file from disk; if changed vs the cache, push it via

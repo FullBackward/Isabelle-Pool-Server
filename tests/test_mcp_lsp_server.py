@@ -397,3 +397,57 @@ def test_scratch_wait_is_bounded(monkeypatch):
             await pool.acquire_scratch(key)
 
     asyncio.run(run())
+
+
+# ------------------------------------------- Bug 20 / MCP-3: single-flight bindings
+
+def test_concurrent_first_calls_share_one_binding(tmp_path):
+    """Two concurrent first calls on one file must create ONE session and return
+    the same binding. Before the fix each acquired its own session and the second
+    registration released the first one mid-use."""
+    f = tmp_path / "Race.thy"
+    f.write_text("theory Race imports Main begin\nend\n")
+    pool = _pool_with_fake()
+    slow_acquire = pool._client.acquire_session
+
+    async def acquire_slowly(*a, **kw):
+        await asyncio.sleep(0.05)  # a real acquire takes seconds; let the race happen
+        return await slow_acquire(*a, **kw)
+
+    pool._client.acquire_session = acquire_slowly
+
+    async def run():
+        return await asyncio.gather(pool.get_binding(str(f)), pool.get_binding(str(f)),
+                                    pool.get_binding(str(f)))
+
+    b1, b2, b3 = asyncio.run(run())
+    assert b1 is b2 is b3
+    assert len(pool._client.acquired) == 1
+    assert pool._client.released == []
+
+
+def test_failed_creation_is_not_cached_and_waiters_see_the_error(tmp_path):
+    f = tmp_path / "Boom.thy"
+    f.write_text("theory Boom imports Main begin\nend\n")
+    pool = _pool_with_fake()
+    calls = []
+
+    async def failing_acquire(*a, **kw):
+        calls.append(1)
+        await asyncio.sleep(0.02)
+        if len(calls) == 1:
+            raise RuntimeError("server down")
+        return {"session_id": "s9", "lease_id": "L9", "reused": False}
+
+    pool._client.acquire_session = failing_acquire
+
+    async def run():
+        results = await asyncio.gather(pool.get_binding(str(f)), pool.get_binding(str(f)),
+                                       return_exceptions=True)
+        retry = await pool.get_binding(str(f))  # a later call retries cleanly
+        return results, retry
+
+    results, retry = asyncio.run(run())
+    assert all(isinstance(r, RuntimeError) for r in results)  # both saw the one failure
+    assert retry.session_id == "s9" and len(calls) == 2
+    assert pool._creating == {}

@@ -543,7 +543,8 @@ returned through one `scratch_session` bracket (released, or dropped on 404 / ca
 always in `finally`), the wait for a slot is bounded, and a dropped session that the server
 still reports busy is closed by a deferred retry — one client disconnect can no longer wedge
 `multi_attempt` for a whole run. **Closed 2026-09-30 (Bug 19, MCP-2):** a binding is only
-created for a path that exists, so a typo no longer leases a session.
+created for a path that exists, so a typo no longer leases a session. **Closed 2026-09-30 (Bug 20, MCP-3):** binding creation is
+single-flight per path, so concurrent first calls share one session.
 
 ---
 
