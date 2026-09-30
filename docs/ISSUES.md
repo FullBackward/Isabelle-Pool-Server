@@ -586,6 +586,46 @@ none of the "Admin:" heap deletes checked a token.
 FINDINGS SEC-1 — `GET /admin` inlines the admin token into an unauthenticated page — is
 **not** fixed: a real admin login is future work; keep the port firewalled.
 
+### Bug 14: State Probes Leaked `ML_val` Into the Document — RESOLVED (by design change)
+
+**Severity:** High (audit REPL-1; also the reason `build_verify.py` had to scrub `ML_val` lines)
+**Status:** ✅ Resolved 2026-09-30 — the state queries no longer edit the document at all.
+
+**Symptom:** `open_subgoals` / `in_proof` / `local_facts` / `global_facts` / `sledgehammer`
+were `ML_val ‹Repl.send_*_tagged …›` commands appended at the document tip, answered
+through per-backend `Scala.Fun_Strings` channel queues, then removed with `discard_last_edit`.
+`ReplBackend.with_probe_settle` retried the probe on ANY exception (a channel timeout
+included) WITHOUT discarding the first insert, and the callers discarded once — so every
+timed-out probe left one `ML_val` in the script and the rollback chain permanently. Four of
+the five callers also had no `finally`, so a double failure left both.
+
+**Root cause:** the mechanism itself — a read-only question implemented as a document
+mutation that must be undone, with the undo bookkeeping spread over three files.
+
+**Fix (design change, DESIGN_CHOICES 1.14):** every state query is now a PIDE **overlay
+query**: a `Query_Operation` registered in `REPL.ML` is attached as a temporary overlay to
+the document's last command (`Document_Utils.current_state_host`), runs against that
+command's result state (the current toplevel state), and its instance-tagged results are
+read from the host's `command_results` (`Document_Utils.overlay_query`, the machinery the
+LSP-like `sledgehammer_at` already used). Nothing is inserted, so nothing can leak; the wait
+is bounded by a per-query budget (`ISABELLE_REPL_*_TIMEOUT`, unchanged names) and the
+overlay is always removed. Deleted: `with_probe_settle`, `send_ml_command`, `channel_id`,
+`repl_ml_communication.scala` (the channel queues + `Scala_Functions` service), the ML
+`send_*_tagged` senders. `probe_transient` (POST /diagnostic) remains the one insertion-based
+probe (an arbitrary Isar command cannot run as a print function). Also fixed on the way:
+`node_ends_with_end` (the guard every state query runs first) waited for full consolidation,
+which blocked every query behind a still-running command for that command's whole runtime.
+
+**Verified (in-container, RC2 image, `claude-work/2026-9-30-impl-overlay-probes/`):**
+27/27 checks of the live smoke (all probes in proof / after qed / after `end`, verify_chunk's
+internal probes, LSP `sledgehammer_at` on the shared operation, `ML_val` absent from the
+source after every step, source byte-identical after post-`end` probes); bounded-wait smoke:
+a query issued while a 45 s command runs fails at the 20 s budget with a clear error, leaves
+no residue, and works again once the command finishes. Unit suite 280 passed / 1 skipped
+(`test_mcp_comparison_fixes.py` skipped: needs `openai`, absent from the RC2 image).
+
+---
+
 ### [To-do]Issue 1: How Isabelle do parallel
 When have parallel "have x" statements, can we do this in step. And how do we retrive information when one line is stucked in loop. That is, we need error retrieval for a proof chunk, the server should not just return a timeout error, it should tell, when we build the MCP server, the agent what part of that proof chunk just went wrong.
 
@@ -604,8 +644,8 @@ Status vocabulary: `open` · `in progress` · `fixed` · `verified` · `deferred
 
 | ID | Sev | Title | Where | Status | Fix commit | Test | Notes folder |
 |---|---|---|---|---|---|---|---|
-| REPL-1 | High | Probe double-insert: `with_probe_settle` retries on any exception without discarding the first `ML_val` edit | `server/repl/src/main/scala/repl/repl_backend.scala:57-64` | open | | | |
-| REPL-2 | High | Unbounded settle loop: `stable_node_snapshot` spins with no deadline; a timed-out command left by `sync_document` wedges the worker | `server/repl/src/main/scala/repl/document_utils.scala:56-77` | open | | | |
+| REPL-1 | High | Probe double-insert: `with_probe_settle` retries on any exception without discarding the first `ML_val` edit | `server/repl/src/main/scala/repl/repl_backend.scala:57-64` | fixed + verified 2026-09-30 by design change (state queries are PIDE overlays; `with_probe_settle`/channels deleted) — commit pending; see Bug 14 | (pending) | `claude-work/2026-9-30-impl-overlay-probes/smoke_overlay_probes.py`, `smoke_overlay_timeout.py` (live-server) | `claude-work/2026-9-30-impl-overlay-probes/` |
+| REPL-2 | High | Unbounded settle loop: `stable_node_snapshot` spins with no deadline; a timed-out command left by `sync_document` wedges the worker | `server/repl/src/main/scala/repl/document_utils.scala:56-77` | open — PARTIAL 2026-09-30: `node_ends_with_end` (every state query's guard) no longer waits, and the overlay queries bound their own wait; still waiting unboundedly: `output_node_results`, `last_end_offset`, `header_end_offset`, `output_command_at_offset`, `command_containing_line`, `hover_at_json`, `definition_at_json` | | | |
 | SRV-1 | High | Cleanup coroutine calls sync `close_session` and `time.sleep` on the event loop | `server/app/services/session_manager_helpers.py:186,252` | open | | | |
 | MCP-1 | High | LSP scratch-slot leak → permanent hang: release outside `finally`, `await queue.get()` without timeout | `mcp_servers/lsp/app.py`, `mcp_servers/lsp/pool.py:254` | open | | | |
 | MCP-2 | High | Binding registered before the `isfile` check; a bogus path pins a leased session | `mcp_servers/lsp/pool.py:125,149` | open | | | |
@@ -695,5 +735,7 @@ disk; the entries are kept as the historical record. Summary of work completed:
 | 2026-09-27 | **Isabelle download mirror order + slow-mirror bail-out** | `docker compose build` sat on `dist.isabelle.cit.tum.de` at ~150 KB/s (2.5 h ETA) because a slow mirror never "fails" the wget fallback chain. Measured: Cambridge ~8–16 MB/s, Proofcraft ~0.9 MB/s, TUM refuses/trickles, Clarkson ~170 KB/s. `deploy/Dockerfile` now tries Cambridge → Proofcraft → TUM → Clarkson with `curl --speed-limit 1000000 --speed-time 30` so any mirror under 1 MB/s for 30 s is abandoned. Rebuild: tarball in ~73 s. | `deploy/Dockerfile` |
 
 | 2026-09-30 | **RC2 image fix + findings tracker** | `deploy/Dockerfile`: `fontconfig fonts-dejavu-core` added — Isabelle 2026 `Build.build_store` calls `Isabelle_Fonts.init()` on every session start, and the slim `--no-install-recommends` rewrite had dropped the packages, so every session died with "Fontconfig head is null". Rebuilt `isabellegym-isabelle-gym:2026rc2`, cold-tested standalone (healthz, fresh-session step proofs). Docker disk moved to `D:`; 2025-2 image, hand-assembled `2026rc0`, scratch `isabelle-rc2-base` removed; `2026rc0-clean` kept until the Isabelle2026 release. Added the [Open Findings Tracker](#open-findings-tracker) section for the remaining audit P0 items. | `claude-work/rc2-fontconfig/` |
+
+| 2026-09-30 | **Bug 14 / REPL-1: state probes → PIDE overlay queries** | Owner decision (Option B): instead of patching `with_probe_settle`, the five stepwise state probes were migrated from `ML_val` insert-and-discard to overlay Query_Operations hosted on the document's last command (same machinery as the LSP `sledgehammer_at`, which now shares the operation). `repl_ml_communication.scala` + `Scala_Functions` service + the ML channel senders deleted (net −300 lines); `node_ends_with_end` made non-blocking; `probe_transient` is the only insertion probe left. Verified live on the RC2 image (27/27 + bounded-wait smoke), unit suite green. DESIGN_CHOICES.md gained 1.14 and was reviewed for stale claims. | `claude-work/2026-9-30-impl-overlay-probes/` |
 
 *Last updated: 2026-09-30.*

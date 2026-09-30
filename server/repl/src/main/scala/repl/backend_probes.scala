@@ -2,28 +2,78 @@ package repl
 
 import scala.jdk.CollectionConverters._
 
+import isabelle._
+
 /** Transient read-only probes of [[ReplBackend]]: open subgoals, in-proof
  *  predicate, local/global facts, sledgehammer, rendered proof state, source
  *  text, and the generic `probe_transient` diagnostic primitive. These serve
  *  BOTH MCP servers — the chunk-centric one (state / subgoals / facts /
  *  sledgehammer / diagnostic tools) and the LSP-like read-only one.
  *
- *  Transient-probe contract: insert the probe command, read its output (or its
- *  per-channel ML reply), then `discard_last_edit` — so the proof script,
- *  rollback chain, and command history stay untouched. Channel probes are
- *  wrapped in `with_probe_settle` so the probe's evaluation finishes before
- *  the discard (see repl_backend.scala).
+ *  Every STATE query is an OVERLAY QUERY, not a text edit (since 2026-09-30):
+ *  a Query_Operation registered in REPL.ML is attached as a temporary document
+ *  overlay to the node's LAST command (`Repl_Session.current_state_host`), runs
+ *  against that command's result state — which IS the current toplevel state,
+ *  exactly what an appended command would see — and its instance-tagged
+ *  results are read from the host's command_results
+ *  (`Document_Utils.overlay_query`, the machinery `sledgehammer_at` already
+ *  used). The document, rollback chain and command history are never touched,
+ *  so there is nothing to discard and no probe can leak into the script. (The
+ *  previous design inserted `ML_val ‹Repl.send_*_tagged …›` commands and read
+ *  replies from per-backend Scala.Fun_Strings channel queues; a probe whose
+ *  reply timed out stayed in the document — docs/ISSUES.md tracker REPL-1.)
+ *  The wait is bounded by a per-query budget; on expiry the overlay is removed
+ *  (cancelling the print task) and an error is raised — the same exception
+ *  contract the channel timeouts had, so the Python side is unchanged.
  *
- *  FINISHED THEORIES (document ends with theory `end`): a probe appended past
- *  `end` never executes — it is parsed without a theory context and fails with
- *  "missing theory context", so the ML channel would time out (docs/ISSUES.md
- *  work log 2026-08-08). Handling, keyed on [[Repl_Session.current_thy_ended]]:
- *  `open_subgoals`/`in_proof`/`sledgehammer` short-circuit to their definitional
- *  answers (a successful `end` means no proof is open); `local_facts`/
- *  `global_facts`/`probe_transient` are re-routed through
- *  [[Repl_Session.with_probe_before_end]], which inserts the probe BEFORE the
- *  `end` command and always removes it again (byte-identical document). */
+ *  FINISHED THEORIES (document ends with theory `end`): after `end` there is
+ *  no theory context, so `open_subgoals`/`in_proof`/`sledgehammer`/
+ *  `get_proof_state` short-circuit to their definitional answers (a successful
+ *  `end` means no proof is open) and the fact queries host on the last command
+ *  BEFORE `end` (`skip_end`), i.e. observe the state the theory closed with.
+ *
+ *  `probe_transient` is the one remaining INSERTION probe: it runs an
+ *  arbitrary caller-supplied Isar command (`thm`, `find_theorems`, …), which
+ *  no print function can do. It inserts the command, reads its output, and
+ *  removes the edit again (before a trailing `end` via
+ *  `Repl_Session.with_probe_before_end`, whose bracket always removes it). */
+object Backend_Probes {
+  /** Wall budgets for the overlay queries. Env-tunable; the Python side reads
+   *  the same variables for its outer timeouts (server/app/core/config.py). */
+  val SUBGOALS_BUDGET_MS: Long =
+    sys.env.get("ISABELLE_REPL_SUBGOALS_TIMEOUT").flatMap(_.toLongOption).getOrElse(20L) * 1000L
+  val LOCAL_FACTS_BUDGET_MS: Long =
+    sys.env.get("ISABELLE_REPL_LOCAL_FACTS_TIMEOUT").flatMap(_.toLongOption).getOrElse(20L) * 1000L
+  val GLOBAL_FACTS_BUDGET_MS: Long =
+    sys.env.get("ISABELLE_REPL_GLOBAL_FACTS_TIMEOUT_MINUTES").flatMap(_.toLongOption).getOrElse(5L) * 60000L
+  /** Grace added to the Isabelle-level sledgehammer timeout (the ATP budget)
+   *  before the overlay is abandoned: prover start-up and result relay. */
+  val SLEDGEHAMMER_GRACE_MS: Long = 30000L
+}
+
 trait Backend_Probes { this: ReplBackend =>
+  import Backend_Probes._
+
+  /** Run `print_fn` (a REPL.ML Query_Operation name + "_query") as an overlay
+   *  on the current-state host and return its result lines in order.
+   *  `skip_end`: host on the command before a trailing theory `end`. Raises
+   *  `error` on budget expiry or when the ML side reported an error (callers
+   *  keep the channel-era exception contract); [] when the node has no command
+   *  yet — nothing to observe. */
+  private def state_query(
+      print_fn: String,
+      args: List[String],
+      budget_ms: Long,
+      skip_end: Boolean
+  ): List[String] =
+    repl_session.current_state_host(skip_end) match {
+      case None => Nil
+      case Some(host) =>
+        val (done, content, errors) = repl_session.overlay_query(host, print_fn, args, budget_ms)
+        if (!done) error(s"Timeout waiting for $print_fn result (budget ${budget_ms} ms)")
+        else if (errors.nonEmpty) error(s"$print_fn failed: ${errors.head}")
+        else content
+    }
 
   /** Pretty-printed open subgoals of the current proof state ([] when not in a
    *  proof — including after a trailing theory `end`, which closes the theory
@@ -32,22 +82,7 @@ trait Backend_Probes { this: ReplBackend =>
     val subgoals =
       if (!repl_session.current_thy_begun) List()
       else if (repl_session.current_thy_ended) List()  // post-`end`: no proof can be open
-      else {
-        val message = with_probe_settle(
-          Repl_ML_Communication.waiting_for_subgoals_message(
-            {
-              // The ML side prepends "CH:<channel_id>" so the Scala callback
-              // can route the response to the correct per-backend queue.
-              send_ml_command(
-                s"""Repl.send_open_subgoals_tagged "${channel_id}" @{Isar.state}"""
-              )
-            },
-            channel_id
-          )
-        )
-        repl_session.discard_last_edit()  // probe is transient: no doc/rollback pollution
-        message
-      }
+      else state_query("isabellegym_goals_query", Nil, SUBGOALS_BUDGET_MS, skip_end = false)
     subgoals.asJava
   }
 
@@ -55,135 +90,58 @@ trait Backend_Probes { this: ReplBackend =>
    *  predicate: true for the whole block lifetime, including after a terminal
    *  `show` while `qed` is still pending). Definitionally false after a trailing
    *  theory `end` (a successful `end` means no proof is open). */
-  def in_proof(): Boolean = {
+  def in_proof(): Boolean =
     if (!repl_session.current_thy_begun) false
     else if (repl_session.current_thy_ended) false  // post-`end`: no proof can be open
-    else {
-      val message = with_probe_settle(
-        Repl_ML_Communication.waiting_for_in_proof_message(
-          {
-            // The ML side prepends "CH:<channel_id>" so the Scala callback
-            // can route the response to the correct per-backend queue.
-            send_ml_command(
-              s"""Repl.send_in_proof_tagged "${channel_id}" @{Isar.state}"""
-            )
-          },
-          channel_id
-        )
-      )
-      repl_session.discard_last_edit()  // probe is transient: no doc/rollback pollution
-      message == List("1")
-    }
-  }
+    else state_query("isabellegym_in_proof_query", Nil, SUBGOALS_BUDGET_MS, skip_end = false) == List("1")
 
   /** Facts visible in the current proof context; consumed via
-   *  GET .../facts/local by both MCPs. On a finished theory the probe is placed
-   *  BEFORE the trailing `end` (an appended probe would never execute); the ML
-   *  side still gates on `Toplevel.is_proof`, so an empty list there is correct. */
+   *  GET .../facts/local by both MCPs. On a finished theory the query hosts on
+   *  the command BEFORE the trailing `end`; the ML side still gates on
+   *  `Toplevel.is_proof`, so an empty list there is correct. */
   def local_facts(): java.util.List[String] = {
-    val local_facts =
+    val facts =
       if (!repl_session.current_thy_begun) List()
-      else if (repl_session.current_thy_ended) {
-        with_probe_settle(
-          repl_session.with_probe_before_end { insert =>
-            Repl_ML_Communication.waiting_for_local_facts_message(
-              {
-                insert(
-                  ml_command_text(s"""Repl.send_local_facts_tagged "${channel_id}" @{Isar.state}""")
-                )
-              },
-              channel_id
-            )
-          }
-        )
-      }
-      else {
-        val message = with_probe_settle(
-          Repl_ML_Communication.waiting_for_local_facts_message(
-            {
-              send_ml_command(
-                s"""Repl.send_local_facts_tagged "${channel_id}" @{Isar.state}"""
-              )
-            },
-            channel_id
-          )
-        )
-        repl_session.discard_last_edit()  // probe is transient
-        message
-      }
-    local_facts.asJava
+      else state_query("isabellegym_local_facts_query", Nil, LOCAL_FACTS_BUDGET_MS,
+             skip_end = repl_session.current_thy_ended)
+    facts.asJava
   }
 
   /** Facts of the current theory's global context, up to `limit`; consumed via
-   *  GET .../facts/global by both MCPs. Same post-`end` re-routing as local_facts. */
+   *  GET .../facts/global by both MCPs. Same post-`end` hosting as local_facts. */
   def global_facts(limit: Int): java.util.List[String] = {
     require(limit > 0, "limit must be positive")
-    val global_facts =
+    val facts =
       if (!repl_session.current_thy_begun) List()
-      else if (repl_session.current_thy_ended) {
-        with_probe_settle(
-          repl_session.with_probe_before_end { insert =>
-            Repl_ML_Communication.waiting_for_global_facts_message(
-              {
-                insert(
-                  ml_command_text(s"""Repl.send_global_facts_tagged "${channel_id}" @{Isar.state} ${limit}""")
-                )
-              },
-              channel_id
-            )
-          }
-        )
-      }
-      else {
-        val message = with_probe_settle(
-          Repl_ML_Communication.waiting_for_global_facts_message(
-            {
-              send_ml_command(
-                s"""Repl.send_global_facts_tagged "${channel_id}" @{Isar.state} ${limit}"""
-              )
-            },
-            channel_id
-          )
-        )
-        repl_session.discard_last_edit()  // probe is transient
-        message
-      }
-    global_facts.asJava
+      else state_query("isabellegym_global_facts_query", List(limit.toString), GLOBAL_FACTS_BUDGET_MS,
+             skip_end = repl_session.current_thy_ended)
+    facts.asJava
   }
 
   /** Run sledgehammer on the first subgoal with an Isabelle-level budget of
    *  `timeout_s` seconds; returns the collected suggestion lines. Consumed via
    *  the sledgehammer endpoint/tool by both MCPs. Meaningless after a trailing
-   *  theory `end` (no open goal) — returns [] immediately rather than waiting
-   *  out the channel timeout. */
+   *  theory `end` (no open goal) or outside a proof — returns [] immediately
+   *  rather than waiting out the budget. Same query operation as the LSP-like
+   *  `sledgehammer_at`, hosted on the document's last command. */
   def sledgehammer(timeout_s: Int): java.util.List[String] = {
     val suggestions =
       if (!repl_session.current_thy_begun) List()
       else if (repl_session.current_thy_ended) List()  // post-`end`: no open goal
-      else {
-        try {
-          val message = with_probe_settle(
-            Repl_ML_Communication.waiting_for_sledgehammer_message(
-              {
-                send_ml_command(
-                  s"""Repl.send_sledgehammer_tagged "${channel_id}" ${timeout_s} @{Isar.state}"""
-                )
-              },
-              channel_id,
-              timeout_s
-            )
-          )
-          message
-        } finally {
-          repl_session.discard_last_edit()  // ALWAYS discard, even on timeout
+      else
+        try
+          state_query("isabellegym_sledgehammer_query", List(timeout_s.toString, "1"),
+            timeout_s.toLong * 1000L + SLEDGEHAMMER_GRACE_MS, skip_end = false)
+        catch {
+          // not inside a proof: definitional "no suggestions", not a failure
+          case ERROR(msg) if msg.contains("Unknown proof context") => List()
         }
-      }
     suggestions.asJava
   }
 
   /** Rendered current proof state; consumed via the state endpoint (MCP
    *  `proof_state` tool) by both MCPs. Errors immediately on a finished theory
-   *  instead of timing out (the legacy ML probe cannot run past `end`). */
+   *  instead of waiting out the budget (no proof can be open after `end`). */
   def get_proof_state(): Repl_Result = build_result {
     if (!repl_session.current_thy_begun)
       Repl_Output.add_error(
@@ -193,21 +151,21 @@ trait Backend_Probes { this: ReplBackend =>
       Repl_Output.add_error(
         "Cannot retrieve proof state after theory end (theory is closed)."
       )
-    else {
-      send_ml_command("Repl.get_proof_state @{Isar.state}")
-      repl_session.output_current_node_results()  // read the probe's output first
-      repl_session.discard_last_edit()             // then drop the transient probe
-    }
+    else
+      try
+        state_query("isabellegym_state_query", Nil, SUBGOALS_BUDGET_MS, skip_end = false)
+          .foreach(Repl_Output.add_output)
+      catch { case ERROR(msg) => Repl_Output.add_error(msg) }
   }
 
   /** Execute a command TRANSIENTLY: insert it, capture its writeln/state output, then
    *  discard the edit so the theory node and rollback chain are untouched. This is the
-   *  low-level probe primitive; higher-level transient helpers (`sledgehammer`,
-   *  `open_subgoals`, etc.) delegate to this.
+   *  one INSERTION-based probe left (an arbitrary Isar command cannot run as a print
+   *  function); the state queries above are overlays.
    *
-   *  Use this for ANY read-only query (diagnostic, ML probe, search, etc.) where you
-   *  need the command's output but do NOT want it to persist in the proof script.
-   *  Keyword allowlist/denylist gatekeeping is enforced upstream on the server side.
+   *  Use this for ANY read-only query (diagnostic, search, etc.) where you need the
+   *  command's output but do NOT want it to persist in the proof script. Keyword
+   *  allowlist/denylist gatekeeping is enforced upstream on the server side.
    *  Consumed via POST .../diagnostic by both MCP servers.
    *
    *  On a FINISHED theory (trailing `end`) the command is inserted BEFORE the `end`

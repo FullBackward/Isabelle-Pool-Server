@@ -50,13 +50,12 @@ trait Backend_Lifecycle { this: ReplBackend =>
     }
   }
 
-  /** Shut down this backend: clear its ML channel and stop the session manager.
-   *  Called on session close; like every backend call it must be serialized
-   *  through the session's single worker thread (ThreadedBackend). */
-  def exit(): Unit = {
-    Repl_ML_Communication.clear_channel(channel_id)
+  /** Shut down this backend: stop the session manager (and with it this
+   *  backend's Isabelle session). Called on session close; like every backend
+   *  call it must be serialized through the session's single worker thread
+   *  (ThreadedBackend). */
+  def exit(): Unit =
     session_manager_instance.shutdown()
-  }
 
   // validate session
   /** Liveness check: true if the underlying Isabelle session still responds. */

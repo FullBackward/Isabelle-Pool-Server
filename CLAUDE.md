@@ -78,8 +78,8 @@ The REPL backend bridges Python ↔ Scala ↔ Isabelle/ML. It uses **Py4J** for 
 - server/repl/src/main/scala/repl/repl_backend_gateway.scala - Entry point for Py4J gateway; exposes ReplBackendGateway object with factory methods for creating REPL backends with various configurations (caching, memory management, field selection)
 - server/repl/src/main/scala/repl/repl_backend.scala - Core backend class managing Isabelle sessions, state, and proof operations
 - server/repl/src/main/scala/repl/server_utils.scala - Low-level Isabelle server/session creation utilities
-- server/repl/src/main/scala/repl/repl_ml_communication.scala - Scala ↔ ML communication for fact extraction, subgoal retrieval, and the sledgehammer channel
-- server/repl/src/ml/REPL.ML - ML-side proof-state extraction and the sledgehammer entry point invoked from Scala (NOTE: path is src/ml/, not src/main/ml/)
+- server/repl/src/main/scala/repl/backend_probes.scala - Read-only state queries (subgoals, in-proof, facts, sledgehammer, proof state) run as PIDE OVERLAY queries on the document's last command via Document_Utils.overlay_query — no document edits, no ML→Scala channels (since 2026-09-30); probe_transient (POST /diagnostic) is the one insertion-based probe left
+- server/repl/src/ml/REPL.ML - ML-side Query_Operation registrations (isabellegym_goals / in_proof / local_facts / global_facts / state / sledgehammer) plus the extraction functions they call (NOTE: path is src/ml/, not src/main/ml/)
 - server/repl/src/main/scala/repl/thy_*.scala - Theory parsing, status tracking, and checkpoint utilities
 - server/repl/src/python/repl_backend_gateway.py - Python wrapper (ReplBackendGatewayProcess) that spawns the Scala gateway as a subprocess and manages the Py4J bridge
 - server/repl/build.gradle - Gradle build config; depends on Isabelle JAR (auto-built via isabelle scala -e)
@@ -367,7 +367,7 @@ The server maintains a pool of warm Isabelle sessions. Idle sessions (older than
 - **Big-step** (verify_bigstep_text): Batch verification via isabelle build, no session reuse, good for whole-theory checking and parallelization.
 
 ### Sledgehammer Integration
-Sledgehammer is exposed end-to-end as a small-step automation primitive: a dedicated channel in server/repl/src/ml/REPL.ML invokes Isabelle's sledgehammer, repl_ml_communication.scala relays it through the Py4J bridge, and the FastAPI endpoint POST /api/v1/sessions/{session_id}/sledgehammer (router.py, schemas SledgehammerRequest/SledgehammerResponse) runs it on the current proof goal under a lease. The call requires the session to already be in an active proof state. NOTE: sledgehammer is intentionally NOT defined inside the REPL ML struct — that placement conflicts with other ML functions (see commit ca73379); keep it at top level.
+Sledgehammer is exposed end-to-end as a small-step automation primitive: the `isabellegym_sledgehammer` Query_Operation in server/repl/src/ml/REPL.ML runs Isabelle's sledgehammer as a PIDE overlay on a host command (Document_Utils.overlay_query), Backend_Probes.sledgehammer hosts it on the document's last command (the LSP-like sledgehammer_at hosts it on the command at a given line — same operation), and the FastAPI endpoint POST /api/v1/sessions/{session_id}/sledgehammer (routes/automation.py, schemas SledgehammerRequest/SledgehammerResponse) runs it on the current proof goal under a lease. Outside a proof it returns no suggestions. No text edit is made, so nothing can leak into the proof script. NOTE: the Query_Operation registrations are intentionally at the top level of REPL.ML, outside the `Repl` struct (the struct only holds the extraction functions); see commit ca73379 for the original placement conflict.
 
 ### Caching (Optional)
 Session caching can be enabled to reuse initialized sessions for the same import dependencies. By default disabled to avoid stale state issues.
@@ -398,8 +398,8 @@ Session caching can be enabled to reuse initialized sessions for the same import
 ```
 repo_root/
 ├── server/repl/                   # Scala/ML backend with Py4J gateway (Isabelle component; moved under server/ 2026-09-27)
-│   ├── src/main/scala/repl/       # Core backend (13 .scala files)
-│   ├── src/ml/REPL.ML             # ML-side fact/subgoal extraction + sledgehammer channel
+│   ├── src/main/scala/repl/       # Core backend (17 .scala files)
+│   ├── src/ml/REPL.ML             # ML-side Query_Operations (goals/facts/state/sledgehammer) for the overlay queries
 │   ├── src/python/                # Python wrappers for gateway
 │   ├── thys/                      # Cached wrapper .thy files
 │   ├── Admin/init                 # Isabelle component initialization

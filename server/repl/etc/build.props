@@ -1,6 +1,5 @@
 title = REPL
 module = lib/repl.jar
-services = repl.Scala_Functions
 requirements = \
   env:ISABELLE_SCALA_JAR 
 sources = \
@@ -13,7 +12,6 @@ sources = \
   src/main/scala/repl/backend_chunk_ops.scala \
   src/main/scala/repl/backend_file_ops.scala \
   src/main/scala/repl/repl_backend_gateway.scala \
-  src/main/scala/repl/repl_ml_communication.scala \
   src/main/scala/repl/repl_output.scala \
   src/main/scala/repl/vector_env.scala \
   src/main/scala/repl/repl_session.scala \

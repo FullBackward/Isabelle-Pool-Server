@@ -371,9 +371,9 @@ class _Isabelle_Session(BigStepMixin):
 
     @staticmethod
     def _ends_with_theory_end(text: str) -> bool:
-        """True when the document's last non-empty line is theory `end` — in which
-        case state probes (in_proof/open_subgoals) must be skipped: a probe
-        appended past `end` never executes and the ML channel would time out."""
+        """True when the document's last non-empty line is theory `end`: the state
+        queries (in_proof/open_subgoals) are then skipped — a successful `end` means
+        no proof is open (the backend short-circuits these too; belt-and-braces)."""
         lines = [ln.strip() for ln in text.strip().splitlines() if ln.strip()]
         return bool(lines) and lines[-1] == "end"
 

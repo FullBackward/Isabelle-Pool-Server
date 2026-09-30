@@ -29,12 +29,12 @@ embedded its own REPL and spawned its own Isabelle.
 **Why:** the target workload is many concurrent LLM agents/rollouts against a resource that
 costs gigabytes and tens of seconds per instance. Sharing and gating that resource is the
 whole game; an embedded library cannot do either. **Abandoned:** the local install path
-(`install.sh`) is unmaintained — the server assumes the container layout (`/app`,
+(`archive/install.sh`, archived 2026-09-27) is unmaintained — the server assumes the container layout (`/app`,
 `/opt/isabelle`) and that is deliberate: one supported layout instead of N half-working ones.
 
 ### 1.2 Prover bridge: Scala-side PIDE via Py4J → one gateway JVM
 
-**Chosen:** a Scala program (`repl/`) using Isabelle's own Scala API (Headless PIDE sessions),
+**Chosen:** a Scala program (`server/repl/`, an Isabelle component) using Isabelle's own Scala API (Headless PIDE sessions),
 exposed to Python through a single Py4J gateway JVM.
 **Alternatives:** (a) the official `isabelle server` JSON/TCP protocol; (b) research bridges
 (scala-isabelle / PISA-style); (c) driving `isabelle console` as a subprocess REPL.
@@ -55,8 +55,10 @@ in `repl_backend_gateway.py`) that must stay in sync with the Scala class.
 
 ### 1.3 One shared gateway JVM vs JVM-per-session
 
-**Chosen:** all sessions live in one JVM; each `ReplBackend` gets a `channel_id` so ML
-messages (subgoals/facts) route to the right backend.
+**Chosen:** all sessions live in one JVM; each `ReplBackend` owns its own Isabelle session
+(own `poly` process and PIDE document), so state queries read that document's own results
+and need no per-backend routing. (Until 2026-09-30 a `channel_id` tag routed ML→Scala
+channel replies to the right backend; the channels are gone — see 1.14.)
 **Alternative:** a JVM per session.
 
 - *Per-session pros:* crash isolation; no cross-session interference.
@@ -183,13 +185,17 @@ schedules.
 (every endpoint, including `/healthz`, unresponsive). In an asyncio server there is exactly
 one rule: the loop never waits on the prover. The alternative (multi-worker uvicorn) doesn't
 fit because the SessionManager is deliberately a single-process singleton owning one gateway.
+**Known gap (audit SRV-1, tracked in ISSUES.md):** the idle/pressure cleanup coroutine still
+calls the synchronous `close_session` and `time.sleep` on the loop, and `/readyz` runs the
+(5 s-cached) gateway probe inline — the rule above is the target, not yet the whole truth.
 
 ### 1.10 Diagnostics as transient probes with a syntactic guard
 
 **Chosen:** `POST /diagnostic` runs read-only Isar queries (`thm`, `find_theorems`,
 `print_*`, …) as *transient* PIDE edits — output captured, edit discarded, rollback chain and
 history untouched — gated by an allowlist (leading keyword) + denylist (`ML`, `setup`,
-file-IO anywhere) in `diagnostic_guard.py`.
+file-IO anywhere) in `diagnostic_guard.py`, plus (since Bug 12) the ML-execution guard of
+`input_guards.py` that every text endpoint shares.
 **Alternatives:** let clients run queries through the normal step path (pollutes the script
 and rollback chain; earlier sledgehammer probes literally leaked `ML_val` into saved proofs);
 or allow arbitrary commands (a prover command like `ML` is remote code execution).
@@ -197,6 +203,10 @@ or allow arbitrary commands (a prover command like `ML` is remote code execution
 **Why:** agents need lookups constantly, and lookups must be free of side effects — both on
 the proof state and on the host. The conservative guard knowingly rejects a few legitimate
 queries (documented trade-off) because the denied class includes code execution.
+**Scope note (2026-09-30):** the transient-EDIT mechanism now applies ONLY to `diagnostic`
+(`probe_transient` — an arbitrary Isar command cannot run any other way). The state queries
+(subgoals, in-proof, facts, sledgehammer, proof state) no longer edit the document at all —
+they are overlay queries, see 1.14.
 
 ### 1.11 Per-session PIDE parallelism: modest fixed defaults, env-tunable
 
@@ -208,6 +218,9 @@ overridable per deployment (`ISABELLE_PARALLEL_PROOFS`, `ISABELLE_SESSION_THREAD
 heap (a Bug 6 contributor). The cap trades single-session latency for pool stability. For
 single-agent workloads (the MCP comparison), the right tuning inverts: one session, all
 cores (`threads=8`) — which is why it's config, not a constant.
+**Correction (audit REPL-8):** `ISABELLE_SESSION_THREADS` is currently a no-op — it is passed
+as a session option, but the poly thread farm is sized at process launch (`ML_OPTIONS`, see
+the ML heap cap in `container_entrypoint.sh`), so only `parallel_proofs` is effective today.
 
 ### 1.12 Container is the unit of deployment — and must be native-arch
 
@@ -259,15 +272,71 @@ feasible — then deferred, not rejected.
 **Why:** the target is agent workflows (training/eval + MCP), not interactive editing. The
 heap model gives verified, fast, shareable imports with one small Scala change (`dirs`
 plumbing), while live sync buys nothing agents use and costs the largest reconstruction on
-the table. **Given up (deliberately):** live import editing without rebuild, and the
-overlay query layer's "query any position in any node without probes" generality. Full
-evidence: `claude-work/2026-8-12(1)-research-use-theories-spike/`,
-`claude-work/2026-8-12(2)-research-heap-pool/`,
-`claude-work/2026-8-14(1)-research-style4-feasibility/`; plan:
-`claude-work/2026-8-8-research-lsp-readonly-mode/IMPORT_SYNC_PLAN.md`. The overlay path
-remains a validated upgrade if position-explicit-anywhere queries ever become a
-requirement (sledgehammer parity and a generic one-registration diagnostic dispatcher were
-both proven with running code).
+the table. **Given up (deliberately):** live import editing without rebuild. The overlay query layer
+was deferred here and then ADOPTED on 2026-09-30 as the mechanism behind every state query
+(1.14); what remains unadopted is only its "any node" generality — queries still target the
+session's own document. Full
+evidence was in the 2026-08 research notes (`research-use-theories-spike`,
+`research-heap-pool`, `research-style4-feasibility`, `research-lsp-readonly-mode/
+IMPORT_SYNC_PLAN.md`) — NOTE (2026-09-30 review): those folders are no longer under this
+tree's `claude-work/`; the surviving record is this section and ISSUES.md's work log. The
+overlay path's sledgehammer parity became `sledgehammer_at`, and since 2026-09-30 the same
+machinery backs every state query (1.14); the generic one-registration diagnostic
+dispatcher proven in that spike remains a possible upgrade for `diagnostic`.
+
+### 1.14 State queries as PIDE overlay queries — not probe edits (2026-09-30)
+
+**Old:** every read-only state question (open subgoals, in-proof, local/global facts,
+sledgehammer, rendered proof state) was an `ML_val ‹Repl.send_*_tagged …›` command appended
+at the document tip; the ML side pushed the answer back through a per-backend
+`Scala.Fun_Strings` channel queue tagged with the backend's `channel_id`, the Scala side
+blocked on that queue, waited for the probe to consolidate ("settle"), then removed the
+edit (`discard_last_edit`). Finished theories needed a second path that inserted the probe
+*before* the trailing `end`.
+**Chosen:** every state query is a PIDE **overlay query**: a `Query_Operation` registered in
+`REPL.ML` (`isabellegym_goals`, `_in_proof`, `_local_facts`, `_global_facts`, `_state`,
+`_sledgehammer`) is attached as a temporary overlay to the document's **last command**
+(`Document_Utils.current_state_host`; the command before `end` for the fact queries on a
+finished theory), runs against that command's result state — which IS the current toplevel
+state — and each `writeln_result` becomes an instance-tagged entry in the host's
+`command_results` that `Document_Utils.overlay_query` collects under a per-query budget and
+then removes the overlay. Nothing is inserted. The LSP-like `sledgehammer_at` (host = the
+command at a line) and the stepwise `sledgehammer` (host = last command) are now one
+operation. `probe_transient` (`diagnostic`, 1.10) stays insertion-based because it runs an
+arbitrary Isar command.
+**Alternative kept in mind:** patch the insert/discard bracket (`with_probe_settle`) so a
+retried probe is discarded first — the minimal fix for the leak (audit REPL-1).
+
+- *Probe-edit pros:* no PIDE-internal API beyond text edits; the ML function sees the
+  toplevel state directly. *cons:* a read-only question implemented as a mutation that must
+  be undone — every bug in this area was a restoration bug: a probe whose channel reply timed
+  out stayed in the script and the rollback chain forever (REPL-1; `_MLVAL_RE` in
+  `build_verify.py` existed to scrub such residue out of bigstep text; an earlier incident
+  needed two `rollback` calls to undo one line); the ML→Scala channel plumbing (~200 lines of
+  queues, `CH:` tags, `Scala_Functions` service) was shared JVM state that one ML compile
+  error broke for every session at once; the settle barrier was an unbounded wait (REPL-2);
+  finished theories needed a special insertion path.
+- *Overlay pros:* zero document mutation — the leak class cannot occur; results come back
+  through PIDE's own `command_results` with a PIDE-generated instance id (no queues, no
+  routing, no shared mutable state between backends); the wait is bounded by construction
+  and removing the overlay IS the cancellation (PIDE drops the print task); one host
+  selection rule replaces the finished-theory special case; the output is XML with markup
+  intact, which is what structured feedback (audit REPL-7) will need. Net −300 lines.
+- *Overlay cons:* an overlay's print task runs only after its host command has finished
+  evaluating, so a query issued while a long command runs returns "timed out" at its budget
+  instead of an answer (the same visible outcome as the old channel timeout, now bounded); the
+  ML function's return path is `writeln_result` per line rather than a typed list.
+
+**Why:** the migration (owner decision, Option B: migrate directly rather than patch first)
+removes the whole class of restoration bugs instead of fixing one instance, deletes more
+code than it adds, and unifies the two MCPs on one mechanism that had already been validated
+in production by `sledgehammer_at`. Verified live on the Isabelle2026-RC2 image
+(`claude-work/2026-9-30-impl-overlay-probes/`): all probes in proof / after `qed` / after
+`end`, `verify_chunk`'s internal probes, no `ML_val` in the source at any point, and a query
+against a still-running 45 s command failing cleanly at its 20 s budget with no residue.
+**Given up:** the forked, non-blocking ML sledgehammer thread (the overlay's print task is
+the async unit now) and the `ISABELLE_REPL_*_TIMEOUT` knobs' old meaning as channel poll
+timeouts — same names, now overlay wall budgets.
 
 ---
 
@@ -275,7 +344,9 @@ both proven with running code).
 
 ### 2.1 Thin layer over the HTTP client — no prover logic in the MCP process
 
-**Chosen:** `mcp_server/` wraps `IsabelleGymAsyncClient` (plain HTTP). No Py4J, no Isabelle,
+**Chosen:** `mcp_servers/` — the chunk-centric `stepwise/` server this part describes and the
+LSP-like `lsp/` server of 2.9, over shared `common/` helpers — wraps `IsabelleGymAsyncClient`
+(plain HTTP). No Py4J, no Isabelle,
 no core edits.
 **Alternative:** embed the gym in the MCP process (one fewer hop), or fork a special agent
 server.
@@ -397,6 +468,33 @@ harness prompts vary per experiment (four variants exist), but the invariants mu
 The comparison runs validated this: the failure modes that survived all prompt variants were
 exactly the ones later fixed in tools/output text, not in prompts. *Con accepted:* longer
 schemas cost tokens on every round — mitigated by keeping per-call outputs terse (2.4).
+
+### 2.9 The LSP-like file-sync MCP: a second server for file-editing agents (2026-08 →)
+
+**Chosen:** a second MCP server, `mcp_servers/lsp/`, for harnesses whose agent edits a `.thy`
+FILE (isabelle-humanize style) rather than emitting chunks: `isabelle_open(path)` binds the
+file to a leased session (one `FileBinding` per canonical path), `isabelle_sync` pushes the
+file's current text through `PUT /document` (incremental spliff-diffed replace since Phase
+B1 — a tip edit re-processes only the changed tail), and the read-only tools are
+position-explicit: `isabelle_goal` / `isabelle_command_at_line` (snapshot-based), `hover_info`
+/ `definition` (Rendering), `isabelle_sledgehammer` (overlay, 1.14), `diagnostic_messages` /
+`last_report` (the stored per-command report), plus facts, source, checkpoints, `run_code`
+(gated, 1.10), heap build/status (1.13). `isabelle_multi_attempt` tries N candidate
+proofs concurrently in a bounded scratch pool of extra sessions (`SCRATCH_POOL_SIZE`). Env
+prefix `ISABELLE_MCP_LSP_` so both MCPs run side by side; deprecated `mcp_lsp_server` /
+`mcp_stepwise_server` shims keep old launch commands working.
+**Alternative:** grow the chunk-centric server (2.4) with file tools.
+
+**Why:** the two agent shapes want opposite contracts — chunk agents want transactional
+`verify_chunk` (failed text rolls back), file agents want the broken state KEPT so they can
+inspect and fix it (the dual, `step_chunk_report`) — and one tool surface serving both
+confused models. Splitting keeps each docstring set honest (2.8). Both share the HTTP client
+and the pool/lease design (2.2, 2.3); prover logic stays in the server (2.1).
+**Known gaps (audit, tracked in ISSUES.md):** scratch-slot release outside `finally` and an
+untimed `queue.get` can wedge the server for a whole run (MCP-1); a bogus path pins a
+leased session (MCP-2); `get_binding` reads outside its lock (MCP-3); the LSP pool acquires
+with the default `reuse_dirty=True`, unlike the stepwise pool — the proof-leak hardening of
+2.2 was never ported (MCP-4).
 
 ---
 

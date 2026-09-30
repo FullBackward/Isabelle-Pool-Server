@@ -23,9 +23,12 @@ logger = get_logger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Safety net: strip transient ML_val commands that may have leaked into the
-# source from sledgehammer / diagnostic probes.
-# These are harmless no-ops in JEdit but `isabelle build` rejects them.
+# Safety net: strip transient ML_val commands. Until 2026-09-30 the state
+# probes (subgoals / facts / sledgehammer) were `ML_val` inserts that could
+# leak into a saved proof when their discard was missed; they are overlay
+# queries now and never touch the document, so this only guards text that
+# a client assembled from older sessions. Harmless no-ops in jEdit, but
+# `isabelle build` rejects them.
 # ---------------------------------------------------------------------------
 _MLVAL_RE = re.compile(r'^ML_val\b.*\n?', flags=re.MULTILINE)
 

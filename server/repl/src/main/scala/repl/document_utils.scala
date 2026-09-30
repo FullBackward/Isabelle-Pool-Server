@@ -165,7 +165,10 @@ object Document_Utils {
    *  a trailing theory `end` never execute). Drives the post-`end` probe handling in
    *  Backend_Probes / Backend_File_Ops. */
   def node_ends_with_end(session: Headless.Session, node_name: Document.Node.Name): Boolean = {
-    val snapshot = stable_node_snapshot(session, node_name)
+    // Syntactic question (command structure only): do NOT wait for consolidation,
+    // or a still-running command (e.g. left by a timed-out sync_document) would
+    // block every state query behind it for the command's whole runtime.
+    val snapshot = stable_node_snapshot(session, node_name, wait_until_all_commands_processed = false)
     snapshot.node.commands.reverse.iterator
       .find(command => !command.is_ignored)
       .exists(_.span.name == "end")
@@ -585,10 +588,30 @@ object Document_Utils {
   // Overlay query machinery (style-4): attach a registered print function to an
   // EXISTING host command, poll for the instance's finished status marker,
   // collect instance-tagged results, remove the overlay. No text edits — the
-  // document, rollback chain, and history are untouched.
+  // document, rollback chain, and history are untouched. Used by the LSP-like
+  // sledgehammer_at (host = command at a line) AND, since 2026-09-30, by every
+  // "current state" query of Backend_Probes (host = current_state_host).
   // -----------------------------------------------------------------------
 
-  /** Result of an overlay query: (finished-in-budget, content lines, error lines). */
+  /** Host command for a "current state" overlay query: the node's LAST non-ignored
+   *  command — its result state is the current toplevel state, exactly what a
+   *  command appended at the tip would see. With `skip_end` a trailing theory `end`
+   *  is skipped, so the query observes the state the theory closed with (after `end`
+   *  there is no theory context at all). None when the node has no command. Uses a
+   *  fresh stable snapshot WITHOUT waiting for consolidation: the overlay's own
+   *  deadline loop bounds the wait for a still-running host. */
+  def current_state_host(
+      session: Headless.Session,
+      node_name: Document.Node.Name,
+      skip_end: Boolean
+  ): Option[Command] = {
+    val snapshot = stable_node_snapshot(session, node_name, wait_until_all_commands_processed = false)
+    snapshot.node.commands.reverse.iterator
+      .find(command => !command.is_ignored && !(skip_end && command.span.name == "end"))
+  }
+
+  /** Result of an overlay query: (finished-in-budget, content lines, error lines).
+   *  Each `writeln_result` on the ML side is one content line, in call order. */
   def overlay_query(
       session: Headless.Session,
       node_name: Document.Node.Name,
@@ -617,7 +640,7 @@ object Document_Utils {
       val snap = session.await_stable_snapshot().switch(node_name)
       var content = List.empty[String]
       var errors = List.empty[String]
-      for ((_, XML.Elem(Markup(Markup.RESULT, props), body)) <- snap.command_results(host).iterator.toList
+      for (case (_, XML.Elem(Markup(Markup.RESULT, props), body)) <- snap.command_results(host).iterator.toList
            if Markup.Instance.unapply(props).contains(instance)) {
         body match {
           // status markers (running/finished): no content

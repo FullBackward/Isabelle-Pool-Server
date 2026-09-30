@@ -170,11 +170,10 @@ repo_root/
 │   │   ├── repl_backend_gateway.scala   # Py4J entry point / factories
 │   │   ├── repl_backend.scala           # per-session backend logic
 │   │   ├── repl_session.scala           # Isabelle document/session edits
-│   │   ├── repl_ml_communication.scala  # Scala ↔ ML routing
 │   │   ├── server_utils.scala           # Isabelle server start/stop
 │   │   ├── session_manager.scala        # Scala-side session manager (legacy)
 │   │   └── thy_*.scala / document_utils.scala / edit_utils.scala / repl_output.scala / vector_env.scala
-│   ├── src/ml/REPL.ML              # ML proof-state extraction + sledgehammer channel
+│   ├── src/ml/REPL.ML              # ML Query_Operations (goals/facts/state/sledgehammer) run as PIDE overlays — no channels
 │   ├── src/python/                 # Python bridge code (the ONLY copy; repl/python/ was a stale duplicate, removed)
 │   │   ├── repl_backend_gateway.py # spawns Scala gateway, Py4J bridge
 │   │   ├── thy_init.py             # generates wrapper .thy files for imports

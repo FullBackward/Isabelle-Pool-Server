@@ -101,11 +101,11 @@ class Repl_Session(session_manager: Session_Manager, initial_thys: List[String] 
       )
     )
 
-  /** Sequencing barrier for transient ML probes: wait until every command in the
-   *  current node (including the just-evaluated probe) is consolidated. Call
-   *  after a probe's channel reply arrives and BEFORE discard_last_edit, so the
-   *  discard cannot cancel the probe's remaining evaluation and race the next
-   *  probe (see Document_Utils.await_all_processed). */
+  /** Sequencing barrier for INSERTED transient commands (probe_transient before a
+   *  trailing `end`): wait until every command in the current node, including the
+   *  just-evaluated insert, is consolidated BEFORE it is removed, so the removal
+   *  cannot cancel its remaining evaluation (see Document_Utils.await_all_processed).
+   *  Overlay queries do not need this — their bracket bounds and cancels itself. */
   def await_current_node_settled(): Unit =
     current_thy_info.foreach(_ =>
       Document_Utils.await_all_processed(session, current_thy_node_name))
@@ -160,12 +160,33 @@ class Repl_Session(session_manager: Session_Manager, initial_thys: List[String] 
       case None    => Json_Reports.line_query_not_found("no theory entered")
     }
 
+  /** Host command for the "current state" overlay queries of Backend_Probes: the
+   *  node's last non-ignored command (its result state IS the current toplevel
+   *  state); with `skip_end` the trailing theory `end` is skipped. None when no
+   *  theory is entered or the node has no command yet. See
+   *  Document_Utils.current_state_host. */
+  def current_state_host(skip_end: Boolean): Option[Command] =
+    current_thy_info.flatMap(_ =>
+      Document_Utils.current_state_host(session, current_thy_node_name, skip_end))
+
+  /** Run a registered Query_Operation as a temporary overlay on `host` in the
+   *  current node and collect its instance-tagged results: (finished-in-budget,
+   *  content lines, error lines). No document edit; the overlay is always removed.
+   *  See Document_Utils.overlay_query. */
+  def overlay_query(
+      host: Command,
+      print_fn: String,
+      args: List[String],
+      budget_ms: Long
+  ): (Boolean, List[String], List[String]) =
+    Document_Utils.overlay_query(session, current_thy_node_name, host, print_fn, args, budget_ms)
+
   /** True when the current document ends with theory `end` (last non-ignored command
-   *  has span `end`). A successful `end` implies NO proof is open, and probe commands
-   *  appended past it never execute (parsed without a theory context — they fail with
-   *  "missing theory context" and the ML channel never replies). Backend_Probes uses
-   *  this to short-circuit trivial post-`end` answers and reroute the rest through
-   *  with_probe_before_end. */
+   *  has span `end`). A successful `end` implies NO proof is open, and after `end`
+   *  there is no theory context: a command appended past it never executes (parsed
+   *  without a theory context — "missing theory context"). Backend_Probes uses this
+   *  to short-circuit trivial post-`end` answers, host the fact queries on the
+   *  command before `end`, and reroute probe_transient through with_probe_before_end. */
   def current_thy_ended: Boolean =
     current_thy_info.exists(_ => Document_Utils.node_ends_with_end(session, current_thy_node_name))
 
@@ -192,13 +213,13 @@ class Repl_Session(session_manager: Session_Manager, initial_thys: List[String] 
         List(Edit_Utils.edit_from_text_edit(Text.Edit.remove(offset, text)))
       )
 
-  /** Bracket for transient probes on a FINISHED theory: `body` receives an inserter
-   *  that places the probe command immediately before the trailing `end` and returns
-   *  its offset. The probe's evaluation is awaited BEFORE removal (same settle
-   *  rationale as ReplBackend.with_probe_settle), and the insert is ALWAYS removed
-   *  (try/finally, including on channel timeout), leaving the document byte-identical.
-   *  Thy_Info bookkeeping is bypassed, so discard_last_edit must NOT be called for
-   *  these probes. */
+  /** Bracket for the INSERTED transient command (probe_transient) on a FINISHED
+   *  theory: `body` receives an inserter that places the command immediately before
+   *  the trailing `end` and returns its offset. The command's evaluation is awaited
+   *  BEFORE removal (await_current_node_settled: removing a still-running command
+   *  would cancel it mid-way), and the insert is ALWAYS removed (try/finally, also
+   *  when `body` throws), leaving the document byte-identical. Thy_Info bookkeeping
+   *  is bypassed, so discard_last_edit must NOT be called for these inserts. */
   def with_probe_before_end[T](body: (String => Option[Text.Offset]) => T): T = {
     var inserted: Option[(Text.Offset, String)] = None
     try {
@@ -330,13 +351,15 @@ class Repl_Session(session_manager: Session_Manager, initial_thys: List[String] 
         }
     }
 
-  /** Silently remove the most recent text edit, if any. Used to make proof-state ML
-   *  probes (open_subgoals / facts / sledgehammer / get_proof_state) TRANSIENT: the
-   *  `ML_val ‹…›` probe is inserted and evaluated, its result is read, then this drops
-   *  it — so probing leaves no trace in the document or the rollback chain. Without this,
-   *  every command left a trailing probe edit, so user `rollback` peeled the probe first
-   *  and needed two calls to undo one line. Unlike `rollback_last_text_edit`, this never
-   *  writes to Repl_Output (safe to call outside `build_result`). */
+  /** Silently remove the most recent text edit, if any. Used to make the INSERTED
+   *  transient command of probe_transient (and a failed/timed-out chunk in
+   *  verify_chunk / step_chunk_report) leave no trace in the document or the rollback
+   *  chain: the command is inserted and evaluated, its result is read, then this drops
+   *  it. (The state queries — subgoals / facts / sledgehammer / proof state — are
+   *  overlays since 2026-09-30 and never insert anything; when they were `ML_val`
+   *  inserts, a missed discard left a trailing probe edit that user `rollback` peeled
+   *  first, needing two calls to undo one line.) Unlike `rollback_last_text_edit`,
+   *  this never writes to Repl_Output (safe to call outside `build_result`). */
   def discard_last_edit(): Unit =
     current_thy_info.foreach { thy_info =>
       thy_info.last_text_edit.foreach { last_edit =>
