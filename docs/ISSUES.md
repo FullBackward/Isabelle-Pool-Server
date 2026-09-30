@@ -17,7 +17,8 @@
 2. [Bug 6: Gateway OOM Under Concurrent Sledgehammer — RESOLVED](#bug-6-gateway-oom-under-concurrent-sledgehammer--resolved)
 3. [Bug 7: Stale `isabelle_user_data` Volume Shadows Component Registration — RESOLVED (workaround)](#bug-7-stale-isabelle_user_data-volume-shadows-component-registration-after-image-rebuild--resolved-workaround)
 4. [Bug 8: `close()` Rejects Its Own `exit` Job — Sessions Never Torn Down — RESOLVED](#bug-8-close-rejects-its-own-exit-job--sessions-never-torn-down--resolved)
-5. [Claude Work Log (dated)](#claude-work-log-dated)
+5. [Open Findings Tracker](#open-findings-tracker)
+6. [Claude Work Log (dated)](#claude-work-log-dated)
 
 ---
 
@@ -591,6 +592,38 @@ When have parallel "have x" statements, can we do this in step. And how do we re
 
 ---
 
+## Open Findings Tracker
+
+Working list for the 2026-09-21 audit findings that are still open (source and
+full write-ups: `claude-work/2026-9-21-research-code-audit/FINDINGS.md`, section 2).
+Rules: a row is updated **before** work on it starts; **fixed** needs a commit;
+**verified** needs a regression test that passes in-container; a verified
+finding is then promoted to a numbered "Bug N" section above and a dated Work
+Log row. Commit subjects use `fix(<ID>): ...` so `git log --grep=<ID>` finds them.
+Status vocabulary: `open` · `in progress` · `fixed` · `verified` · `deferred`.
+
+| ID | Sev | Title | Where | Status | Fix commit | Test | Notes folder |
+|---|---|---|---|---|---|---|---|
+| REPL-1 | High | Probe double-insert: `with_probe_settle` retries on any exception without discarding the first `ML_val` edit | `server/repl/src/main/scala/repl/repl_backend.scala:57-64` | open | | | |
+| REPL-2 | High | Unbounded settle loop: `stable_node_snapshot` spins with no deadline; a timed-out command left by `sync_document` wedges the worker | `server/repl/src/main/scala/repl/document_utils.scala:56-77` | open | | | |
+| SRV-1 | High | Cleanup coroutine calls sync `close_session` and `time.sleep` on the event loop | `server/app/services/session_manager_helpers.py:186,252` | open | | | |
+| MCP-1 | High | LSP scratch-slot leak → permanent hang: release outside `finally`, `await queue.get()` without timeout | `mcp_servers/lsp/app.py`, `mcp_servers/lsp/pool.py:254` | open | | | |
+| MCP-2 | High | Binding registered before the `isfile` check; a bogus path pins a leased session | `mcp_servers/lsp/pool.py:125,149` | open | | | |
+| MCP-3 | High | `get_binding` reads `_bindings` outside the lock; two first calls → two sessions | `mcp_servers/lsp/pool.py:136` | open | | | |
+| REPL-4 | High | Checkpoint soundness: `valid` accepts `state_id == count`; unknown id restores empty edits and reports success | `server/repl/src/main/scala/repl/repl_session.scala:45`, `thy_info.scala:92` | open | | | |
+| MCP-4 | Med | LSP pool acquires with default `reuse_dirty=True` (stepwise uses `False`); stale errors leak across attempts (reproduced 2026-09-30 during the RC2 smoke test) | `mcp_servers/lsp/pool.py` | open | | | |
+| TEST-1 | P0 | Missing regression suites: in-process MCP `list_tools()` smoke; security-inputs (`../`, `ML <...>`, quote injection) — `tests/test_input_guards.py` covers part | `tests/` | open | | | |
+| SEC-1 | Crit | `/admin` inlines the admin token into an unauthenticated page | `server/app/main.py` | deferred (owner, 2026-09-22; keep the port firewalled) | | | |
+| RC2-1 | — | Isabelle2026-RC2 image: in-container unit suite, route smoke, MCP stdio smoke not yet run on the new image | `deploy/Dockerfile` | open | | | `claude-work/2026-9-29-impl-isabelle2026-image/`, `claude-work/rc2-fontconfig/` |
+| RC2-2 | — | Retire `deploy/Dockerfile.rc0`, `build_rc0_image.sh`; make `Dockerfile.export` a heap-baking stage; rewrite `RC0-image-instructions.md` for the 2026 image | `deploy/` | open (after RC2-1; RC0 image itself is kept until the Isabelle2026 release) | | | |
+
+Closed since the audit (for reference): SEC-2, SEC-3 (Bug 12, Bug 13, 2026-09-22);
+DOC-1, DEP-1 (MCP package merge + `mcp<2` pin installed in the image, 2026-09-27/29);
+REPL-10 (stale `repl/python/` deleted, 2026-09-27). Medium/low findings (SRV-5…12,
+REPL-5…9, MCP-5…7) stay in FINDINGS.md until promoted here.
+
+---
+
 ## Summary of Changes
 
 | File | Change | Status |
@@ -661,4 +694,6 @@ disk; the entries are kept as the historical record. Summary of work completed:
 
 | 2026-09-27 | **Isabelle download mirror order + slow-mirror bail-out** | `docker compose build` sat on `dist.isabelle.cit.tum.de` at ~150 KB/s (2.5 h ETA) because a slow mirror never "fails" the wget fallback chain. Measured: Cambridge ~8–16 MB/s, Proofcraft ~0.9 MB/s, TUM refuses/trickles, Clarkson ~170 KB/s. `deploy/Dockerfile` now tries Cambridge → Proofcraft → TUM → Clarkson with `curl --speed-limit 1000000 --speed-time 30` so any mirror under 1 MB/s for 30 s is abandoned. Rebuild: tarball in ~73 s. | `deploy/Dockerfile` |
 
-*Last updated: 2026-09-27.*
+| 2026-09-30 | **RC2 image fix + findings tracker** | `deploy/Dockerfile`: `fontconfig fonts-dejavu-core` added — Isabelle 2026 `Build.build_store` calls `Isabelle_Fonts.init()` on every session start, and the slim `--no-install-recommends` rewrite had dropped the packages, so every session died with "Fontconfig head is null". Rebuilt `isabellegym-isabelle-gym:2026rc2`, cold-tested standalone (healthz, fresh-session step proofs). Docker disk moved to `D:`; 2025-2 image, hand-assembled `2026rc0`, scratch `isabelle-rc2-base` removed; `2026rc0-clean` kept until the Isabelle2026 release. Added the [Open Findings Tracker](#open-findings-tracker) section for the remaining audit P0 items. | `claude-work/rc2-fontconfig/` |
+
+*Last updated: 2026-09-30.*
