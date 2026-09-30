@@ -666,6 +666,37 @@ cancellation beyond edit removal), SRV-3 (timeout clock starts at enqueue).
 
 ---
 
+### Bug 16: Idle-Cleanup Sweep Blocked the Event Loop — RESOLVED
+
+**Severity:** High (audit SRV-1)
+**Status:** ✅ Resolved 2026-09-30.
+
+**Symptom:** `cleanup_idle_sessions` (a coroutine, every `ISABELLE_CLEANUP_INTERVAL`) called
+four blocking things directly on the event loop: `close_session` per idle/abandoned session
+(blocks up to the backend exit/join timeouts, ~60 s each), `_relieve_memory_pressure` (closes
+sessions in a loop with `time.sleep` settles), the Py4J liveness probe (up to 5 s when its
+5 s cache is stale) and `_ensure_gateway` (spawns a JVM). With a pool's worth of sessions
+expiring together the loop froze for minutes and every endpoint — `/healthz` included —
+stopped answering. `/readyz` and `GET /` (via `get_lru_info`) also ran the probe inline.
+Not affected: `/metrics` — the instrumentator's endpoint is a sync `def`, so FastAPI already
+runs it (and the pool collector) in the threadpool.
+
+**Fix:** the sweep body is now `SessionManager.cleanup_once()` (one iteration, testable;
+`cleanup_idle_sessions` loops it and logs instead of dying on an exception). Every blocking
+step runs via `asyncio.to_thread`; the manager's own `threading.Lock` already makes these
+methods thread-safe (every other caller runs in worker threads). `/` awaits `get_lru_info`
+and `/readyz` awaits `gateway_alive` through `to_thread`. No client-visible behaviour change.
+
+**Verified:** `tests/test_cleanup_offloop.py` — a ticker task measures loop gaps while three
+0.3 s closes run (max gap < 0.15 s; inline they would be ~0.3 s each), a failing close does
+not kill the sweep, memory relief and the probe run on non-main threads. Live in the RC2
+container with `ISABELLE_IDLE_TIMEOUT=5 ISABELLE_CLEANUP_INTERVAL=5`: two released sessions
+swept while `/healthz` was polled every 100 ms — 245 samples, worst latency 4 ms, pool empty
+afterwards. Unit suite 284 passed / 1 skipped. Related open item: SRV-2 (gateway recovery and
+create hold the global lock for minutes) — now off the loop but still serial under the lock.
+
+---
+
 ### [To-do]Issue 1: How Isabelle do parallel
 When have parallel "have x" statements, can we do this in step. And how do we retrive information when one line is stucked in loop. That is, we need error retrieval for a proof chunk, the server should not just return a timeout error, it should tell, when we build the MCP server, the agent what part of that proof chunk just went wrong.
 
@@ -685,8 +716,8 @@ Status vocabulary: `open` · `in progress` · `fixed` · `verified` · `deferred
 | ID | Sev | Title | Where | Status | Fix commit | Test | Notes folder |
 |---|---|---|---|---|---|---|---|
 | REPL-1 | High | Probe double-insert: `with_probe_settle` retries on any exception without discarding the first `ML_val` edit | `server/repl/src/main/scala/repl/repl_backend.scala:57-64` | fixed + verified 2026-09-30 by design change (state queries are PIDE overlays; `with_probe_settle`/channels deleted); see Bug 14 | 27ea15c02025b4d3690327cdef5210425e4d4940 | `claude-work/2026-9-30-impl-overlay-probes/smoke_overlay_probes.py`, `smoke_overlay_timeout.py` (live-server) | `claude-work/2026-9-30-impl-overlay-probes/` |
-| REPL-2 | High | Unbounded settle loop: `stable_node_snapshot` spins with no deadline; a timed-out command left by `sync_document` wedges the worker | `server/repl/src/main/scala/repl/document_utils.scala:56-77` | fixed + verified 2026-09-30 — every wait is wall-bounded (`settled_node_snapshot`), read-only queries never wait, `step`/`diagnostic` take the request timeout and roll back on expiry (owner: Option A); see Bug 15 — commit pending | (pending) | `claude-work/2026-9-30-impl-overlay-probes/smoke_step_timeout.py` (+ the two overlay smokes re-run) | `claude-work/2026-9-30-impl-overlay-probes/` (Part 2) |
-| SRV-1 | High | Cleanup coroutine calls sync `close_session` and `time.sleep` on the event loop | `server/app/services/session_manager_helpers.py:186,252` | open | | | |
+| REPL-2 | High | Unbounded settle loop: `stable_node_snapshot` spins with no deadline; a timed-out command left by `sync_document` wedges the worker | `server/repl/src/main/scala/repl/document_utils.scala:56-77` | fixed + verified 2026-09-30 — every wait is wall-bounded (`settled_node_snapshot`), read-only queries never wait, `step`/`diagnostic` take the request timeout and roll back on expiry (owner: Option A); see Bug 15 | 1d9f026f0e9d1436f6d03b61040e9b7fdf8c3dd1 | `claude-work/2026-9-30-impl-overlay-probes/smoke_step_timeout.py` (+ the two overlay smokes re-run) | `claude-work/2026-9-30-impl-overlay-probes/` (Part 2) |
+| SRV-1 | High | Cleanup coroutine calls sync `close_session` and `time.sleep` on the event loop | `server/app/services/session_manager_helpers.py:186,252` | fixed + verified 2026-09-30 — sweep refactored to `cleanup_once()` with every blocking step in `asyncio.to_thread`; `/` and `/readyz` probe off the loop; see Bug 16 — commit pending | (pending) | `tests/test_cleanup_offloop.py` (3), `claude-work/2026-9-30-impl-overlay-probes/smoke_cleanup_offloop.py` (live) | `claude-work/2026-9-30-impl-overlay-probes/` (Part 3) |
 | MCP-1 | High | LSP scratch-slot leak → permanent hang: release outside `finally`, `await queue.get()` without timeout | `mcp_servers/lsp/app.py`, `mcp_servers/lsp/pool.py:254` | open | | | |
 | MCP-2 | High | Binding registered before the `isfile` check; a bogus path pins a leased session | `mcp_servers/lsp/pool.py:125,149` | open | | | |
 | MCP-3 | High | `get_binding` reads `_bindings` outside the lock; two first calls → two sessions | `mcp_servers/lsp/pool.py:136` | open | | | |
@@ -780,5 +811,7 @@ disk; the entries are kept as the historical record. Summary of work completed:
 | 2026-09-30 | **Bug 14 / REPL-1: state probes → PIDE overlay queries** | Owner decision (Option B): instead of patching `with_probe_settle`, the five stepwise state probes were migrated from `ML_val` insert-and-discard to overlay Query_Operations hosted on the document's last command (same machinery as the LSP `sledgehammer_at`, which now shares the operation). `repl_ml_communication.scala` + `Scala_Functions` service + the ML channel senders deleted (net −300 lines); `node_ends_with_end` made non-blocking; `probe_transient` is the only insertion probe left. Verified live on the RC2 image (27/27 + bounded-wait smoke), unit suite green. DESIGN_CHOICES.md gained 1.14 and was reviewed for stale claims. | `claude-work/2026-9-30-impl-overlay-probes/` |
 
 | 2026-09-30 | **Bug 15 / REPL-2: wall-bounded waits, small-step rollback on timeout** | `stable_node_snapshot`'s unbounded consolidation loop replaced by `node_snapshot` (no evaluation wait; used by every syntactic/read-only query) + `settled_node_snapshot(budget_ms)`. `step` and `probe_transient` now take the request timeout as a JVM wall budget (Py4J protocol change; Python future timeout = budget + `ISABELLE_TIMEOUT_BACKEND_GRACE`); on expiry `step` rolls the command back (owner: Option A). `rollback`/`vector_step` bounded by `ISABELLE_REPL_SETTLE_TIMEOUT`. Verified live (runaway returns at 3.2 s, next command 0.2 s), all smokes + unit suite green. DESIGN_CHOICES.md 1.15. | `claude-work/2026-9-30-impl-overlay-probes/` (Part 2) |
+
+| 2026-09-30 | **Bug 16 / SRV-1: cleanup sweep off the event loop** | `cleanup_idle_sessions` → loop over a new `cleanup_once()`; `close_session`, `_relieve_memory_pressure`, the liveness probe and `_ensure_gateway` run in `asyncio.to_thread`; `/` and `/readyz` probe off-loop. `/metrics` was already safe (sync endpoint → threadpool). New `tests/test_cleanup_offloop.py` (loop-gap ticker); live: 245 `/healthz` probes during a sweep, worst 4 ms. DESIGN_CHOICES 1.9 gap note closed. | `claude-work/2026-9-30-impl-overlay-probes/` (Part 3) |
 
 *Last updated: 2026-09-30.*

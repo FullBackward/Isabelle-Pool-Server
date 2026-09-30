@@ -1,4 +1,5 @@
 """Health: human summary, liveness, readiness."""
+import asyncio
 from datetime import datetime
 
 from fastapi import APIRouter, Request
@@ -15,7 +16,10 @@ logger = get_logger(__name__)
 
 @router.get("/")
 async def root(session_manager: SessionManagerDep):
-    lru = session_manager.get_lru_info() if hasattr(session_manager, "get_lru_info") else {}
+    # get_lru_info runs the (cached, up to 5 s) gateway liveness probe — a Py4J
+    # round-trip — so it goes to a worker thread, never the event loop (Bug 16).
+    lru = (await asyncio.to_thread(session_manager.get_lru_info)
+           if hasattr(session_manager, "get_lru_info") else {})
     logger.debug("root health endpoint requested")
     gateway_alive = lru.get("gateway_alive", True)
     return {
@@ -51,7 +55,8 @@ async def readyz(request: Request):
     gateway is alive; 503 otherwise (so traffic isn't routed to a degraded
     instance)."""
     sm = getattr(request.app.state, "session_manager", None)
-    alive = bool(sm is not None and sm.gateway_alive())
+    # Probe off the loop: a stale cache means a Py4J round-trip of up to 5 s.
+    alive = bool(sm is not None and await asyncio.to_thread(sm.gateway_alive))
     if alive:
         return {"status": "ready", "gateway_alive": True}
     return JSONResponse(

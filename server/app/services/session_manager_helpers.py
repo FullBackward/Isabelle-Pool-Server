@@ -223,50 +223,68 @@ class SessionManagerHelpersMixin:
         return entries
 
     async def cleanup_idle_sessions(self) -> None:
-        max_lease_age = self.max_lease_age
-
         while True:
             await asyncio.sleep(self.cleanup_interval)
-            now = time.time()
-            to_close: List[uuid.UUID] = []
+            try:
+                await self.cleanup_once()
+            except Exception:  # the sweep must never die
+                logger.exception("cleanup sweep failed")
 
-            with self._lock:
-                for sid, session in list(self._lru.items()):
-                    if session.status == SessionStatus.CLOSED:
-                        continue
-                    if session.leased:
-                        if session.is_idle(max_lease_age, now=now):
-                            logger.warning(
-                                "force-closing abandoned leased session "
-                                "session_id=%s lease_id=%s idle_for=%.0fs",
-                                sid, session.lease_id, now - session.last_activity,
-                            )
-                            to_close.append(sid)
-                        continue
-                    if session.is_idle(self.idle_timeout, now=now):
+    async def cleanup_once(self) -> List[uuid.UUID]:
+        """One idle/abandoned-lease sweep + memory relief + gateway recovery.
+
+        EVERY blocking step runs in a worker thread (``asyncio.to_thread``):
+        ``close_session`` blocks up to the backend exit/join timeouts, memory relief
+        closes sessions in a loop with settle sleeps, the liveness probe is a Py4J
+        round-trip (up to 5 s when its cache is stale), and gateway recovery spawns a
+        JVM. Running any of them inline froze the whole event loop — ``/healthz``
+        included — for as long as they took (docs/ISSUES.md Bug 16, audit SRV-1).
+        Returns the ids that were closed (for tests/diagnostics).
+        """
+        now = time.time()
+        to_close: List[uuid.UUID] = []
+
+        with self._lock:
+            for sid, session in list(self._lru.items()):
+                if session.status == SessionStatus.CLOSED:
+                    continue
+                if session.leased:
+                    if session.is_idle(self.max_lease_age, now=now):
+                        logger.warning(
+                            "force-closing abandoned leased session "
+                            "session_id=%s lease_id=%s idle_for=%.0fs",
+                            sid, session.lease_id, now - session.last_activity,
+                        )
                         to_close.append(sid)
+                    continue
+                if session.is_idle(self.idle_timeout, now=now):
+                    to_close.append(sid)
 
-            for sid in to_close:
-                logger.info("closing idle session session_id=%s", sid)
-                try:
-                    self.close_session(sid, require_lease=False)
-                    metrics.sessions_evicted.labels("idle").inc()
-                except Exception:
-                    logger.exception("failed to close idle session session_id=%s", sid)
+        closed: List[uuid.UUID] = []
+        for sid in to_close:
+            logger.info("closing idle session session_id=%s", sid)
+            try:
+                await asyncio.to_thread(self.close_session, sid, require_lease=False)
+                metrics.sessions_evicted.labels("idle").inc()
+                closed.append(sid)
+            except Exception:
+                logger.exception("failed to close idle session session_id=%s", sid)
 
-            # Proactively reclaim idle sessions if the container is under memory
-            # pressure, independent of the idle-timeout sweep above.
-            if self.memory_management_enabled and not self.memory.can_admit():
-                self._relieve_memory_pressure(self._where("cleanup_idle_sessions"))
+        # Proactively reclaim idle sessions if the container is under memory
+        # pressure, independent of the idle-timeout sweep above.
+        if self.memory_management_enabled and not self.memory.can_admit():
+            await asyncio.to_thread(
+                self._relieve_memory_pressure, self._where("cleanup_once"))
 
-            # Proactively recover a dead gateway (e.g. OOM-killed) so the server
-            # doesn't sit bricked until the next create request comes in.
-            if self.gateway is not None and not self.gateway_alive():
-                logger.error("cleanup detected dead gateway; recovering")
-                try:
-                    self._ensure_gateway()
-                except Exception:
-                    logger.exception("background gateway recovery failed")
+        # Proactively recover a dead gateway (e.g. OOM-killed) so the server
+        # doesn't sit bricked until the next create request comes in.
+        if self.gateway is not None and not await asyncio.to_thread(self.gateway_alive):
+            logger.error("cleanup detected dead gateway; recovering")
+            try:
+                await asyncio.to_thread(self._ensure_gateway)
+            except Exception:
+                logger.exception("background gateway recovery failed")
+        return closed
 
     def start_cleanup_task(self) -> None:
         if self._cleanup_task is None:

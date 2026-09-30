@@ -185,9 +185,13 @@ schedules.
 (every endpoint, including `/healthz`, unresponsive). In an asyncio server there is exactly
 one rule: the loop never waits on the prover. The alternative (multi-worker uvicorn) doesn't
 fit because the SessionManager is deliberately a single-process singleton owning one gateway.
-**Known gap (audit SRV-1, tracked in ISSUES.md):** the idle/pressure cleanup coroutine still
-calls the synchronous `close_session` and `time.sleep` on the loop, and `/readyz` runs the
-(5 s-cached) gateway probe inline — the rule above is the target, not yet the whole truth.
+**Gap closed 2026-09-30 (audit SRV-1, ISSUES.md Bug 16):** the idle/pressure cleanup
+coroutine used to call the synchronous `close_session`, the settle-sleeping memory relief and
+the gateway probe/recovery inline; `/readyz` and `/` ran the (5 s-cached) probe inline too.
+All of them now go through `asyncio.to_thread` (`SessionManager.cleanup_once`), and
+`tests/test_cleanup_offloop.py` measures loop gaps during a sweep so the rule cannot regress
+silently. `/metrics` never needed it: the instrumentator's endpoint is a sync `def`, which
+FastAPI runs in the threadpool.
 
 ### 1.10 Diagnostics as transient probes with a syntactic guard
 
