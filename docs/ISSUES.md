@@ -697,6 +697,44 @@ create hold the global lock for minutes) — now off the loop but still serial u
 
 ---
 
+### Bug 17: LSP MCP Scratch-Slot Leak Hung `multi_attempt` / `run_code` for the Rest of a Run — RESOLVED
+
+**Severity:** High (audit MCP-1)
+**Status:** ✅ Resolved 2026-09-30.
+
+**Symptom:** `LspPool.acquire_scratch` counts scratch sessions per context key and, at
+`SCRATCH_POOL_SIZE`, did `await queue.get()` with no timeout. `isabelle_multi_attempt` and
+`isabelle_run_code` returned the slot on the success path and in an `except Exception` — never
+in a `finally` — so a `CancelledError` (a `BaseException`: the MCP client disconnecting or
+timing out mid-verification, routine with a 180 s attempt budget) skipped both. With the
+humanize harness's `SCRATCH_POOL_SIZE=1`, one lost slot meant every later call waited forever,
+silently, for the rest of the run.
+
+**Fix (`mcp_servers/lsp/pool.py`, `app.py`, `config.py`):**
+- `LspPool.scratch_session(key)` — an async context manager that ALWAYS gives the slot back:
+  normal exit / ordinary exception → release (warm); 404 → drop; cancellation or any other
+  `BaseException` → drop (a load may still be in flight, so the next caller would get "busy").
+  Both tools now use it; their duplicated release/drop code is gone.
+- `acquire_scratch` waits with `asyncio.wait_for` (`ISABELLE_MCP_LSP_SCRATCH_WAIT_TIMEOUT`,
+  default attempt timeout + 60 s) and raises `scratch pool exhausted …` naming the knobs.
+- `drop_scratch`: a session whose load is still running cannot be closed OR released (the
+  server answers 409 busy for both), so a background `_retire_later` task retries the close
+  every 5 s for the attempt budget + grace, instead of leaving a leased-idle session blocking
+  a server pool slot until the abandoned-lease reaper.
+
+**Verified:** `tests/test_mcp_lsp_server.py` (+3): a cancelled holder's slot is dropped and the
+next acquire gets a fresh session; 404 drops / other exceptions release; the wait is bounded.
+Live (RC2 container, server `ISABELLE_POOL_SIZE=4`, MCP tools driven in-process with
+`SCRATCH_POOL_SIZE=1`): a `multi_attempt` cancelled while its candidate was loading, then a
+second `multi_attempt` with two candidates completed in 7.2 s (`by (induct xs) auto` proved,
+`by simp` failed as expected) and `run_code` succeeded — before the fix the second call hung.
+Unit suite 287 passed / 1 skipped. First live attempt against the default 2-slot dev server
+showed the residual limit: the cancelled load keeps its server session busy until it finishes,
+so a tiny server pool can still answer 503 for a few seconds — that is server capacity, not
+the MCP leak (REPL-3: no cancellation primitive).
+
+---
+
 ### [To-do]Issue 1: How Isabelle do parallel
 When have parallel "have x" statements, can we do this in step. And how do we retrive information when one line is stucked in loop. That is, we need error retrieval for a proof chunk, the server should not just return a timeout error, it should tell, when we build the MCP server, the agent what part of that proof chunk just went wrong.
 
@@ -717,8 +755,8 @@ Status vocabulary: `open` · `in progress` · `fixed` · `verified` · `deferred
 |---|---|---|---|---|---|---|---|
 | REPL-1 | High | Probe double-insert: `with_probe_settle` retries on any exception without discarding the first `ML_val` edit | `server/repl/src/main/scala/repl/repl_backend.scala:57-64` | fixed + verified 2026-09-30 by design change (state queries are PIDE overlays; `with_probe_settle`/channels deleted); see Bug 14 | 27ea15c02025b4d3690327cdef5210425e4d4940 | `claude-work/2026-9-30-impl-overlay-probes/smoke_overlay_probes.py`, `smoke_overlay_timeout.py` (live-server) | `claude-work/2026-9-30-impl-overlay-probes/` |
 | REPL-2 | High | Unbounded settle loop: `stable_node_snapshot` spins with no deadline; a timed-out command left by `sync_document` wedges the worker | `server/repl/src/main/scala/repl/document_utils.scala:56-77` | fixed + verified 2026-09-30 — every wait is wall-bounded (`settled_node_snapshot`), read-only queries never wait, `step`/`diagnostic` take the request timeout and roll back on expiry (owner: Option A); see Bug 15 | 1d9f026f0e9d1436f6d03b61040e9b7fdf8c3dd1 | `claude-work/2026-9-30-impl-overlay-probes/smoke_step_timeout.py` (+ the two overlay smokes re-run) | `claude-work/2026-9-30-impl-overlay-probes/` (Part 2) |
-| SRV-1 | High | Cleanup coroutine calls sync `close_session` and `time.sleep` on the event loop | `server/app/services/session_manager_helpers.py:186,252` | fixed + verified 2026-09-30 — sweep refactored to `cleanup_once()` with every blocking step in `asyncio.to_thread`; `/` and `/readyz` probe off the loop; see Bug 16 — commit pending | (pending) | `tests/test_cleanup_offloop.py` (3), `claude-work/2026-9-30-impl-overlay-probes/smoke_cleanup_offloop.py` (live) | `claude-work/2026-9-30-impl-overlay-probes/` (Part 3) |
-| MCP-1 | High | LSP scratch-slot leak → permanent hang: release outside `finally`, `await queue.get()` without timeout | `mcp_servers/lsp/app.py`, `mcp_servers/lsp/pool.py:254` | open | | | |
+| SRV-1 | High | Cleanup coroutine calls sync `close_session` and `time.sleep` on the event loop | `server/app/services/session_manager_helpers.py:186,252` | fixed + verified 2026-09-30 — sweep refactored to `cleanup_once()` with every blocking step in `asyncio.to_thread`; `/` and `/readyz` probe off the loop; see Bug 16 | c4ade5100b1a9e571f6b2dc40ff3f4105ddcbec7 | `tests/test_cleanup_offloop.py` (3), `claude-work/2026-9-30-impl-overlay-probes/smoke_cleanup_offloop.py` (live) | `claude-work/2026-9-30-impl-overlay-probes/` (Part 3) |
+| MCP-1 | High | LSP scratch-slot leak → permanent hang: release outside `finally`, `await queue.get()` without timeout | `mcp_servers/lsp/app.py`, `mcp_servers/lsp/pool.py:254` | fixed + verified 2026-09-30 — `LspPool.scratch_session` bracket (always returns the slot, drops on 404/cancellation, deferred close of busy sessions) + bounded `acquire_scratch` wait; see Bug 17 — commit pending | (pending) | `tests/test_mcp_lsp_server.py` (+3), `claude-work/2026-9-30-impl-overlay-probes/smoke_mcp1_scratch.py` (live) | `claude-work/2026-9-30-impl-overlay-probes/` (Part 4) |
 | MCP-2 | High | Binding registered before the `isfile` check; a bogus path pins a leased session | `mcp_servers/lsp/pool.py:125,149` | open | | | |
 | MCP-3 | High | `get_binding` reads `_bindings` outside the lock; two first calls → two sessions | `mcp_servers/lsp/pool.py:136` | open | | | |
 | REPL-4 | High | Checkpoint soundness: `valid` accepts `state_id == count`; unknown id restores empty edits and reports success | `server/repl/src/main/scala/repl/repl_session.scala:45`, `thy_info.scala:92` | open | | | |
@@ -728,6 +766,7 @@ Status vocabulary: `open` · `in progress` · `fixed` · `verified` · `deferred
 | RC2-1 | — | Isabelle2026-RC2 image: in-container unit suite, route smoke, MCP stdio smoke not yet run on the new image | `deploy/Dockerfile` | open | | | `claude-work/2026-9-29-impl-isabelle2026-image/`, `claude-work/rc2-fontconfig/` |
 | RC2-2 | — | Retire `deploy/Dockerfile.rc0`, `build_rc0_image.sh`; make `Dockerfile.export` a heap-baking stage; rewrite `RC0-image-instructions.md` for the 2026 image | `deploy/` | open (after RC2-1; RC0 image itself is kept until the Isabelle2026 release) | | | |
 | ENV-1 | Low | `ISABELLE_REPL_*_TIMEOUT` (now overlay budgets) set on the `python -m server.app.main` command line did not reach the gateway JVM in the RC2 dev container (budget stayed at the 20 s default); Python's own `Timeouts` read the same names, so the two sides can disagree. Check how `repl_backend_gateway.py` spawns `isabelle scala` (env inheritance / Isabelle settings scrubbing) | `server/repl/src/python/repl_backend_gateway.py:120` | open (noted 2026-09-30; owner: not important now) | | | `claude-work/2026-9-30-impl-overlay-probes/NOTES.md` |
+| SYNC-1 | **Crit** | Incremental sync CORRUPTS the document: the 2nd+ `load_document` on a session (sync path: spliff diff → replace edits) lands edits at wrong offsets — `by (induct xs) auto`→`by simp` yields `imp  by s`, `by (simp)`→`by auto` yields `  byaut o` (found 2026-09-30 while verifying MCP-1: every REUSED scratch session in `multi_attempt` verifies garbage; LSP `isabelle_sync` re-syncs affected too). Fresh sessions load the same texts fine. Suspect `Edit_Utils.text_diff_edits` offset bookkeeping across multiple hunks | `server/repl/src/main/scala/repl/edit_utils.scala` (`text_diff_edits`), `repl_session.scala` (`replace_document`) | open — NEXT (repro: `claude-work/2026-9-30-impl-overlay-probes/repro_sync_diff_corruption.py`) | | | |
 
 Closed since the audit (for reference): SEC-2, SEC-3 (Bug 12, Bug 13, 2026-09-22);
 DOC-1, DEP-1 (MCP package merge + `mcp<2` pin installed in the image, 2026-09-27/29);
@@ -813,5 +852,7 @@ disk; the entries are kept as the historical record. Summary of work completed:
 | 2026-09-30 | **Bug 15 / REPL-2: wall-bounded waits, small-step rollback on timeout** | `stable_node_snapshot`'s unbounded consolidation loop replaced by `node_snapshot` (no evaluation wait; used by every syntactic/read-only query) + `settled_node_snapshot(budget_ms)`. `step` and `probe_transient` now take the request timeout as a JVM wall budget (Py4J protocol change; Python future timeout = budget + `ISABELLE_TIMEOUT_BACKEND_GRACE`); on expiry `step` rolls the command back (owner: Option A). `rollback`/`vector_step` bounded by `ISABELLE_REPL_SETTLE_TIMEOUT`. Verified live (runaway returns at 3.2 s, next command 0.2 s), all smokes + unit suite green. DESIGN_CHOICES.md 1.15. | `claude-work/2026-9-30-impl-overlay-probes/` (Part 2) |
 
 | 2026-09-30 | **Bug 16 / SRV-1: cleanup sweep off the event loop** | `cleanup_idle_sessions` → loop over a new `cleanup_once()`; `close_session`, `_relieve_memory_pressure`, the liveness probe and `_ensure_gateway` run in `asyncio.to_thread`; `/` and `/readyz` probe off-loop. `/metrics` was already safe (sync endpoint → threadpool). New `tests/test_cleanup_offloop.py` (loop-gap ticker); live: 245 `/healthz` probes during a sweep, worst 4 ms. DESIGN_CHOICES 1.9 gap note closed. | `claude-work/2026-9-30-impl-overlay-probes/` (Part 3) |
+
+| 2026-09-30 | **Bug 17 / MCP-1: LSP scratch-slot leak** | `LspPool.scratch_session` async-context bracket (release / drop-on-404 / drop-on-cancellation, always in `finally`), bounded `acquire_scratch` (`ISABELLE_MCP_LSP_SCRATCH_WAIT_TIMEOUT`), deferred close of busy dropped sessions (`_retire_later`); `multi_attempt` and `run_code` rewritten on the bracket. +3 unit tests; live cancel-then-reuse check green with `SCRATCH_POOL_SIZE=1`. Owner: findings are fixed one per commit from here on (MCP-2, MCP-3 next). | `claude-work/2026-9-30-impl-overlay-probes/` (Part 4) |
 
 *Last updated: 2026-09-30.*

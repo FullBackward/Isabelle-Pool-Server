@@ -533,11 +533,14 @@ prefix `ISABELLE_MCP_LSP_` so both MCPs run side by side; deprecated `mcp_lsp_se
 inspect and fix it (the dual, `step_chunk_report`) — and one tool surface serving both
 confused models. Splitting keeps each docstring set honest (2.8). Both share the HTTP client
 and the pool/lease design (2.2, 2.3); prover logic stays in the server (2.1).
-**Known gaps (audit, tracked in ISSUES.md):** scratch-slot release outside `finally` and an
-untimed `queue.get` can wedge the server for a whole run (MCP-1); a bogus path pins a
-leased session (MCP-2); `get_binding` reads outside its lock (MCP-3); the LSP pool acquires
-with the default `reuse_dirty=True`, unlike the stepwise pool — the proof-leak hardening of
-2.2 was never ported (MCP-4).
+**Known gaps (audit, tracked in ISSUES.md):** a bogus path pins a leased session (MCP-2);
+`get_binding` reads outside its lock (MCP-3); the LSP pool acquires with the default
+`reuse_dirty=True`, unlike the stepwise pool — the proof-leak hardening of 2.2 was never
+ported (MCP-4). **Closed 2026-09-30 (Bug 17, MCP-1):** scratch slots are now taken and
+returned through one `scratch_session` bracket (released, or dropped on 404 / cancellation,
+always in `finally`), the wait for a slot is bounded, and a dropped session that the server
+still reports busy is closed by a deferred retry — one client disconnect can no longer wedge
+`multi_attempt` for a whole run.
 
 ---
 

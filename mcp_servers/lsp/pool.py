@@ -21,6 +21,7 @@ use is a load_document reset, so candidates never pollute each other.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
@@ -76,6 +77,7 @@ class LspPool(GymClientMixin):
         self._scratch: Dict[Tuple, asyncio.Queue] = {}
         self._scratch_counts: Dict[Tuple, int] = {}
         self._scratch_lock = asyncio.Lock()
+        self._retire_tasks: set = set()  # deferred closes of busy dropped sessions
 
     # ---------------------------------------------------------- file bindings
 
@@ -236,7 +238,13 @@ class LspPool(GymClientMixin):
 
     async def acquire_scratch(self, key: Tuple) -> Tuple[str, str]:
         """Get a warm scratch session for the context (create if under the cap,
-        else wait for one to be returned)."""
+        else wait — at most Config.SCRATCH_WAIT_TIMEOUT — for one to be returned).
+
+        Prefer the `scratch_session` bracket: a slot taken here and never
+        returned (a cancelled caller, an exception path without `finally`)
+        used to leave the NEXT caller waiting forever once the cap was reached
+        (docs/ISSUES.md Bug 17, audit MCP-1). The bounded wait turns that into a
+        clear error naming the cap and the wait."""
         async with self._scratch_lock:
             queue = self._scratch.setdefault(key, asyncio.Queue())
         try:
@@ -251,7 +259,15 @@ class LspPool(GymClientMixin):
             else:
                 create = False
         if not create:
-            return await queue.get()
+            try:
+                return await asyncio.wait_for(queue.get(), Config.SCRATCH_WAIT_TIMEOUT)
+            except asyncio.TimeoutError:
+                raise RuntimeError(
+                    f"scratch pool exhausted: all {Config.SCRATCH_POOL_SIZE} scratch "
+                    f"session(s) for this context stayed busy for "
+                    f"{Config.SCRATCH_WAIT_TIMEOUT:.0f}s (ISABELLE_MCP_LSP_SCRATCH_POOL_SIZE / "
+                    f"ISABELLE_MCP_LSP_SCRATCH_WAIT_TIMEOUT)"
+                ) from None
         task_group, heap_session, imports, field = key
         try:
             c = await self.client()
@@ -268,17 +284,68 @@ class LspPool(GymClientMixin):
                 self._scratch_counts[key] -= 1
             raise
 
+    @contextlib.asynccontextmanager
+    async def scratch_session(self, key: Tuple):
+        """Acquire a scratch session and ALWAYS give the slot back, whatever
+        happens in the body:
+          - normal exit, or an ordinary exception → release (warm, reusable);
+          - a 404 from the server (session evicted) → drop (count decremented,
+            closed best-effort) so the next acquire creates a fresh one;
+          - cancellation / any other BaseException → drop as well: a load may
+            still be in flight on that session, so handing it to the next caller
+            would answer them with "busy"; a fresh session is the safe choice.
+        Before this bracket the tools released only on the success path and in
+        an `except Exception`, which a CancelledError (BaseException) skips — one
+        client disconnect mid-attempt lost the slot for the rest of the run
+        (Bug 17 / audit MCP-1)."""
+        session_id, lease_id = await self.acquire_scratch(key)
+        outcome = "release"
+        try:
+            yield session_id, lease_id
+        except Exception as e:
+            outcome = "drop" if is_not_found(e) else "release"
+            raise
+        except BaseException:
+            outcome = "drop"
+            raise
+        finally:
+            if outcome == "drop":
+                await self.drop_scratch(key, session_id, lease_id)
+            else:
+                await self.release_scratch(key, session_id, lease_id)
+
     async def release_scratch(self, key: Tuple, session_id: str, lease_id: str) -> None:
         queue = self._scratch.get(key)
         if queue is not None:
             queue.put_nowait((session_id, lease_id))
 
     async def drop_scratch(self, key: Tuple, session_id: str, lease_id: str) -> None:
-        """Discard a broken scratch session (e.g. 404) and close it best-effort."""
+        """Discard a scratch session (404, or an aborted use) and close it
+        best-effort. A session whose load is still running server-side cannot be
+        closed OR released (busy → 409); then a background task retries the
+        close for a while (`_retire_later`), so the session does not sit leased
+        and idle — blocking a pool slot — until the abandoned-lease reaper."""
         async with self._scratch_lock:
             self._scratch_counts[key] = max(0, self._scratch_counts.get(key, 1) - 1)
         try:
             c = await self.client()
             await c.close_session(session_id, lease_id=lease_id)
         except Exception:
-            pass
+            task = asyncio.create_task(self._retire_later(session_id, lease_id))
+            self._retire_tasks.add(task)
+            task.add_done_callback(self._retire_tasks.discard)
+
+    async def _retire_later(self, session_id: str, lease_id: str,
+                            every_s: float = 5.0) -> None:
+        """Retry closing a busy scratch session until it succeeds, it vanishes,
+        or the attempt budget (+ grace) is exhausted."""
+        deadline = asyncio.get_running_loop().time() + Config.ATTEMPT_TIMEOUT + 60.0
+        while asyncio.get_running_loop().time() < deadline:
+            await asyncio.sleep(every_s)
+            try:
+                c = await self.client()
+                await c.close_session(session_id, lease_id=lease_id)
+                return
+            except Exception as e:  # noqa: BLE001
+                if is_not_found(e):
+                    return  # already gone (evicted / closed elsewhere)

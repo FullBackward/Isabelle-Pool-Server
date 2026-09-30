@@ -320,3 +320,76 @@ def test_rebind_on_404_reparses_current_imports(tmp_path):
 
     asyncio.run(run())
     assert pool._client.acquired[-1]["theories"] == ["Complex_Main"]
+
+
+# ---------------------------------------------------- Bug 17 / MCP-1: scratch slots
+
+def test_scratch_slot_returned_when_holder_is_cancelled(monkeypatch):
+    """A cancelled holder used to leak its slot: with the pool at its cap the next
+    acquire then waited forever. The bracket drops the slot on cancellation and
+    the next acquire gets a fresh session immediately."""
+    from mcp_servers.lsp.config import Config
+    monkeypatch.setattr(Config, "SCRATCH_POOL_SIZE", 1)
+    monkeypatch.setattr(Config, "SCRATCH_WAIT_TIMEOUT", 5.0)
+    pool = _pool_with_fake()
+    key = pool.scratch_key("default", None, ["Main"], None)
+
+    async def run():
+        entered = asyncio.Event()
+
+        async def holder():
+            async with pool.scratch_session(key):
+                entered.set()
+                await asyncio.sleep(3600)  # "verification in flight"
+
+        task = asyncio.create_task(holder())
+        await entered.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        # slot is free again: this must not hang (bounded anyway) and must succeed
+        return await asyncio.wait_for(pool.acquire_scratch(key), 2.0)
+
+    sid, _ = asyncio.run(run())
+    assert pool._client.closed == ["s1"]  # the cancelled holder's session was dropped
+    assert sid == "s2"                     # and a fresh one created in its place
+
+
+def test_scratch_bracket_drops_on_404_and_releases_otherwise():
+    pool = _pool_with_fake()
+    key = pool.scratch_key("default", None, ["Main"], None)
+
+    async def run():
+        # ordinary exception → released (warm) and reused next time
+        with pytest.raises(ValueError):
+            async with pool.scratch_session(key):
+                raise ValueError("candidate failed to parse")
+        reused, _ = await pool.acquire_scratch(key)
+        await pool.release_scratch(key, reused, "L1")
+        # 404 → dropped and closed; next acquire creates a fresh session
+        with pytest.raises(httpx.HTTPStatusError):
+            async with pool.scratch_session(key):
+                raise httpx.HTTPStatusError(
+                    "404", request=httpx.Request("PUT", "http://test"),
+                    response=httpx.Response(404))
+        fresh, _ = await pool.acquire_scratch(key)
+        return reused, fresh
+
+    reused, fresh = asyncio.run(run())
+    assert reused == "s1" and fresh == "s2"
+    assert pool._client.closed == ["s1"]
+
+
+def test_scratch_wait_is_bounded(monkeypatch):
+    from mcp_servers.lsp.config import Config
+    monkeypatch.setattr(Config, "SCRATCH_POOL_SIZE", 1)
+    monkeypatch.setattr(Config, "SCRATCH_WAIT_TIMEOUT", 0.2)
+    pool = _pool_with_fake()
+    key = pool.scratch_key("default", None, ["Main"], None)
+
+    async def run():
+        await pool.acquire_scratch(key)  # slot taken and never returned
+        with pytest.raises(RuntimeError, match="scratch pool exhausted"):
+            await pool.acquire_scratch(key)
+
+    asyncio.run(run())

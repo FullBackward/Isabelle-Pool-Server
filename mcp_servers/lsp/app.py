@@ -331,12 +331,13 @@ async def isabelle_multi_attempt(
 
     async def try_one(candidate: str) -> Dict[str, Any]:
         async with sem:
-            sid = lease = None
             try:
-                sid, lease = await pool.acquire_scratch(key)
-                rep_result = await c.load_document(
-                    sid, prefix + candidate, report=True,
-                    timeout=budget, lease_id=lease)
+                # The bracket ALWAYS returns the scratch slot (also on cancellation)
+                # — see LspPool.scratch_session (Bug 17 / audit MCP-1).
+                async with pool.scratch_session(key) as (sid, lease):
+                    rep_result = await c.load_document(
+                        sid, prefix + candidate, report=True,
+                        timeout=budget, lease_id=lease)
                 rep = rep_result.get("report") or {}
                 bad = []
                 for cmd in rep.get("commands", []) or []:
@@ -349,7 +350,6 @@ async def isabelle_multi_attempt(
                             "status": cmd.get("status"),
                             "messages": msgs,
                         })
-                await pool.release_scratch(key, sid, lease)
                 return {
                     "candidate": candidate,
                     "success": rep.get("success"),
@@ -360,12 +360,6 @@ async def isabelle_multi_attempt(
                     "failed": bad,
                 }
             except Exception as e:  # noqa: BLE001
-                if sid is not None:
-                    if pool and getattr(e, "response", None) is not None and \
-                            getattr(e.response, "status_code", None) == 404:
-                        await pool.drop_scratch(key, sid, lease)
-                    else:
-                        await pool.release_scratch(key, sid, lease)
                 return {"candidate": candidate, "error": f"{type(e).__name__}: {e}"}
 
     results = await asyncio.gather(*(try_one(cand) for cand in candidates))
@@ -387,17 +381,16 @@ async def isabelle_run_code(
     key = pool.scratch_key(
         task_group, heap_session, imports or await header_imports(c, chunk) or ["Main"], None)
     budget = timeout or Config.ATTEMPT_TIMEOUT
-    sid = lease = None
     try:
-        sid, lease = await pool.acquire_scratch(key)
-        if chunk.lstrip().startswith("theory"):
-            result = await c.load_document(
-                sid, chunk, report=True, timeout=budget, lease_id=lease)
-        else:
-            result = await c.load_document(
-                sid, chunk, thy_name="Scratch", imports=imports or ["Main"],
-                report=True, timeout=budget, lease_id=lease)
-        await pool.release_scratch(key, sid, lease)
+        # The bracket ALWAYS returns the scratch slot (also on cancellation).
+        async with pool.scratch_session(key) as (sid, lease):
+            if chunk.lstrip().startswith("theory"):
+                result = await c.load_document(
+                    sid, chunk, report=True, timeout=budget, lease_id=lease)
+            else:
+                result = await c.load_document(
+                    sid, chunk, thy_name="Scratch", imports=imports or ["Main"],
+                    report=True, timeout=budget, lease_id=lease)
         rep = result.get("report") or {}
         bad = [
             {"line": cmd.get("line"), "kind": cmd.get("kind"), "status": cmd.get("status"),
@@ -415,12 +408,6 @@ async def isabelle_run_code(
             "failed": bad,
         })
     except Exception as e:  # noqa: BLE001
-        if sid is not None:
-            if getattr(e, "response", None) is not None and \
-                    getattr(e.response, "status_code", None) == 404:
-                await pool.drop_scratch(key, sid, lease)
-            else:
-                await pool.release_scratch(key, sid, lease)
         return _j({"success": False, "error": f"{type(e).__name__}: {e}"})
 
 

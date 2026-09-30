@@ -23,6 +23,10 @@ class Config:
     # Warm scratch sessions kept per context (task_group, heap, imports, field);
     # reused across calls — each use is a load_document reset.
     SCRATCH_POOL_SIZE: int = env_int(_P, "SCRATCH_POOL_SIZE", 4)
+    # Max seconds a caller waits for a scratch slot once the pool is at its cap
+    # (a legitimate wait is one other candidate's verification); expiry raises a
+    # clear error instead of hanging forever (Bug 17 / audit MCP-1).
+    SCRATCH_WAIT_TIMEOUT: float = env_float(_P, "SCRATCH_WAIT_TIMEOUT", ATTEMPT_TIMEOUT + 60.0)
 
     # When true, isabelle_close destroys the session (immediate teardown,
     # freeing memory) instead of the default warm release back to the pool.
