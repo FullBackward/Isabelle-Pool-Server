@@ -772,6 +772,31 @@ keeps working. Bug 14/15 smokes re-run green on the new jar.
 
 ---
 
+### Bug 19: A Bogus File Path Pinned a Leased Session in the LSP MCP — RESOLVED
+
+**Severity:** High (audit MCP-2)
+**Status:** ✅ Resolved 2026-09-30.
+
+**Symptom:** every file-scoped LSP tool runs `get_binding` then `sync`. `_create_binding`
+acquired a leased server session and registered the binding for ANY path; only `sync`, one
+step later, checked `os.path.isfile` and raised. A typo or a not-yet-written file therefore
+cost one leased session, parked under the bogus path until `isabelle_close` or the
+abandoned-lease reaper — a few typos exhausted a small pool. The old test
+`test_binding_missing_file_falls_back_to_no_theories` enshrined the order.
+
+**Fix (`mcp_servers/lsp/pool.py`):** `_create_binding` checks the path first and raises the
+same `FileNotFoundError` before any acquire; nothing is registered. The rebind-on-404 paths go
+through the same function, so a file deleted mid-session now yields a clean error instead of a
+fresh orphan. Test rewritten as `test_binding_missing_file_acquires_nothing` (no acquire, no
+binding; the file appearing later binds normally).
+
+**Verified:** LSP module 18/18, suite 287 passed / 1 skipped; live against the dev server:
+`isabelle_open` / `isabelle_goal` / `isabelle_sync` on a nonexistent path all raise, the
+server session list and leased count are unchanged, no binding exists, and a real file still
+opens with `success=true`.
+
+---
+
 ### [To-do]Issue 1: How Isabelle do parallel
 When have parallel "have x" statements, can we do this in step. And how do we retrive information when one line is stucked in loop. That is, we need error retrieval for a proof chunk, the server should not just return a timeout error, it should tell, when we build the MCP server, the agent what part of that proof chunk just went wrong.
 
@@ -794,7 +819,7 @@ Status vocabulary: `open` · `in progress` · `fixed` · `verified` · `deferred
 | REPL-2 | High | Unbounded settle loop: `stable_node_snapshot` spins with no deadline; a timed-out command left by `sync_document` wedges the worker | `server/repl/src/main/scala/repl/document_utils.scala:56-77` | fixed + verified 2026-09-30 — every wait is wall-bounded (`settled_node_snapshot`), read-only queries never wait, `step`/`diagnostic` take the request timeout and roll back on expiry (owner: Option A); see Bug 15 | 1d9f026f0e9d1436f6d03b61040e9b7fdf8c3dd1 | `claude-work/2026-9-30-impl-overlay-probes/smoke_step_timeout.py` (+ the two overlay smokes re-run) | `claude-work/2026-9-30-impl-overlay-probes/` (Part 2) |
 | SRV-1 | High | Cleanup coroutine calls sync `close_session` and `time.sleep` on the event loop | `server/app/services/session_manager_helpers.py:186,252` | fixed + verified 2026-09-30 — sweep refactored to `cleanup_once()` with every blocking step in `asyncio.to_thread`; `/` and `/readyz` probe off the loop; see Bug 16 | c4ade5100b1a9e571f6b2dc40ff3f4105ddcbec7 | `tests/test_cleanup_offloop.py` (3), `claude-work/2026-9-30-impl-overlay-probes/smoke_cleanup_offloop.py` (live) | `claude-work/2026-9-30-impl-overlay-probes/` (Part 3) |
 | MCP-1 | High | LSP scratch-slot leak → permanent hang: release outside `finally`, `await queue.get()` without timeout | `mcp_servers/lsp/app.py`, `mcp_servers/lsp/pool.py:254` | fixed + verified 2026-09-30 — `LspPool.scratch_session` bracket (always returns the slot, drops on 404/cancellation, deferred close of busy sessions) + bounded `acquire_scratch` wait; see Bug 17 | c3b1326fb4751b68aa1d74fa12737352bb0e1006 | `tests/test_mcp_lsp_server.py` (+3), `claude-work/2026-9-30-impl-overlay-probes/smoke_mcp1_scratch.py` (live) | `claude-work/2026-9-30-impl-overlay-probes/` (Part 4) |
-| MCP-2 | High | Binding registered before the `isfile` check; a bogus path pins a leased session | `mcp_servers/lsp/pool.py:125,149` | open | | | |
+| MCP-2 | High | Binding registered before the `isfile` check; a bogus path pins a leased session | `mcp_servers/lsp/pool.py:125,149` | fixed + verified 2026-09-30 — `_create_binding` checks `isfile` before acquiring; see Bug 19 — commit pending | (pending) | `tests/test_mcp_lsp_server.py::test_binding_missing_file_acquires_nothing`, `claude-work/2026-9-30-impl-overlay-probes/smoke_mcp2_missing_file.py` (live) | `claude-work/2026-9-30-impl-overlay-probes/` (Part 6) |
 | MCP-3 | High | `get_binding` reads `_bindings` outside the lock; two first calls → two sessions | `mcp_servers/lsp/pool.py:136` | open | | | |
 | REPL-4 | High | Checkpoint soundness: `valid` accepts `state_id == count`; unknown id restores empty edits and reports success | `server/repl/src/main/scala/repl/repl_session.scala:45`, `thy_info.scala:92` | open | | | |
 | MCP-4 | Med | LSP pool acquires with default `reuse_dirty=True` (stepwise uses `False`); stale errors leak across attempts (reproduced 2026-09-30 during the RC2 smoke test) | `mcp_servers/lsp/pool.py` | open | | | |
@@ -803,7 +828,7 @@ Status vocabulary: `open` · `in progress` · `fixed` · `verified` · `deferred
 | RC2-1 | — | Isabelle2026-RC2 image: in-container unit suite, route smoke, MCP stdio smoke not yet run on the new image | `deploy/Dockerfile` | open | | | `claude-work/2026-9-29-impl-isabelle2026-image/`, `claude-work/rc2-fontconfig/` |
 | RC2-2 | — | Retire `deploy/Dockerfile.rc0`, `build_rc0_image.sh`; make `Dockerfile.export` a heap-baking stage; rewrite `RC0-image-instructions.md` for the 2026 image | `deploy/` | open (after RC2-1; RC0 image itself is kept until the Isabelle2026 release) | | | |
 | ENV-1 | Low | `ISABELLE_REPL_*_TIMEOUT` (now overlay budgets) set on the `python -m server.app.main` command line did not reach the gateway JVM in the RC2 dev container (budget stayed at the 20 s default); Python's own `Timeouts` read the same names, so the two sides can disagree. Check how `repl_backend_gateway.py` spawns `isabelle scala` (env inheritance / Isabelle settings scrubbing) | `server/repl/src/python/repl_backend_gateway.py:120` | open (noted 2026-09-30; owner: not important now) | | | `claude-work/2026-9-30-impl-overlay-probes/NOTES.md` |
-| SYNC-1 | **Crit** | Incremental sync CORRUPTS the document: the 2nd+ `load_document` on a session (sync path: spliff diff → replace edits) lands edits at wrong offsets — `by (induct xs) auto`→`by simp` yields `imp  by s`, `by (simp)`→`by auto` yields `  byaut o` (found 2026-09-30 while verifying MCP-1: every REUSED scratch session in `multi_attempt` verifies garbage; LSP `isabelle_sync` re-syncs affected too). Fresh sessions load the same texts fine. Suspect `Edit_Utils.text_diff_edits` offset bookkeeping across multiple hunks | `server/repl/src/main/scala/repl/edit_utils.scala` (`text_diff_edits`), `repl_session.scala` (`replace_document`) | fixed + verified 2026-09-30 — `Edit_Utils.diff_edits` maps spliff ops to sequential PIDE edits correctly (inserts inside a deleted range collapse to its start); shared by `text_diff_edits` and `Thy_Status.difference_edits`; see Bug 18 — commit pending | (pending) | Scala round-trip property check (10,003 cases), `repro_sync_diff_corruption.py`, `smoke_checkpoint_restore.py` (live) | `claude-work/2026-9-30-impl-overlay-probes/` (Part 5) |
+| SYNC-1 | **Crit** | Incremental sync CORRUPTS the document: the 2nd+ `load_document` on a session (sync path: spliff diff → replace edits) lands edits at wrong offsets — `by (induct xs) auto`→`by simp` yields `imp  by s`, `by (simp)`→`by auto` yields `  byaut o` (found 2026-09-30 while verifying MCP-1: every REUSED scratch session in `multi_attempt` verifies garbage; LSP `isabelle_sync` re-syncs affected too). Fresh sessions load the same texts fine. Suspect `Edit_Utils.text_diff_edits` offset bookkeeping across multiple hunks | `server/repl/src/main/scala/repl/edit_utils.scala` (`text_diff_edits`), `repl_session.scala` (`replace_document`) | fixed + verified 2026-09-30 — `Edit_Utils.diff_edits` maps spliff ops to sequential PIDE edits correctly (inserts inside a deleted range collapse to its start); shared by `text_diff_edits` and `Thy_Status.difference_edits`; see Bug 18 | 76bb9db00fa48e11bcd02df318729596647f529f | Scala round-trip property check (10,003 cases), `repro_sync_diff_corruption.py`, `smoke_checkpoint_restore.py` (live) | `claude-work/2026-9-30-impl-overlay-probes/` (Part 5) |
 
 Closed since the audit (for reference): SEC-2, SEC-3 (Bug 12, Bug 13, 2026-09-22);
 DOC-1, DEP-1 (MCP package merge + `mcp<2` pin installed in the image, 2026-09-27/29);
@@ -893,5 +918,7 @@ disk; the entries are kept as the historical record. Summary of work completed:
 | 2026-09-30 | **Bug 17 / MCP-1: LSP scratch-slot leak** | `LspPool.scratch_session` async-context bracket (release / drop-on-404 / drop-on-cancellation, always in `finally`), bounded `acquire_scratch` (`ISABELLE_MCP_LSP_SCRATCH_WAIT_TIMEOUT`), deferred close of busy dropped sessions (`_retire_later`); `multi_attempt` and `run_code` rewritten on the bracket. +3 unit tests; live cancel-then-reuse check green with `SCRATCH_POOL_SIZE=1`. Owner: findings are fixed one per commit from here on (MCP-2, MCP-3 next). | `claude-work/2026-9-30-impl-overlay-probes/` (Part 4) |
 
 | 2026-09-30 | **Bug 18 / SYNC-1: diff→edit offset corruption (sync + checkpoint restore)** | Found while verifying Bug 17 (reused scratch sessions verified garbage). spliff ops are a simultaneous base-coordinate script (inserts may sit inside a preceding deletion = "at its start"); the two cumulative-shift converters placed them one deletion-width early. New shared `Edit_Utils.diff_edits` (correct evolving-text mapping) backs `text_diff_edits` and `Thy_Status.difference_edits`. 10,003-case Scala round-trip property check + live sync repro + checkpoint back-and-forth all green. | `claude-work/2026-9-30-impl-overlay-probes/` (Part 5) |
+
+| 2026-09-30 | **Bug 19 / MCP-2: bogus path no longer pins a session** | `_create_binding` validates the path before acquiring; test rewritten to the new contract; live check: three tools on a missing path raise, zero sessions leased, real file opens. | `claude-work/2026-9-30-impl-overlay-probes/` (Part 6) |
 
 *Last updated: 2026-09-30.*

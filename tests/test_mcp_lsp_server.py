@@ -287,18 +287,22 @@ def test_binding_main_only_file_passes_main(tmp_path):
     assert pool._client.acquired[0]["theories"] == ["Main"]
 
 
-def test_binding_missing_file_falls_back_to_no_theories(tmp_path):
-    """A file that does not exist yet must not break binding creation; it
-    falls back to the empty-deps acquire (sync reports the missing file)."""
+def test_binding_missing_file_acquires_nothing(tmp_path):
+    """Bug 19 / MCP-2: a path that does not exist must fail BEFORE any session
+    is acquired or any binding registered — a typo used to pin a leased session
+    under the bogus path until close / the lease reaper."""
     pool = _pool_with_fake()
-
-    async def run():
-        binding = await pool.get_binding(str(tmp_path / "Nope.thy"))
-        await pool.sync(binding)
+    missing = str(tmp_path / "Nope.thy")
 
     with pytest.raises(FileNotFoundError):
-        asyncio.run(run())
-    assert pool._client.acquired[0]["theories"] is None
+        asyncio.run(pool.get_binding(missing))
+    assert pool._client.acquired == [] and pool._client.created == []
+    assert canonical_path(missing) not in pool._bindings
+
+    # the file appearing later binds normally
+    (tmp_path / "Nope.thy").write_text("theory Nope imports Main begin\nend\n")
+    binding = asyncio.run(pool.get_binding(missing))
+    assert binding.session_id == "s1" and pool._client.acquired[0]["theories"] == ["Main"]
 
 
 def test_rebind_on_404_reparses_current_imports(tmp_path):

@@ -85,6 +85,13 @@ class LspPool(GymClientMixin):
         self, canon: str, task_group: Optional[str], heap_session: Optional[str],
         label: Optional[str],
     ) -> FileBinding:
+        # Check the path BEFORE acquiring anything: a binding used to be created
+        # (and a server session leased) for any path, and only the later sync()
+        # noticed the file was missing — so every typo or not-yet-written file
+        # pinned a leased session under a bogus path until close / the lease
+        # reaper (docs/ISSUES.md Bug 19, audit MCP-2).
+        if not os.path.isfile(canon):
+            raise FileNotFoundError(f"file not found: {canon}")
         c = await self.client()
         group = task_group or Config.DEFAULT_TASK_GROUP
         # The session must be acquired WITH the file's own imports: gym REPL
@@ -94,8 +101,7 @@ class LspPool(GymClientMixin):
         # Without this, every LSP tool call on a non-Main file ran against a
         # session that could not resolve the file's imports ("Undefined type
         # name" after a ~130 s doomed parent-resolution attempt).
-        # The file may not exist yet (sync() reports FileNotFoundError later);
-        # an unreadable file falls back to the empty-deps key, as before.
+        # An unreadable (but existing) file falls back to the empty-deps key.
         imports: Optional[List[str]] = None
         try:
             with open(canon, encoding="utf-8") as f:
