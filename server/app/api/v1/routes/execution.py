@@ -6,6 +6,7 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException
 
 from server.app.core.config import Logging
+from server.app.core.input_guards import validate_import_name
 from server.app.core.logging import get_logger, logging_context
 from server.app.services.theory_parsing import parse_theory_header, suggested_field
 
@@ -146,6 +147,14 @@ async def enter_theory(
     session: LeasedSession,
     request: Optional[EnterTheoryRequest] = None,
 ):
+    # The name is spliced into a generated `theory <name> imports … begin` header
+    # (session.py::_build_theory_header), so it gets the import-name character
+    # policy: a quote / newline / `;` here injected further Isar commands past
+    # the code-execution guard (found by tests/test_security_inputs.py, TEST-1).
+    try:
+        validate_import_name(theory_name)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
     imports = request.imports if request else None
     logger.info("entering theory theory_name=%s imports=%s", theory_name, imports)
     await asyncio.to_thread(lambda: session.enter_thy(theory_name, imports=imports))

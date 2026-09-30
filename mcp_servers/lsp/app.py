@@ -34,6 +34,17 @@ _SYNC_NOTE = (
 )
 
 
+def synced_tool(**kw):
+    """`@mcp.tool()` for file-scoped tools: appends _SYNC_NOTE to the REAL
+    docstring. (A triple-quoted string + _SYNC_NOTE EXPRESSION is not a docstring — the
+    function's __doc__ was None and the tool shipped with an EMPTY description,
+    i.e. no instructions for the agent — caught by tests/test_mcp_tools_smoke.py.)"""
+    def deco(fn):
+        fn.__doc__ = (fn.__doc__ or "").rstrip() + " " + _SYNC_NOTE
+        return mcp.tool(**kw)(fn)
+    return deco
+
+
 async def _bound_synced(file_path: str):
     """get_binding + sync — the preamble of every file-scoped tool."""
     binding = await pool.get_binding(file_path)
@@ -102,13 +113,13 @@ async def isabelle_sync(file_path: str) -> str:
 
 # ------------------------------------------------------------- read-only tools
 
-@mcp.tool()
+@synced_tool()
 async def isabelle_diagnostic_messages(file_path: str, severity: Optional[str] = None) -> str:
     """Per-command diagnostics of the file as the prover sees it: for every
     command with an error/warning message — its line, column range, kind,
     status (ok/failed/running/unprocessed), severity, and text.
 
-    severity: 'error' | 'warning' | None (both). """ + _SYNC_NOTE
+    severity: 'error' | 'warning' | None (both). """
     binding, _ = await _bound_synced(file_path)
     rep = binding.last_report or {}
     out = []
@@ -142,43 +153,43 @@ async def isabelle_diagnostic_messages(file_path: str, severity: Optional[str] =
     return _j(result)
 
 
-@mcp.tool()
+@synced_tool()
 async def isabelle_goal(file_path: str, line: int) -> str:
     """Goal state before/after the command containing `line`:
     {found, command, goals_before, goals_after}. The right call before writing
-    the next proof step. """ + _SYNC_NOTE
+    the next proof step. """
     binding, _ = await _bound_synced(file_path)
     return _j(await pool.call(
         binding, lambda c, sid: c.goals_at_line(sid, line, lease_id=binding.lease_id)))
 
 
-@mcp.tool()
+@synced_tool()
 async def isabelle_command_at_line(file_path: str, line: int) -> str:
     """The command containing `line`: {found, kind, source, range} — jEdit cursor
-    semantics (comment/blank lines map to the preceding command). """ + _SYNC_NOTE
+    semantics (comment/blank lines map to the preceding command). """
     binding, _ = await _bound_synced(file_path)
     return _j(await pool.call(
         binding, lambda c, sid: c.command_at_line(sid, line, lease_id=binding.lease_id)))
 
 
-@mcp.tool()
+@synced_tool()
 async def isabelle_proof_state(file_path: str) -> str:
     """Tip proof state of the synced file: subgoals, proof_finished, pending_qed.
-    """ + _SYNC_NOTE
+    """
     binding, _ = await _bound_synced(file_path)
     return _j(await pool.call(
         binding, lambda c, sid: c.get_proof_state(sid, lease_id=binding.lease_id)))
 
 
-@mcp.tool()
+@synced_tool()
 async def isabelle_source(file_path: str) -> str:
-    """The theory source as the prover sees it (post-sync). """ + _SYNC_NOTE
+    """The theory source as the prover sees it (post-sync). """
     binding, _ = await _bound_synced(file_path)
     return _j(await pool.call(
         binding, lambda c, sid: c.get_source(sid, lease_id=binding.lease_id)))
 
 
-@mcp.tool()
+@synced_tool()
 async def isabelle_query(file_path: str, command: str) -> str:
     """Run ONE read-only Isabelle query command against the file's synced state
     and return its output. Allowed command families (enforced server-side):
@@ -186,53 +197,53 @@ async def isabelle_query(file_path: str, command: str) -> str:
     find_*, and any print_* inspector (print_theorems, print_facts,
     print_statement, print_simpset, ...). Code-executing / IO commands (ML,
     setup, *_file, ...) are rejected. Transient: the proof script is untouched.
-    """ + _SYNC_NOTE
+    """
     binding, _ = await _bound_synced(file_path)
     return _j(await pool.call(
         binding, lambda c, sid: c.diagnostic(sid, command, lease_id=binding.lease_id)))
 
 
-@mcp.tool()
+@synced_tool()
 async def isabelle_local_facts(file_path: str) -> str:
     """Facts visible in the current proof context at the file tip
-    (empty outside a proof). """ + _SYNC_NOTE
+    (empty outside a proof). """
     binding, _ = await _bound_synced(file_path)
     return _j(await pool.call(
         binding, lambda c, sid: c.get_local_facts(sid, lease_id=binding.lease_id)))
 
 
-@mcp.tool()
+@synced_tool()
 async def isabelle_global_facts(file_path: str, limit: int = 100) -> str:
     """Theory-level facts visible at the file tip, sorted by name, capped at
-    `limit`. """ + _SYNC_NOTE
+    `limit`. """
     binding, _ = await _bound_synced(file_path)
     return _j(await pool.call(
         binding, lambda c, sid: c.get_global_facts(sid, limit=limit, lease_id=binding.lease_id)))
 
 
-@mcp.tool()
+@synced_tool()
 async def isabelle_hover_info(file_path: str, line: int, column: int) -> str:
     """Hover info for the symbol at (line, column): entity kind + type/statement,
     e.g. `constant "List.list.hd" :: nat list ⇒ nat`, `fact "My.thy.lemma"`,
-    `command "lemma"`. {found, range, contents}. """ + _SYNC_NOTE
+    `command "lemma"`. {found, range, contents}. """
     binding, _ = await _bound_synced(file_path)
     return _j(await pool.call(
         binding, lambda c, sid: c.hover_at(sid, line, column, lease_id=binding.lease_id)))
 
 
-@mcp.tool()
+@synced_tool()
 async def isabelle_definition(file_path: str, line: int, column: int) -> str:
     """Go-to-definition for the symbol at (line, column). Targets are file
     positions (kind=file) for heap/distribution entities — the file may live in
     the container (e.g. /opt/isabelle/src/HOL/...) or the project dir — or
     in-node line ranges (kind=node) for entities defined in this file.
-    """ + _SYNC_NOTE
+    """
     binding, _ = await _bound_synced(file_path)
     return _j(await pool.call(
         binding, lambda c, sid: c.definition_at(sid, line, column, lease_id=binding.lease_id)))
 
 
-@mcp.tool()
+@synced_tool()
 async def isabelle_sledgehammer(
     file_path: str, line: Optional[int] = None, subgoal: int = 1, timeout_s: int = 30,
 ) -> str:
@@ -241,7 +252,7 @@ async def isabelle_sledgehammer(
     suggestions; paste a suggestion verbatim into the file (or test it first
     with isabelle_multi_attempt). {found, results} or {found:false, error:'no
     open goal at line N'}. The server bounds concurrent sledgehammers globally.
-    """ + _SYNC_NOTE
+    """
     binding, _ = await _bound_synced(file_path)
     if line is None:
         return _j(await pool.call(
@@ -254,10 +265,10 @@ async def isabelle_sledgehammer(
 
 # ------------------------------------------------------- checkpoints / history
 
-@mcp.tool()
+@synced_tool()
 async def isabelle_checkpoint(file_path: str) -> str:
     """Save a checkpoint of the file session's proof state; returns
-    {checkpoint_id, timestamp}. """ + _SYNC_NOTE
+    {checkpoint_id, timestamp}. """
     binding, _ = await _bound_synced(file_path)
     return _j(await pool.call(
         binding, lambda c, sid: c.save_checkpoint(sid, lease_id=binding.lease_id)))
@@ -305,7 +316,7 @@ async def isabelle_last_report(file_path: str) -> str:
 
 # ------------------------------------------------------------ scratch execution
 
-@mcp.tool()
+@synced_tool()
 async def isabelle_multi_attempt(
     file_path: str, line: int, candidates: List[str], timeout: Optional[float] = None,
 ) -> str:
@@ -318,7 +329,7 @@ async def isabelle_multi_attempt(
     success / proof_open / pending_qed / used_sorry / timed_out and the failed
     or still-running commands with messages. Lines in `failed` are
     candidate-relative (candidate line 1 = file line `line`).
-    """ + _SYNC_NOTE
+    """
     binding, _ = await _bound_synced(file_path)
     text = binding.cached_text or ""
     prefix = attempt_prefix(text, line)

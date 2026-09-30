@@ -5,6 +5,7 @@ from server.app.core.config import Timeouts
 from server.app.core.diagnostic_guard import validate_diagnostic_command
 from server.app.core.input_guards import (
     reject_code_execution,
+    validate_import_name,
     validate_import_names,
     validate_project_path,
     validate_safe_name,
@@ -24,6 +25,12 @@ def _opt_project(cls, v):
 
 def _opt_imports(cls, v):
     return None if v is None else validate_import_names(v)
+
+
+def _opt_theory_name(cls, v):
+    """A single theory name that gets spliced into a generated header /
+    ROOT — same character policy as import names (no quotes, whitespace)."""
+    return None if v is None else validate_import_name(v)
 
 
 class SessionCreateRequest(BaseModel):
@@ -150,6 +157,7 @@ class DocumentLoadRequest(BaseModel):
     )
 
     check_imports = field_validator("imports")(classmethod(_opt_imports))
+    check_thy_name = field_validator("thy_name")(classmethod(_opt_theory_name))
 
     @field_validator("text")
     @classmethod
@@ -231,6 +239,7 @@ class BigStepTheoryRequest(BaseModel):
     timeout: float = Timeouts.BIGSTEP_DEFAULT
 
     check_dependencies = field_validator("dependencies")(classmethod(_opt_imports))
+    check_theory_name = field_validator("theory_name")(classmethod(_opt_theory_name))
 
     @field_validator("theory")
     @classmethod

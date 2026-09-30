@@ -875,6 +875,47 @@ refused; earlier back-and-forth checkpoint smoke green. Suite 292 passed / 1 ski
 
 ---
 
+### Bug 23: Theory-Name Injection Through `enter_theory` and the Theory-Name Fields — RESOLVED
+
+**Severity:** High (security; found by the TEST-1 security-input suite)
+**Status:** ✅ Resolved 2026-09-30.
+
+**Symptom:** `POST /sessions/{id}/enter_theory/{theory_name}` spliced the path parameter
+unvalidated into the generated `theory <name> imports … begin` header
+(`session.py::_build_theory_header`), and `DocumentLoadRequest.thy_name` /
+`BigStepTheoryRequest.theory_name` had no validator either. A name such as
+`T" imports Main begin ML ‹…› end` closed the quote and injected further Isar past the
+code-execution guard (Bug 12 covered the text bodies and import lists, not these names).
+
+**Fix:** the route validates the segment with `validate_import_name` (422); the two models
+gained `_opt_theory_name` validators (same character policy as import names — quotes,
+whitespace, `;` refused; path-like names stay legal by design).
+
+**Verified:** `tests/test_security_inputs.py` — 3 payloads on each of the three entry points
+answer 422, never reaching the (stub) session.
+
+---
+
+### Bug 24: Thirteen LSP MCP Tools Shipped With an Empty Description — RESOLVED
+
+**Severity:** Medium (agent-facing; DESIGN_CHOICES 2.8 says the docstrings ARE the prompt)
+**Status:** ✅ Resolved 2026-09-30.
+
+**Symptom:** every file-scoped LSP tool wrote its docstring as `"""…""" + _SYNC_NOTE`. A
+concatenation is an expression, not a docstring: `__doc__` was None and `list_tools()`
+advertised those 13 tools with no description at all — agents saw bare names for
+`isabelle_goal`, `isabelle_sledgehammer`, `isabelle_multi_attempt`, …
+
+**Fix (`mcp_servers/lsp/app.py`):** real docstrings plus a `synced_tool()` decorator that
+appends the sync note to `__doc__` before registering with FastMCP.
+
+**Verified:** `tests/test_mcp_tools_smoke.py` asserts a non-empty description and an object
+input schema for every tool of both servers, the exact tool-name sets (11 / 23), the
+`prove_theorem` prompt, the `success ≠ proved` wording in `verify_chunk`, and that the
+deprecated shim packages re-export the same server objects.
+
+---
+
 ### [To-do]Issue 1: How Isabelle do parallel
 When have parallel "have x" statements, can we do this in step. And how do we retrive information when one line is stucked in loop. That is, we need error retrieval for a proof chunk, the server should not just return a timeout error, it should tell, when we build the MCP server, the agent what part of that proof chunk just went wrong.
 
@@ -901,9 +942,9 @@ Status vocabulary: `open` · `in progress` · `fixed` · `verified` · `deferred
 | MCP-3 | High | `get_binding` reads `_bindings` outside the lock; two first calls → two sessions | `mcp_servers/lsp/pool.py:136` | fixed + verified 2026-09-30 — `get_binding` looks up under the lock and is single-flight per path (`_creating` futures); see Bug 20 | f83d9b5682d938f9ac7d05c07d7bf6b5f9630d1e | `tests/test_mcp_lsp_server.py` (+2), `claude-work/2026-9-30-impl-overlay-probes/smoke_mcp3_single_flight.py` (live) | `claude-work/2026-9-30-impl-overlay-probes/` (Part 7) |
 | REPL-4 | High | Checkpoint soundness: `valid` accepts `state_id == count`; unknown id restores empty edits and reports success | `server/repl/src/main/scala/repl/repl_session.scala:45`, `thy_info.scala:92` | fixed + verified 2026-09-30 — issued-ids-only validation, all-or-nothing restore, Python honours the backend result; see Bug 22 — commit pending | (pending) | `tests/test_checkpoint_restore.py` (3), `claude-work/2026-9-30-impl-overlay-probes/smoke_checkpoint_soundness.py` + `smoke_checkpoint_restore.py` (live) | `claude-work/2026-9-30-impl-overlay-probes/` (Part 9) |
 | MCP-4 | Med | LSP pool acquires with default `reuse_dirty=True` (stepwise uses `False`); stale errors leak across attempts (reproduced 2026-09-30 during the RC2 smoke test) | `mcp_servers/lsp/pool.py` | fixed + verified 2026-09-30 — file bindings acquire with `reuse_dirty=False` (clean-only reuse, as the stepwise pool); see Bug 21 | d4a54ae630632fa8522ef48743a260b2cf6e30a0 | `tests/test_mcp_lsp_server.py::test_binding_reuse_is_clean_only`, `claude-work/2026-9-30-impl-overlay-probes/smoke_mcp4_clean_reuse.py` (live) | `claude-work/2026-9-30-impl-overlay-probes/` (Part 8) |
-| TEST-1 | P0 | Missing regression suites: in-process MCP `list_tools()` smoke; security-inputs (`../`, `ML <...>`, quote injection) — `tests/test_input_guards.py` covers part | `tests/` | open | | | |
+| TEST-1 | P0 | Missing regression suites: in-process MCP `list_tools()` smoke; security-inputs (`../`, `ML <...>`, quote injection) — `tests/test_input_guards.py` covers part | `tests/` | fixed + verified 2026-09-30 — `test_mcp_tools_smoke.py` (6) + `test_security_inputs.py` (78, HTTP-layer payload matrix); both found real gaps, fixed as Bug 23 (theory-name injection) and Bug 24 (13 LSP tools with empty descriptions); suite runs with no ignore flag (openai skip) — commit pending | (pending) | the two new modules; suite 376 passed / 2 skipped | `claude-work/2026-9-30-impl-overlay-probes/` (Part 10) |
 | SEC-1 | Crit | `/admin` inlines the admin token into an unauthenticated page | `server/app/main.py` | deferred (owner, 2026-09-22; keep the port firewalled) | | | |
-| RC2-1 | — | Isabelle2026-RC2 image: in-container unit suite, route smoke, MCP stdio smoke not yet run on the new image | `deploy/Dockerfile` | open | | | `claude-work/2026-9-29-impl-isabelle2026-image/`, `claude-work/rc2-fontconfig/` |
+| RC2-1 | — | Isabelle2026-RC2 image: in-container unit suite, route smoke, MCP stdio smoke not yet run on the new image | `deploy/Dockerfile` | open — PARTIAL 2026-09-30: unit suite runs green on the RC2 image with no flags (376/2 skipped) and the MCP servers are smoke-tested in-process (TEST-1); still not done: a route smoke on the image itself and spawning each MCP over stdio | | | `claude-work/2026-9-29-impl-isabelle2026-image/`, `claude-work/rc2-fontconfig/` |
 | RC2-2 | — | Retire `deploy/Dockerfile.rc0`, `build_rc0_image.sh`; make `Dockerfile.export` a heap-baking stage; rewrite `RC0-image-instructions.md` for the 2026 image | `deploy/` | open (after RC2-1; RC0 image itself is kept until the Isabelle2026 release) | | | |
 | ENV-1 | Low | `ISABELLE_REPL_*_TIMEOUT` (now overlay budgets) set on the `python -m server.app.main` command line did not reach the gateway JVM in the RC2 dev container (budget stayed at the 20 s default); Python's own `Timeouts` read the same names, so the two sides can disagree. Check how `repl_backend_gateway.py` spawns `isabelle scala` (env inheritance / Isabelle settings scrubbing) | `server/repl/src/python/repl_backend_gateway.py:120` | open (noted 2026-09-30; owner: not important now) | | | `claude-work/2026-9-30-impl-overlay-probes/NOTES.md` |
 | SYNC-1 | **Crit** | Incremental sync CORRUPTS the document: the 2nd+ `load_document` on a session (sync path: spliff diff → replace edits) lands edits at wrong offsets — `by (induct xs) auto`→`by simp` yields `imp  by s`, `by (simp)`→`by auto` yields `  byaut o` (found 2026-09-30 while verifying MCP-1: every REUSED scratch session in `multi_attempt` verifies garbage; LSP `isabelle_sync` re-syncs affected too). Fresh sessions load the same texts fine. Suspect `Edit_Utils.text_diff_edits` offset bookkeeping across multiple hunks | `server/repl/src/main/scala/repl/edit_utils.scala` (`text_diff_edits`), `repl_session.scala` (`replace_document`) | fixed + verified 2026-09-30 — `Edit_Utils.diff_edits` maps spliff ops to sequential PIDE edits correctly (inserts inside a deleted range collapse to its start); shared by `text_diff_edits` and `Thy_Status.difference_edits`; see Bug 18 | 76bb9db00fa48e11bcd02df318729596647f529f | Scala round-trip property check (10,003 cases), `repro_sync_diff_corruption.py`, `smoke_checkpoint_restore.py` (live) | `claude-work/2026-9-30-impl-overlay-probes/` (Part 5) |
@@ -1004,5 +1045,7 @@ disk; the entries are kept as the historical record. Summary of work completed:
 | 2026-09-30 | **Bug 21 / MCP-4: clean-only reuse for LSP bindings** | `reuse_dirty=False` on the binding acquire; fake client honours the dirty rule; live: released dirty session skipped, fresh one for the next file. All four LSP MCP audit findings (MCP-1..4) now closed. | `claude-work/2026-9-30-impl-overlay-probes/` (Part 8) |
 
 | 2026-09-30 | **Bug 22 / REPL-4: checkpoint restore soundness** | Issued-ids-only validation, `Option`-returning `Thy_Info.restore_state` + all-or-nothing `Repl_Session.restore_state`, Python honours the result and drops rejected ids, route reports the reason. +3 unit tests, live soundness smoke. Remaining open: TEST-1, SEC-1 (deferred), ENV-1, RC2-1/2. | `claude-work/2026-9-30-impl-overlay-probes/` (Part 9) |
+
+| 2026-09-30 | **TEST-1: MCP tools smoke + HTTP security-input suites (Bugs 23, 24 found and fixed)** | `tests/test_mcp_tools_smoke.py` (both servers in-process: tool sets, descriptions, prompt, shims) and `tests/test_security_inputs.py` (78 HTTP-layer payloads via TestClient + stub manager/heap-pool overrides: ML in 5 spellings on 4 text endpoints, diagnostic denylist, import/theory-name injection, traversal, admin token). Found: theory-name injection via `enter_theory` path + two model fields (Bug 23, fixed); 13 LSP tools with empty descriptions (Bug 24, fixed). `test_mcp_comparison_fixes.py` now skips without `openai` — the suite runs with no flags: 376 passed / 2 skipped. | `claude-work/2026-9-30-impl-overlay-probes/` (Part 10) |
 
 *Last updated: 2026-09-30.*
