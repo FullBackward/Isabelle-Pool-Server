@@ -294,9 +294,8 @@ class _Isabelle_Session(BigStepMixin):
     def save_state(self, timeout: Optional[float] = None):
         return self._call_backend(lambda: self.backend.raw.save_state(), timeout=timeout)
 
-    def restore_state(self, state_id: int, timeout: Optional[float] = None):
-        logger.debug("restoring backend state state_id=%s", state_id)
-        return self._call_backend(lambda: self.backend.raw.restore_state(state_id), timeout=timeout)
+    def restore_state(self, state_id: int, timeout: Optional[float] = None) -> bool:
+        return bool(self._call_backend(lambda: self.backend.raw.restore_state(state_id), timeout=timeout))
 
     def rollback(self, timeout: Optional[float] = None):
         logger.info("rolling back backend state")
@@ -332,13 +331,9 @@ class _Isabelle_Session(BigStepMixin):
 
     @staticmethod
     def _build_theory_header(name: str, imports: List[str]) -> str:
-        """Build a valid Isar `theory <name> imports ... begin` header.
-
-        Session-qualified imports (e.g. HOL-Number_Theory.Number_Theory) contain '-'/'.'
-        and MUST be quoted, else Isabelle splits them ("Bad theory import HOL", "-", ...).
-        This Isar-syntax knowledge lives in the server so every client (demo, MCP, agents)
-        gets a correct header without re-implementing quoting.
-        """
+        """Build a valid Isar `theory <name> imports ... begin` header. Session-qualified
+        imports (HOL-Number_Theory.Number_Theory) contain '-'/'.' and MUST be quoted, else
+        Isabelle splits them; the quoting lives here so every client gets it right."""
         def q(i: str) -> str:
             return i if re.fullmatch(r"[A-Za-z][\w']*", i) else f'"{i}"'
         names = [n for n in (imports or []) if n] or ["Main"]
@@ -700,14 +695,10 @@ class _Isabelle_Session(BigStepMixin):
 
     def run_diagnostic(self, command: str, timeout: float = Timeouts.COMMAND_DEFAULT) -> SmallStepExecuteResult:
         """Run a single READ-ONLY diagnostic command (thm, term, find_theorems, print_*, ...)
-        TRANSIENTLY and return its output.
-
-        The backend inserts the command, reads its output (waiting at most `timeout`), then
-        discards the edit, so the proof script and rollback chain are untouched. Unlike
-        execute_command, this computes no subgoals and does not append to command_history —
-        a diagnostic is a query, not a proof step. The caller (router) MUST have validated
-        the command against core.diagnostic_guard first.
-        """
+        TRANSIENTLY: the backend inserts it, reads its output (waiting at most `timeout`),
+        then discards the edit — script and rollback chain untouched. No subgoals, no
+        command_history entry (a query, not a proof step). The router MUST have validated
+        the command against core.diagnostic_guard first."""
         self.update_activity()
         self._acquire_request()
         start_time = time.time()
@@ -872,7 +863,14 @@ class _Isabelle_Session(BigStepMixin):
                             error=f"Checkpoint {checkpoint_id} not found",
                             execution_time=time.time() - start_time,
                         )
-                    self.restore_state(checkpoint_id, timeout=timeout)
+                    if not self.restore_state(checkpoint_id, timeout=timeout):
+                        # backend no longer holds it (document replace/reset): never report a
+                        # restore that applied nothing (Bug 22 / REPL-4)
+                        self.checkpoints.pop(checkpoint_id, None)
+                        logger.warning("backend rejected checkpoint checkpoint_id=%s", checkpoint_id)
+                        return SessionExecutionError(
+                            error=f"Checkpoint {checkpoint_id} is unknown to the backend (invalidated by a document replace or reset); nothing restored",
+                            execution_time=time.time() - start_time)
                     logger.info("checkpoint restored checkpoint_id=%s", checkpoint_id)
                     return True
                 except Exception as e:

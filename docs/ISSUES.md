@@ -846,6 +846,35 @@ B's source contains only B.
 
 ---
 
+### Bug 22: Checkpoint Restore Reported Success for Unknown or Invalidated Ids — RESOLVED
+
+**Severity:** High (audit REPL-4)
+**Status:** ✅ Resolved 2026-09-30 (bookkeeping fix; no design-choice entry).
+
+**Symptom:** `StateIDManager.valid` accepted `state_id <= count`, i.e. the next, never-issued
+id; `Thy_Info.restore_state` returned an empty edit list for an id it did not hold (never
+saved there, or wiped by `reset_to_fresh_base` after an incremental document replace), so
+`Repl_Session.restore_state` applied nothing and returned true; and Python's
+`restore_checkpoint` discarded the backend's boolean and returned true unconditionally. A
+client could be told "State restored successfully" while the document was untouched.
+
+**Fix:** Scala — `valid` is `< count`; `Thy_Info.restore_state` returns `Option` (None =
+unknown) plus `has_saved_state`; `Repl_Session.restore_state` is all-or-nothing (false, no
+edits, unless every entered theory holds the id). Python — `restore_state` returns the
+boolean; `restore_checkpoint` drops a rejected id and returns `SessionExecutionError('unknown
+to the backend (invalidated by a document replace or reset); nothing restored')`; the route
+puts that reason in `message` instead of the generic string. Rollback / `verify_chunk` discards
+were already sound (parent chain; restore works in both directions), so no chunk-path
+invalidation was added.
+
+**Verified:** `tests/test_checkpoint_restore.py` (3: known id restores; unknown id refused
+before the backend; backend rejection → error, id dropped, no second backend call). Live:
+never-issued id refused; valid restore byte-exact; checkpoints before an incremental replace
+refused; earlier back-and-forth checkpoint smoke green. Suite 292 passed / 1 skipped;
+`session.py` trimmed back to 897 lines (ratchet 899).
+
+---
+
 ### [To-do]Issue 1: How Isabelle do parallel
 When have parallel "have x" statements, can we do this in step. And how do we retrive information when one line is stucked in loop. That is, we need error retrieval for a proof chunk, the server should not just return a timeout error, it should tell, when we build the MCP server, the agent what part of that proof chunk just went wrong.
 
@@ -870,8 +899,8 @@ Status vocabulary: `open` · `in progress` · `fixed` · `verified` · `deferred
 | MCP-1 | High | LSP scratch-slot leak → permanent hang: release outside `finally`, `await queue.get()` without timeout | `mcp_servers/lsp/app.py`, `mcp_servers/lsp/pool.py:254` | fixed + verified 2026-09-30 — `LspPool.scratch_session` bracket (always returns the slot, drops on 404/cancellation, deferred close of busy sessions) + bounded `acquire_scratch` wait; see Bug 17 | c3b1326fb4751b68aa1d74fa12737352bb0e1006 | `tests/test_mcp_lsp_server.py` (+3), `claude-work/2026-9-30-impl-overlay-probes/smoke_mcp1_scratch.py` (live) | `claude-work/2026-9-30-impl-overlay-probes/` (Part 4) |
 | MCP-2 | High | Binding registered before the `isfile` check; a bogus path pins a leased session | `mcp_servers/lsp/pool.py:125,149` | fixed + verified 2026-09-30 — `_create_binding` checks `isfile` before acquiring; see Bug 19 | 4e5128d0a4d3b0667cc9154f71c08a5a398067d6 | `tests/test_mcp_lsp_server.py::test_binding_missing_file_acquires_nothing`, `claude-work/2026-9-30-impl-overlay-probes/smoke_mcp2_missing_file.py` (live) | `claude-work/2026-9-30-impl-overlay-probes/` (Part 6) |
 | MCP-3 | High | `get_binding` reads `_bindings` outside the lock; two first calls → two sessions | `mcp_servers/lsp/pool.py:136` | fixed + verified 2026-09-30 — `get_binding` looks up under the lock and is single-flight per path (`_creating` futures); see Bug 20 | f83d9b5682d938f9ac7d05c07d7bf6b5f9630d1e | `tests/test_mcp_lsp_server.py` (+2), `claude-work/2026-9-30-impl-overlay-probes/smoke_mcp3_single_flight.py` (live) | `claude-work/2026-9-30-impl-overlay-probes/` (Part 7) |
-| REPL-4 | High | Checkpoint soundness: `valid` accepts `state_id == count`; unknown id restores empty edits and reports success | `server/repl/src/main/scala/repl/repl_session.scala:45`, `thy_info.scala:92` | open | | | |
-| MCP-4 | Med | LSP pool acquires with default `reuse_dirty=True` (stepwise uses `False`); stale errors leak across attempts (reproduced 2026-09-30 during the RC2 smoke test) | `mcp_servers/lsp/pool.py` | fixed + verified 2026-09-30 — file bindings acquire with `reuse_dirty=False` (clean-only reuse, as the stepwise pool); see Bug 21 — commit pending | (pending) | `tests/test_mcp_lsp_server.py::test_binding_reuse_is_clean_only`, `claude-work/2026-9-30-impl-overlay-probes/smoke_mcp4_clean_reuse.py` (live) | `claude-work/2026-9-30-impl-overlay-probes/` (Part 8) |
+| REPL-4 | High | Checkpoint soundness: `valid` accepts `state_id == count`; unknown id restores empty edits and reports success | `server/repl/src/main/scala/repl/repl_session.scala:45`, `thy_info.scala:92` | fixed + verified 2026-09-30 — issued-ids-only validation, all-or-nothing restore, Python honours the backend result; see Bug 22 — commit pending | (pending) | `tests/test_checkpoint_restore.py` (3), `claude-work/2026-9-30-impl-overlay-probes/smoke_checkpoint_soundness.py` + `smoke_checkpoint_restore.py` (live) | `claude-work/2026-9-30-impl-overlay-probes/` (Part 9) |
+| MCP-4 | Med | LSP pool acquires with default `reuse_dirty=True` (stepwise uses `False`); stale errors leak across attempts (reproduced 2026-09-30 during the RC2 smoke test) | `mcp_servers/lsp/pool.py` | fixed + verified 2026-09-30 — file bindings acquire with `reuse_dirty=False` (clean-only reuse, as the stepwise pool); see Bug 21 | d4a54ae630632fa8522ef48743a260b2cf6e30a0 | `tests/test_mcp_lsp_server.py::test_binding_reuse_is_clean_only`, `claude-work/2026-9-30-impl-overlay-probes/smoke_mcp4_clean_reuse.py` (live) | `claude-work/2026-9-30-impl-overlay-probes/` (Part 8) |
 | TEST-1 | P0 | Missing regression suites: in-process MCP `list_tools()` smoke; security-inputs (`../`, `ML <...>`, quote injection) — `tests/test_input_guards.py` covers part | `tests/` | open | | | |
 | SEC-1 | Crit | `/admin` inlines the admin token into an unauthenticated page | `server/app/main.py` | deferred (owner, 2026-09-22; keep the port firewalled) | | | |
 | RC2-1 | — | Isabelle2026-RC2 image: in-container unit suite, route smoke, MCP stdio smoke not yet run on the new image | `deploy/Dockerfile` | open | | | `claude-work/2026-9-29-impl-isabelle2026-image/`, `claude-work/rc2-fontconfig/` |
@@ -973,5 +1002,7 @@ disk; the entries are kept as the historical record. Summary of work completed:
 | 2026-09-30 | **Bug 20 / MCP-3: single-flight binding creation** | `get_binding` lookup under the lock + per-path in-flight future; +2 tests; live: three concurrent tools on a new file lease one session. With MCP-1..3 closed, the LSP MCP P0 group is done; MCP-4 (`reuse_dirty`) remains. | `claude-work/2026-9-30-impl-overlay-probes/` (Part 7) |
 
 | 2026-09-30 | **Bug 21 / MCP-4: clean-only reuse for LSP bindings** | `reuse_dirty=False` on the binding acquire; fake client honours the dirty rule; live: released dirty session skipped, fresh one for the next file. All four LSP MCP audit findings (MCP-1..4) now closed. | `claude-work/2026-9-30-impl-overlay-probes/` (Part 8) |
+
+| 2026-09-30 | **Bug 22 / REPL-4: checkpoint restore soundness** | Issued-ids-only validation, `Option`-returning `Thy_Info.restore_state` + all-or-nothing `Repl_Session.restore_state`, Python honours the result and drops rejected ids, route reports the reason. +3 unit tests, live soundness smoke. Remaining open: TEST-1, SEC-1 (deferred), ENV-1, RC2-1/2. | `claude-work/2026-9-30-impl-overlay-probes/` (Part 9) |
 
 *Last updated: 2026-09-30.*

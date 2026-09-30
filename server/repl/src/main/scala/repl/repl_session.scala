@@ -49,7 +49,9 @@ class Repl_Session(session_manager: Session_Manager, initial_thys: List[String] 
       result
     }
 
-    def valid(state_id: EnvStateID): Boolean = state_id >= 0 && state_id <= count
+    /** Only ids this manager has ISSUED (`count` is the next, never-issued one;
+     *  `<= count` used to accept it — docs/ISSUES.md Bug 22 / audit REPL-4). */
+    def valid(state_id: EnvStateID): Boolean = state_id >= 0 && state_id < count
   }
 
   private val state_id_manager = new StateIDManager
@@ -382,14 +384,21 @@ class Repl_Session(session_manager: Session_Manager, initial_thys: List[String] 
     env_state_id
   }
 
+  /** Restore checkpoint `state_id` in every entered theory. ALL-OR-NOTHING: false
+   *  (and no edit applied) unless the id was issued by save_state AND every
+   *  theory still holds it — an id is dropped by reset_to_fresh_base after an
+   *  incremental document replace (Repl_Session.replace_document), and unknown
+   *  ids used to restore nothing while reporting true (Bug 22 / REPL-4). */
   def restore_state(state_id: EnvStateID): Boolean =
     if (!state_id_manager.valid(state_id)) false
+    else if (!session_thys.values.forall(_.has_saved_state(state_id))) false
     else {
       session_thys.foreach { case (_, thy_info) =>
         val thy_node_name = Document_Utils.thy_node_name(thy_info.name)
-        val text_edits_required = thy_info.restore_state(state_id)
-        val edits = List(Edit_Utils.edit_from_text_edits(text_edits_required))
-        update_session_with_edits(edits, node_name = Some(thy_node_name))
+        thy_info.restore_state(state_id).foreach { text_edits_required =>
+          val edits = List(Edit_Utils.edit_from_text_edits(text_edits_required))
+          update_session_with_edits(edits, node_name = Some(thy_node_name))
+        }
       }
       true
     }

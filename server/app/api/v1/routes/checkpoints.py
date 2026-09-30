@@ -30,10 +30,13 @@ async def restore_checkpoint(checkpoint_id: int, session: LeasedSession):
     success = await asyncio.to_thread(session.restore_checkpoint, checkpoint_id)
     ok = bool(success) if isinstance(success, bool) else False
     logger.info("checkpoint restore finished success=%s checkpoint_id=%s", ok, checkpoint_id)
+    # A failure carries the backend's reason (unknown / invalidated checkpoint),
+    # not a generic string.
+    reason = getattr(success, "error", None) if not ok else None
     return {
         "success": ok,
         "checkpoint_id": checkpoint_id,
-        "message": "State restored successfully" if ok else "Restoration failed",
+        "message": "State restored successfully" if ok else (reason or "Restoration failed"),
     }
 
 

@@ -88,13 +88,17 @@ class Thy_Info(val name: String, status: Option[Thy_Status] = None) {
   def save_current_state(state_id: EnvStateID): Unit =
     saved_states.addOne((state_id, current_status))
 
-  def restore_state(state_id: EnvStateID): List[Text.Edit] =
-    saved_states.get(state_id) match {
-      case None => List()
-      case Some(status_to_restore) =>
-        val edits_required = status_to_restore.difference_edits(current_status)
-        current_status = status_to_restore
-        edits_required
+  def has_saved_state(state_id: EnvStateID): Boolean = saved_states.contains(state_id)
+
+  /** The edits that bring the node from the current status back to checkpoint
+   *  `state_id`; None when this theory does not hold that checkpoint (never
+   *  saved here, or wiped by reset_to_fresh_base) — the caller must treat None
+   *  as failure, not as "nothing to do". */
+  def restore_state(state_id: EnvStateID): Option[List[Text.Edit]] =
+    saved_states.get(state_id).map { status_to_restore =>
+      val edits_required = status_to_restore.difference_edits(current_status)
+      current_status = status_to_restore
+      edits_required
     }
 
   def duplicate(duplicate_name: String): Thy_Info = new Thy_Info(duplicate_name, status)
