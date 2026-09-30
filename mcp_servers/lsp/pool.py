@@ -113,13 +113,18 @@ class LspPool(GymClientMixin):
             imports = await header_imports(c, text) or None
         # Acquire (not create): sessions released by other bindings with the
         # same dependency key (task_group + heap / imports, default field)
-        # are reused WARM instead of building a fresh session per file. Safe
-        # because every sync reloads via load_document, which resets the
-        # backend. The label is re-applied on every acquire server-side, so a
-        # reused session shows THIS file in the admin console, not its
-        # previous holder.
+        # are reused WARM instead of building a fresh session per file — but
+        # CLEAN ONLY (reuse_dirty=False, the rule the chunk-centric pool has
+        # always used, DESIGN_CHOICES 1.5/2.2): a released binding's session
+        # still holds the previous file's document, and the server treats any
+        # session with command history (load_document records one) as dirty.
+        # Inheriting it exposed another attempt's proof between acquire and
+        # the first sync and cost a full backend reset on that sync anyway —
+        # no cheaper than a fresh session (docs/ISSUES.md Bug 21, audit MCP-4).
+        # The label is re-applied on every acquire server-side, so a reused
+        # session shows THIS file in the admin console, not its previous holder.
         resp = await c.acquire_session(
-            theories=imports,
+            theories=imports, reuse_dirty=False,
             task_group=group, heap_session=heap_session, label=label or canon,
         )
         binding = FileBinding(

@@ -29,6 +29,7 @@ class FakeClient:
         self.closed = []
         self.loads = []
         self.idle = []  # (session_id, lease_id) released back to the pool
+        self.dirty = set()  # sessions that have loaded a document (command history)
         self._counter = 0
         self.fail_next_load_404 = False
 
@@ -49,9 +50,13 @@ class FakeClient:
             "task_group": task_group, "heap_session": heap_session,
             "label": label,
         })
-        if self.idle:
-            session_id, lease_id = self.idle.pop()
-            return {"session_id": session_id, "lease_id": lease_id, "reused": True}
+        # Server rule: a session with command history (every load_document
+        # records one) is DIRTY and is skipped when reuse_dirty is False.
+        for i in range(len(self.idle) - 1, -1, -1):
+            session_id, lease_id = self.idle[i]
+            if reuse_dirty or session_id not in self.dirty:
+                del self.idle[i]
+                return {"session_id": session_id, "lease_id": lease_id, "reused": True}
         self._counter += 1
         return {
             "session_id": f"s{self._counter}",
@@ -85,6 +90,7 @@ class FakeClient:
                 response=httpx.Response(404),
             )
         self.loads.append({"session_id": session_id, "text": text, "report": report})
+        self.dirty.add(session_id)
         return {"success": True, "report": {"success": True, "commands": []}}
 
     async def goals_at_line(self, session_id, line, lease_id=None):
@@ -149,29 +155,33 @@ def test_auto_open_defaults(tmp_path):
     acquired = pool._client.acquired[0]
     assert acquired["task_group"] == "default"
     assert acquired["heap_session"] is None
-    assert acquired["reuse_dirty"] is True
+    assert acquired["reuse_dirty"] is False  # clean-only reuse (Bug 21 / MCP-4)
     assert acquired["label"] == canonical_path(str(f))
     assert binding.session_id == "s1"
 
 
-def test_binding_warm_reuse_after_release(tmp_path):
-    """A released binding's session is re-acquired warm by the next binding."""
-    f1 = tmp_path / "A.thy"
-    f2 = tmp_path / "B.thy"
-    f1.write_text("theory A imports Main begin\nend\n")
-    f2.write_text("theory B imports Main begin\nend\n")
+def test_binding_reuse_is_clean_only(tmp_path):
+    """Bug 21 / MCP-4: a released binding whose session LOADED a document (dirty)
+    is NOT handed to the next binding — it would carry the previous file's
+    document; a released session that never loaded anything is reused warm."""
+    f1, f2, f3 = (tmp_path / n for n in ("A.thy", "B.thy", "C.thy"))
+    for f in (f1, f2, f3):
+        f.write_text(f"theory {f.stem} imports Main begin\nend\n")
     pool = _pool_with_fake()
 
     async def run():
         b1 = await pool.get_binding(str(f1))
-        await pool.close_binding(str(f1))
-        b2 = await pool.get_binding(str(f2))
-        return b1, b2
+        await pool.sync(b1)                      # s1 loads A → dirty
+        await pool.close_binding(str(f1))        # s1 released, dirty
+        b2 = await pool.get_binding(str(f2))     # must NOT be s1
+        await pool.close_binding(str(f2))        # s2 released CLEAN (never synced)
+        b3 = await pool.get_binding(str(f3))     # may reuse s2 warm
+        return b1, b2, b3
 
-    b1, b2 = asyncio.run(run())
-    assert b2.session_id == b1.session_id  # warm reuse, no new session
-    assert pool._client._counter == 1
-    assert len(pool._client.acquired) == 2
+    b1, b2, b3 = asyncio.run(run())
+    assert b2.session_id != b1.session_id
+    assert b3.session_id == b2.session_id
+    assert all(a["reuse_dirty"] is False for a in pool._client.acquired)
 
 
 def test_rebind_on_404(tmp_path):
