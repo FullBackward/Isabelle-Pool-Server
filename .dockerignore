@@ -53,3 +53,15 @@ evaluation/results/
 evaluation/MCP-comparison/runs/
 docs/
 *.pdf
+
+# IDE / build caches that change while the context is being sent (an open
+# Metals/Bloop session holds locks in .metals/ and .scala-build/ -> BuildKit
+# "error from sender: context canceled") and things the image never needs.
+.git/
+.metals/
+.scala-build/
+.bloop/
+.pytest_cache/
+logs/
+claude-work/
+*(temp)/

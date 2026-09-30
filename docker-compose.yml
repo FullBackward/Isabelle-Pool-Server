@@ -25,6 +25,9 @@ services:
     build:
       context: .
       dockerfile: deploy/Dockerfile
+      args:
+        # Isabelle distribution name (RCs: website-<name>/dist; finals: dist/).
+        ISABELLE_VERSION: ${ISABELLE_VERSION:-Isabelle2026-RC2}
     container_name: isabelle-gym
     volumes:
       - .:/app

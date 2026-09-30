@@ -1,53 +1,66 @@
+# IsabelleGym server image — ONE Dockerfile for every Isabelle version.
+#
+#   docker compose build isabelle-gym                                  # default version below
+#   docker build -f deploy/Dockerfile --build-arg ISABELLE_VERSION=Isabelle2026-RC2 -t isabellegym-isabelle-gym:2026rc2 .
+#
+# ISABELLE_VERSION is the distribution name (Isabelle2026-RC2, Isabelle2026,
+# Isabelle2025-2 …). Release candidates live in a per-RC website directory
+# (website-<version>/dist/), final releases in dist/; both are tried, on the
+# official host and on mirrors. Build context is the repo root.
+#
+# Isabelle 2026 notes (from the RC0 migration, docs/ISSUES.md / AGENTS.md):
+#  - NEVER export a system JAVA_HOME globally — Isabelle 2026 resolves its own
+#    bundled JDK and a foreign JAVA_HOME fails with "Unknown JAVA_HOME". The
+#    system JDK is only needed by Gradle and is scoped to that one RUN step.
+#  - Pin HOME=/root: Docker Desktop's BuildKit may run steps with the host
+#    user's HOME, which makes Isabelle resolve an empty ISABELLE_HOME_USER.
+
 FROM python:3.12-slim
 
+ARG ISABELLE_VERSION=Isabelle2026-RC2
+# Space-separated base URLs; "<base>/<tarball>" is tried in order. Any mirror
+# under 1 MB/s for 30 s is abandoned (curl --speed-limit/--speed-time) — a
+# merely SLOW mirror never "fails", so a plain fallback chain would sit on it
+# for hours (2026-09-27: dist.isabelle.cit.tum.de trickled at 150 KB/s).
+ARG ISABELLE_DIST_URLS="https://isabelle.in.tum.de/website-${ISABELLE_VERSION}/dist \
+    https://isabelle.sketis.net/website-${ISABELLE_VERSION}/dist \
+    https://www.cl.cam.ac.uk/research/hvg/Isabelle/dist \
+    https://proofcraft.systems/isabelle/dist \
+    https://isabelle.in.tum.de/dist \
+    https://mirror.clarkson.edu/isabelle/dist"
+ARG GIT_REVISION=unknown
 
+LABEL org.opencontainers.image.title="IsabelleGym server" \
+      org.opencontainers.image.revision="${GIT_REVISION}" \
+      isabellegym.isabelle_version="${ISABELLE_VERSION}"
+
+ENV HOME=/root
 WORKDIR /app
 
-
-RUN apt-get update && apt-get install -y \
-# try fix with bash
-    bash \
-    openjdk-21-jdk-headless \
-    wget \
-    curl \
-    git \
-    tar \
-    gzip \
-    htop \
-    ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
-
-
-# JAVA_HOME must not hardcode the arch (java-21-openjdk-amd64 vs -arm64):
-# symlink whatever apt installed to a stable path.
-RUN ln -s /usr/lib/jvm/java-21-openjdk-* /usr/lib/jvm/jdk-21
-ENV JAVA_HOME=/usr/lib/jvm/jdk-21
-ENV PATH=$JAVA_HOME/bin:$PATH
-
+# fontconfig + one font family are REQUIRED even though the JVM runs headless:
+# Isabelle 2026's Build.build_store (Pure/Build/build.scala) calls
+# Isabelle_Fonts.init() -> GraphicsEnvironment.getLocalGraphicsEnvironment()
+# on every `isabelle build`, i.e. on every session start. Without them the JVM
+# dies with "Fontconfig head is null" and no session can be created.
+# (--no-install-recommends drops them; the old Dockerfile got them implicitly
+# as recommends of openjdk-21-jdk-headless.)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    bash openjdk-21-jdk-headless curl git tar gzip ca-certificates procps \
+    fontconfig fonts-dejavu-core \
+ && rm -rf /var/lib/apt/lists/*
 
 # Download Isabelle BEFORE copying the source tree so this heavy, network-bound
 # layer stays cached across code changes. Pick the tarball matching the BUILD
 # architecture — running the x86-64 bundle under qemu on Apple Silicon made
 # Isabelle 5-20x slower.
-#
-# Mirror order (measured 2026-09-27): Cambridge ~8 MB/s, Proofcraft ~0.9 MB/s,
-# TUM (the official host) redirects to dist.isabelle.cit.tum.de which refuses
-# connections or trickles at ~150 KB/s, Clarkson ~170 KB/s. A merely SLOW
-# mirror never "fails", so a plain fallback chain would sit on it for hours:
-# curl's --speed-limit/--speed-time abandon any mirror that drops below 1 MB/s
-# for 30 s and the loop moves to the next one.
 RUN mkdir -p /opt \
  && cd /opt \
  && case "$(uname -m)" in \
-      aarch64|arm64) TARBALL=Isabelle2025-2_linux_arm.tar.gz ;; \
-      *)             TARBALL=Isabelle2025-2_linux.tar.gz ;; \
+      aarch64|arm64) TARBALL="${ISABELLE_VERSION}_linux_arm.tar.gz" ;; \
+      *)             TARBALL="${ISABELLE_VERSION}_linux.tar.gz" ;; \
     esac \
- && for url in \
-      "https://www.cl.cam.ac.uk/research/hvg/Isabelle/dist/$TARBALL" \
-      "https://proofcraft.systems/isabelle/dist/$TARBALL" \
-      "https://isabelle.in.tum.de/dist/$TARBALL" \
-      "https://mirror.clarkson.edu/isabelle/dist/$TARBALL" \
-    ; do \
+ && for base in ${ISABELLE_DIST_URLS}; do \
+      url="${base}/${TARBALL}"; \
       rm -f "$TARBALL"; \
       echo "==> trying $url"; \
       curl -fL --retry 2 --retry-connrefused --connect-timeout 20 \
@@ -55,33 +68,35 @@ RUN mkdir -p /opt \
     done \
  && test -s "$TARBALL" \
  && tar -xf "$TARBALL" \
- && mv Isabelle2025-2 isabelle \
+ && mv "${ISABELLE_VERSION}" isabelle \
  && rm -f "$TARBALL"
 
 ENV ISABELLE_HOME=/opt/isabelle
 ENV PATH=$ISABELLE_HOME/bin:$PATH
 
-# Global Python deps (no venv) — copy only requirement.txt first so dependency
-# installs are cached independently of source edits.
+# Python deps first (cached independently of source edits). The MCP SDK is
+# pinned <2 (mcp 2.0 removed mcp.server.fastmcp).
 COPY requirement.txt /app/requirement.txt
+COPY mcp_servers/requirements.txt /app/mcp_servers/requirements.txt
 RUN python -m pip install --upgrade pip \
- && python -m pip install -r /app/requirement.txt
+ && python -m pip install -r /app/requirement.txt -r /app/mcp_servers/requirements.txt
 
 COPY . /app/
 
-# Windows 
+# Normalise line endings for scripts that may come from a Windows checkout,
+# register the REPL component (+ py4j/spliff contribs) with Isabelle, and
+# build the Scala backend. Gradle gets the system JDK via a JAVA_HOME scoped
+# to its own step; Isabelle's own `isabelle scala` uses the bundled JDK.
 RUN find server/repl -type f \( -name "*.sh" -o -name "init" -o -name "gradlew" \) -exec sed -i 's/\r$//' {} \; \
- && chmod +x server/repl/Admin/init server/repl/gradlew \
+ && chmod +x server/repl/Admin/init server/repl/Admin/*.sh server/repl/gradlew \
  && ./server/repl/Admin/init
 
-# Linux/MacOS
-#RUN chmod +x server/repl/Admin/init \
-#    && ./server/repl/Admin/init \
-#    && find /root/.isabelle/Isabelle2025-2/contrib -path "*/etc/settings" -type f -exec sed -i 's/\r$//' {} \;
-
 RUN cd server/repl \
-    && chmod +x gradlew \
-    && ./gradlew build
+ && JAVA_HOME="$(ls -d /usr/lib/jvm/java-21-openjdk-* | head -1)" ./gradlew build --no-daemon
 
+EXPOSE 8000
 
-CMD ["bash"] 
+# Entrypoint: component re-registration into a (possibly stale) user volume →
+# ML heap cap in the user settings → foreground API server. docker-compose
+# sets the same command; `docker run` gets it by default.
+CMD ["bash", "./server/repl/Admin/container_entrypoint.sh"]

@@ -93,15 +93,22 @@ object Edit_Utils {
     }
     if (illegal_imports.nonEmpty) None
     else {
-      val node_header =
-        // Isabelle 2026: Header carries an `options` field between imports and
-        // keywords — pass named args so the fields land correctly.
-        Document.Node.Header(
+      // Isabelle 2026 (RC1+): the node header edit is `Document.Node.Thy`
+      // carrying a `Resources.Thy` (what `Resources.check_thy` builds from a
+      // file). `Document.Node.Header`/`Node.Deps` (2025-2 … 2026-RC0) are gone.
+      // `eval_conditions` is mandatory: `Resources.Thy.encode` (protocol side)
+      // reads `condition_bad`, which errors on unevaluated conditions and would
+      // inject "Unevaluated conditions for theory …" into the node.
+      val thy =
+        Resources.Thy(
+          name = node_name,
+          pos = thy_header.pos,
           imports = imports,
+          options = thy_header.options,
           keywords = thy_header.keywords,
-          abbrevs = thy_header.abbrevs,
-        )
-      Some(Document.Node.Deps(node_header))
+          abbrevs = thy_header.abbrevs
+        ).eval_conditions(session.conditions)
+      Some(Document.Node.Thy[Text.Edit, Text.Perspective](thy))
     }
   }
 
@@ -158,8 +165,9 @@ object Edit_Utils {
         dependencies_edit(session, node_name, thy_header).map { true_deps_edit =>
           thy_info.set_header_processed(true)
           // LOAD-BEARING (heap-pool model, Stage 3): the emulated wrapper-import
-          // Deps edit is applied AFTER the true-deps edit and REPLACES the header
-          // (the PIDE keeps the last Deps edit). Consequence: the document's own
+          // header edit (Node.Thy; Node.Deps before Isabelle 2026-RC1) is applied
+          // AFTER the true-deps edit and REPLACES the header (the PIDE keeps the
+          // last header edit). Consequence: the document's own
           // import list only gates LOADING (import_all_theories above); the visible
           // parent context comes from the wrapper alone. Therefore the wrapper must
           // state every import whose facts/ML environment the document needs.
