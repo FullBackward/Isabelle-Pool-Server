@@ -93,7 +93,7 @@ docker compose logs -f isabelle-gym    # live server log (also logs/server.log, 
 docker compose up -d prometheus grafana cadvisor   # Grafana :3000 (admin/admin), Prometheus :9090, cAdvisor :8080
 ```
 
-`GET /` returns `service`, `version` (`0.0.2`, `server/app/core/config.py::API.VERSION`), `status` (`healthy`/`degraded`), `gateway_alive`, `active_sessions`, `busy_sessions`, `max_pool_size`, `max_concurrent_sledgehammer`, memory fields, `timestamp`. The admin console is `GET /admin`; the OpenAPI spec is `/openapi.json` (Swagger UI `/docs`).
+`GET /` returns `service`, `version` (`0.1.0`, `server/app/core/config.py::API.VERSION`), `status` (`healthy`/`degraded`), `gateway_alive`, `active_sessions`, `busy_sessions`, `max_pool_size`, `max_concurrent_sledgehammer`, memory fields, `timestamp`. The admin console is `GET /admin`; the OpenAPI spec is `/openapi.json` (Swagger UI `/docs`).
 
 Changing `.env` needs `docker compose up -d --force-recreate isabelle-gym`, not a restart.
 

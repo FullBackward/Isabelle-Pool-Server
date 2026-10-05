@@ -62,7 +62,7 @@ Expected `GET /` response:
 ```json
 {
   "service": "IsabelleGym Server",
-  "version": "0.0.2",
+  "version": "0.1.0",
   "status": "healthy",
   "gateway_alive": true,
   "active_sessions": 0,

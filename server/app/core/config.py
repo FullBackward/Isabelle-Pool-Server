@@ -4,7 +4,7 @@ import re
 
 
 class API:
-    VERSION: Final = "0.0.2"
+    VERSION: Final = "0.1.0"
 
 
 class Server:
