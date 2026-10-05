@@ -61,8 +61,8 @@ export DEEPSEEK_API_KEY="your-deepseek-key"   # current default provider
 Optional, for I/Q:
 
 ```bash
-export IQ_AUTH_TOKEN="eval-secret-token"      # or paste into MCP-comparison/iq_token.txt
-export IQ_MCP_ALLOWED_ROOTS="/abs/path/to/MCP-comparison/runs/autocorrode/work"
+export IQ_AUTH_TOKEN="eval-secret-token"      # or paste into evaluation/MCP-comparison/iq_token.txt
+export IQ_MCP_ALLOWED_ROOTS="/abs/path/to/IsabelleGym/evaluation/MCP-comparison/runs/autocorrode/work"
 ```
 
 ### Backends
@@ -80,7 +80,7 @@ server on `http://localhost:8000`.
 
 ## Configuration
 
-Edit `MCP-comparison/config.yaml`, or create `MCP-comparison/config.local.yaml` to override
+Edit `evaluation/MCP-comparison/config.yaml`, or create `evaluation/MCP-comparison/config.local.yaml` to override
 without touching versioned defaults (the local file is not tracked by git).
 
 Current key knobs (see the files for the full set):
@@ -131,7 +131,7 @@ theorem putnam_1988_b1:
 end
 ```
 
-Place them in `MCP-comparison/problems/` (or any directory passed with `--thy-dir`).
+Place them in `evaluation/MCP-comparison/problems/` (or any directory passed with `--thy-dir`).
 
 ---
 
@@ -165,12 +165,12 @@ python -m server.app.main
 Then run:
 
 ```bash
-python MCP-comparison/run_isabellegym.py --thy-dir MCP-comparison/problems --prompt segment --repeats 10
+python evaluation/MCP-comparison/run_isabellegym.py --thy-dir evaluation/MCP-comparison/problems --prompt segment --repeats 10
 ```
 
 ### 1b. IsabelleGym LSP (file-sync workflow)
 
-The LSP-like MCP (`mcp_lsp_server/`) is READ-ONLY by design — it observes files.
+The LSP-like MCP (`mcp_servers/lsp/`) is READ-ONLY by design — it observes files.
 So this runner differs in shape: the agent edits a per-attempt workdir copy of
 the problem with LOCAL `read_file`/`write_file` tools (sandboxed to the workdir),
 and the MCP sees each edit via its disk→session sync on the next query. Setup
@@ -179,7 +179,7 @@ arbiter on the final file state.
 
 ```bash
 python -m server.app.main   # the LSP MCP talks to the same HTTP server
-python MCP-comparison/run_isabellegym_lsp.py --thy-dir MCP-comparison/problems --repeats 10
+python evaluation/MCP-comparison/run_isabellegym_lsp.py --thy-dir evaluation/MCP-comparison/problems --repeats 10
 ```
 
 Results land in `runs/isabellegym_lsp/` (same results.jsonl schema;
@@ -193,7 +193,7 @@ Ensure patched Isabelle and `isabelle-mcp` are on PATH, set
 `mcp_servers.isabelle_mcp.command: [isabelle-mcp]`, then:
 
 ```bash
-python MCP-comparison/run_isabelle_mcp.py --thy-dir MCP-comparison/problems
+python evaluation/MCP-comparison/run_isabelle_mcp.py --thy-dir evaluation/MCP-comparison/problems
 ```
 
 #### Option B — Docker container (recommended, host-safe)
@@ -239,7 +239,7 @@ isabelle_mcp_container:
 Run:
 
 ```bash
-python MCP-comparison/run_isabelle_mcp.py --thy-dir MCP-comparison/problems --repeats 10
+python evaluation/MCP-comparison/run_isabelle_mcp.py --thy-dir evaluation/MCP-comparison/problems --repeats 10
 ```
 
 The harness writes `.thy` files to `host_work_dir` and translates paths to `/work/...`
@@ -253,20 +253,20 @@ restarted), then:
 
 ```bash
 export IQ_AUTH_TOKEN="eval-secret-token"     # or paste into iq_token.txt (re-read each attempt)
-export IQ_MCP_ALLOWED_ROOTS="C:/Users/winst/GitHub/IsabelleGym/MCP-comparison/runs/autocorrode/work"
+export IQ_MCP_ALLOWED_ROOTS="/abs/path/to/IsabelleGym/evaluation/MCP-comparison/runs/autocorrode/work"
 ```
 
 Run:
 
 ```bash
-python MCP-comparison/run_autocorrode_iq.py --thy-dir MCP-comparison/problems --repeats 10
+python evaluation/MCP-comparison/run_autocorrode_iq.py --thy-dir evaluation/MCP-comparison/problems --repeats 10
 ```
 
 ### Run a subset / override repeats
 
 ```bash
-python MCP-comparison/run_isabellegym.py --thy-dir MCP-comparison/problems --select putnam_1988
-python MCP-comparison/run_isabellegym.py --thy-dir MCP-comparison/problems --repeats 20
+python evaluation/MCP-comparison/run_isabellegym.py --thy-dir evaluation/MCP-comparison/problems --select putnam_1988
+python evaluation/MCP-comparison/run_isabellegym.py --thy-dir evaluation/MCP-comparison/problems --repeats 20
 ```
 
 ---
@@ -279,8 +279,8 @@ first call for a heavy parent session can take minutes — `ARBITER_BUILD_TIMEOU
 default 900 s). You can also run it manually:
 
 ```bash
-python -m common.arbiter MCP-comparison/problems/Putnam_1988_B1.thy \
-                         MCP-comparison/runs/isabellegym/Putnam_1988_B1_rep0.thy
+cd evaluation/MCP-comparison   # `common` is imported relative to the harness directory
+python -m common.arbiter problems/Putnam_1988_B1.thy runs/isabellegym/Putnam_1988_B1_rep0.thy
 ```
 
 The arbiter checks:
@@ -293,7 +293,7 @@ The arbiter checks:
 ## Analyze results
 
 ```bash
-python MCP-comparison/analyze.py
+python evaluation/MCP-comparison/analyze.py
 ```
 
 Prints per-system summary tables (attempts, pass@1, mean rounds / productive rounds /
@@ -327,7 +327,7 @@ Each runner appends one JSON line per `(system, problem, repeat)` to its `result
   "cached_tokens": 98000,
   "agent_claimed_solved": true,
   "arbiter_solved": true,
-  "final_thy_path": "MCP-comparison/runs/isabellegym/mathd_algebra_276_rep0.thy",
+  "final_thy_path": "evaluation/MCP-comparison/runs/isabellegym/mathd_algebra_276_rep0.thy",
   "error": null
 }
 ```

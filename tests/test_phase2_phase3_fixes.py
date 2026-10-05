@@ -121,7 +121,7 @@ def test_chunk_verify_request_rejects_empty_chunk():
 
 
 def test_mcp_pool_conn_key_is_weak_and_not_recyclable():
-    from mcp_stepwise_server.pool import Current, SessionPool
+    from mcp_servers.stepwise.pool import Current, SessionPool
 
     pool = SessionPool()
 
@@ -146,7 +146,7 @@ def test_mcp_pool_conn_key_is_weak_and_not_recyclable():
 
 
 def test_mcp_pool_falls_back_to_stable_sentinel():
-    from mcp_stepwise_server.pool import SessionPool
+    from mcp_servers.stepwise.pool import SessionPool
 
     pool = SessionPool()
 

@@ -41,7 +41,7 @@ mcp_servers:
       ISABELLE_MCP_GYM_URL: http://localhost:8000
 
   isabellegym_lsp:
-    # The LSP-like file-sync MCP (mcp_lsp_server); read-only MCP tools — the
+    # The LSP-like file-sync MCP (mcp_servers.lsp); read-only MCP tools — the
     # runner adds local read_file/write_file tools over a per-attempt workdir.
     command: [python, -m, mcp_servers.lsp.app]
     env:

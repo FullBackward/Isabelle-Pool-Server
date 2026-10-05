@@ -527,8 +527,8 @@ position-explicit: `isabelle_goal` / `isabelle_command_at_line` (snapshot-based)
 `last_report` (the stored per-command report), plus facts, source, checkpoints, `run_code`
 (gated, 1.10), heap build/status (1.13). `isabelle_multi_attempt` tries N candidate
 proofs concurrently in a bounded scratch pool of extra sessions (`SCRATCH_POOL_SIZE`). Env
-prefix `ISABELLE_MCP_LSP_` so both MCPs run side by side; deprecated `mcp_lsp_server` /
-`mcp_stepwise_server` shims keep old launch commands working.
+prefix `ISABELLE_MCP_LSP_` so both MCPs run side by side (the pre-merge `mcp_lsp_server` /
+`mcp_stepwise_server` launch shims were retired on 2026-10-05).
 **Alternative:** grow the chunk-centric server (2.4) with file tools.
 
 **Why:** the two agent shapes want opposite contracts — chunk agents want transactional

@@ -19,14 +19,12 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 
 # package dir -> import roots it must never touch
-_MCP_PKGS = {"mcp_servers", "mcp_lsp_server", "mcp_stepwise_server", "mcp"}
+_MCP_PKGS = {"mcp_servers", "mcp"}
 FORBIDDEN = {
     "client": {"server", "repl", "evaluation", "archive"} | _MCP_PKGS,
     "mcp_servers": {"server", "repl", "evaluation", "archive"},
-    "mcp_lsp_server": {"server", "repl", "evaluation", "archive"},        # deprecated shim
-    "mcp_stepwise_server": {"server", "repl", "evaluation", "archive"},   # deprecated shim
     "server": {"client", "evaluation", "archive"} | _MCP_PKGS,
-    "evaluation": {"server", "repl", "archive", "mcp_servers", "mcp_lsp_server", "mcp_stepwise_server"},
+    "evaluation": {"server", "repl", "archive", "mcp_servers"},
 }
 
 

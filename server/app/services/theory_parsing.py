@@ -1,7 +1,7 @@
 """Canonical Isabelle theory-header parsing (one implementation, all consumers).
 
 History (isabellegym-header-imports-issue.md): three independent regex parsers
-(mcp_lsp_server/pool.py, core/config.py::RegularExp.IMPORT_RE, external
+(mcp_servers/lsp/pool.py, core/config.py::RegularExp.IMPORT_RE, external
 harnesses) all matched the FIRST `imports` keyword anywhere in the file —
 including inside leading `(* TASK: ... imports=... *)` comments — producing
 garbage theory names and HTTP 500 at session creation. This module is the

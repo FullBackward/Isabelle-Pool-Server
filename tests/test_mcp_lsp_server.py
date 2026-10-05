@@ -1,4 +1,4 @@
-"""Unit tests for mcp_lsp_server (file-sync pool logic) — no backend, no mcp
+"""Unit tests for mcp_servers.lsp (file-sync pool logic) — no backend, no mcp
 package: tests target pool.py with a fake IsabelleGymAsyncClient.
 """
 from __future__ import annotations

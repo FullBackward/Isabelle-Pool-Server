@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """IsabelleGym LSP-MCP comparison runner (file-sync workflow).
 
-Drives the NEW LSP-like MCP server (mcp_lsp_server) through the same
+Drives the LSP-like MCP server (mcp_servers.lsp) through the same
 OpenAI-compatible agent loop, problems, and neutral arbiter as the other
 runners — the cleanest possible A/B against the chunk-centric MCP.
 

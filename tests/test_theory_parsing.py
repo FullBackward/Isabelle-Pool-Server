@@ -1,6 +1,6 @@
 """Tests for the canonical theory-header parser (header-imports issue):
 comment-stripped, header-anchored — and for its two delegating consumers
-(mcp_lsp_server.pool.header_imports, build_verify.extract_imports).
+(mcp_servers.lsp.pool.header_imports, build_verify.extract_imports).
 No Isabelle backend needed.
 """
 from __future__ import annotations

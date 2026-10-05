@@ -66,10 +66,3 @@ def test_verify_chunk_docstring_states_the_proved_rule():
     """`success=True ≠ proved` is the one invariant agents must never lose (2.4/2.8)."""
     desc = next(t.description for t in _tools(stepwise_app.mcp) if t.name == "verify_chunk")
     assert "proof_open" in desc and "used_sorry" in desc
-
-
-def test_deprecated_shims_reexport_the_same_servers():
-    import mcp_lsp_server.app as lsp_shim
-    import mcp_stepwise_server.app as stepwise_shim
-    assert lsp_shim.mcp is lsp_app.mcp and lsp_shim.pool is lsp_app.pool
-    assert stepwise_shim.mcp is stepwise_app.mcp and stepwise_shim.pool is stepwise_app.pool

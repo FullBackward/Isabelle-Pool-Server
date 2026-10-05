@@ -1,24 +1,47 @@
-# IsabelleGym Server — Issue Investigation & Fix Plan
+# IsabelleGym Server — Issues, Fixes & Work Log
 
-**Date:** 2026-06-04 (revised)
-**Scope:** Server layer (`server/`), REPL layer (`repl/`)
-**Status:** Sledgehammer is implemented and verified — its section has been removed from this file (see `claude-work/impl-sledgehammer/` for the test/demonstration artifacts and notes). What remains below is the memory-management / session-closing review, re-checked against the current code.
+**Started:** 2026-06-04 · **Last structural update:** 2026-10-05
+**Scope:** server layer (`server/app/`), REPL backend (`server/repl/`), MCP servers (`mcp_servers/`), deployment (`deploy/`).
+
+How this file works: every confirmed defect gets a numbered **Bug N** section (symptom, root cause,
+fix, how it was verified). Audit findings that are not yet promoted live in the
+[Open Findings Tracker](#open-findings-tracker); the dated
+[Agent Work Log](#agent-work-log-dated) at the end records what was done when, with the
+`claude-work/<task>/` folder (gitignored, local) that holds the artifacts. Design rationale is
+in `DESIGN_CHOICES.md`, not here.
 
 ---
 
 ## Table of Contents
 
-1. [Memory Management / Session Closing](#memory-management--session-closing)
+1. [Memory Management / Session Closing](#memory-management--session-closing) — the close call chain and Bugs 1–5
    - [Bug 1: Race Condition in `ThreadedBackend.close()` — RESOLVED](#bug-1-race-condition-in-threadedbackendclose--resolved)
    - [Bug 2: Join Timeout Too Short — RESOLVED](#bug-2-join-timeout-too-short--resolved)
-   - [Bug 3: Leased Sessions Never Idle-Evicted — RESOLVED](#bug-3-leased-sessions-never-idle-evicted--open)
-   - [Bug 4: TOCTOU on `in_use` Check — RESOLVED](#bug-4-toctou-on-in_use-check--open)
-   - [Bug 5: Isabelle Processes Persist After Close — RESOLVED](#bug-5-isabelle-processes-persist-after-close--open)
-2. [Bug 6: Gateway OOM Under Concurrent Sledgehammer — RESOLVED](#bug-6-gateway-oom-under-concurrent-sledgehammer--resolved)
-3. [Bug 7: Stale `isabelle_user_data` Volume Shadows Component Registration — RESOLVED (workaround)](#bug-7-stale-isabelle_user_data-volume-shadows-component-registration-after-image-rebuild--resolved-workaround)
-4. [Bug 8: `close()` Rejects Its Own `exit` Job — Sessions Never Torn Down — RESOLVED](#bug-8-close-rejects-its-own-exit-job--sessions-never-torn-down--resolved)
-5. [Open Findings Tracker](#open-findings-tracker)
-6. [Claude Work Log (dated)](#claude-work-log-dated)
+   - [Bug 3: Leased Sessions Never Idle-Evicted — RESOLVED](#bug-3-leased-sessions-never-idle-evicted--resolved)
+   - [Bug 4: TOCTOU on `in_use` Check — RESOLVED](#bug-4-toctou-on-in_use-check--resolved)
+   - [Bug 5: Isabelle Processes Persist After Close — RESOLVED (not reproducible)](#bug-5-isabelle-processes-persist-after-close--resolved-not-reproducible)
+- [Bug 6: Gateway OOM Under Concurrent Sledgehammer — RESOLVED](#bug-6-gateway-oom-under-concurrent-sledgehammer--resolved)
+- [Bug 7: Stale `isabelle_user_data` Volume Shadows Component Registration After Image Rebuild — RESOLVED](#bug-7-stale-isabelle_user_data-volume-shadows-component-registration-after-image-rebuild--resolved)
+- [Bug 8: `close()` Rejects Its Own `exit` Job — Sessions Never Torn Down — RESOLVED](#bug-8-close-rejects-its-own-exit-job--sessions-never-torn-down--resolved)
+- [Bug 9: Gateway JVM `Event_Timer` Cancelled — Server Wedges, Recovery Blind — RESOLVED](#bug-9-gateway-jvm-event_timer-cancelled--server-wedges-recovery-blind--resolved)
+- [Bug 10: `GET /api/v1/sessions` Leaks `lease_id`s — Destroy Authorization Bypassable — RESOLVED](#bug-10-get-apiv1sessions-leaks-lease_ids--destroy-authorization-bypassable--resolved)
+- [Bug 11: `ISABELLE_SCALA_JAVA_OPTIONS` Is Dead Config — JVM Options Never Reach the Gateway — RESOLVED](#bug-11-isabelle_scala_java_options-is-dead-config--jvm-options-never-reach-the-gateway--resolved)
+- [Bug 12: Unauthenticated ML Execution Through Every Text Endpoint — RESOLVED](#bug-12-unauthenticated-ml-execution-through-every-text-endpoint--resolved)
+- [Bug 13: Heap-Pool Path Traversal and Unauthenticated Destructive Heap Endpoints — RESOLVED](#bug-13-heap-pool-path-traversal-and-unauthenticated-destructive-heap-endpoints--resolved)
+- [Bug 14: State Probes Leaked `ML_val` Into the Document — RESOLVED (by design change)](#bug-14-state-probes-leaked-ml_val-into-the-document--resolved-by-design-change)
+- [Bug 15: Unbounded Settle Waits Wedge the Session Worker — RESOLVED](#bug-15-unbounded-settle-waits-wedge-the-session-worker--resolved)
+- [Bug 16: Idle-Cleanup Sweep Blocked the Event Loop — RESOLVED](#bug-16-idle-cleanup-sweep-blocked-the-event-loop--resolved)
+- [Bug 17: LSP MCP Scratch-Slot Leak Hung `multi_attempt` / `run_code` for the Rest of a Run — RESOLVED](#bug-17-lsp-mcp-scratch-slot-leak-hung-multi_attempt--run_code-for-the-rest-of-a-run--resolved)
+- [Bug 18: Diff-to-Edit Offsets Corrupted the Document on Incremental Sync and Checkpoint Restore — RESOLVED](#bug-18-diff-to-edit-offsets-corrupted-the-document-on-incremental-sync-and-checkpoint-restore--resolved)
+- [Bug 19: A Bogus File Path Pinned a Leased Session in the LSP MCP — RESOLVED](#bug-19-a-bogus-file-path-pinned-a-leased-session-in-the-lsp-mcp--resolved)
+- [Bug 20: Concurrent First Calls on One File Created Two Sessions and Released One Mid-Use — RESOLVED](#bug-20-concurrent-first-calls-on-one-file-created-two-sessions-and-released-one-mid-use--resolved)
+- [Bug 21: LSP File Bindings Reused Dirty Sessions — RESOLVED](#bug-21-lsp-file-bindings-reused-dirty-sessions--resolved)
+- [Bug 22: Checkpoint Restore Reported Success for Unknown or Invalidated Ids — RESOLVED](#bug-22-checkpoint-restore-reported-success-for-unknown-or-invalidated-ids--resolved)
+- [Bug 23: Theory-Name Injection Through `enter_theory` and the Theory-Name Fields — RESOLVED](#bug-23-theory-name-injection-through-enter_theory-and-the-theory-name-fields--resolved)
+- [Bug 24: Thirteen LSP MCP Tools Shipped With an Empty Description — RESOLVED](#bug-24-thirteen-lsp-mcp-tools-shipped-with-an-empty-description--resolved)
+- [Open Findings Tracker](#open-findings-tracker)
+- [Summary of Changes](#summary-of-changes) (Bugs 1–6)
+- [Agent Work Log (dated)](#agent-work-log-dated)
 
 ---
 
@@ -164,7 +187,7 @@ Optionally make `max_lease_age` configurable via `ISABELLE_MAX_LEASE_AGE_SECONDS
 
 ---
 
-### Bug 4: TOCTOU on `in_use` Check — OPEN
+### Bug 4: TOCTOU on `in_use` Check — RESOLVED
 
 **File:** `server/app/services/session_manager.py`, `close_session()`
 **Severity:** Low
@@ -911,8 +934,8 @@ appends the sync note to `__doc__` before registering with FastMCP.
 
 **Verified:** `tests/test_mcp_tools_smoke.py` asserts a non-empty description and an object
 input schema for every tool of both servers, the exact tool-name sets (11 / 23), the
-`prove_theorem` prompt, the `success ≠ proved` wording in `verify_chunk`, and that the
-deprecated shim packages re-export the same server objects.
+`prove_theorem` prompt, and the `success ≠ proved` wording in `verify_chunk`. (The shim
+re-export assertion was dropped with the shim packages on 2026-10-05.)
 
 ---
 
@@ -940,9 +963,9 @@ Status vocabulary: `open` · `in progress` · `fixed` · `verified` · `deferred
 | MCP-1 | High | LSP scratch-slot leak → permanent hang: release outside `finally`, `await queue.get()` without timeout | `mcp_servers/lsp/app.py`, `mcp_servers/lsp/pool.py:254` | fixed + verified 2026-09-30 — `LspPool.scratch_session` bracket (always returns the slot, drops on 404/cancellation, deferred close of busy sessions) + bounded `acquire_scratch` wait; see Bug 17 | c3b1326fb4751b68aa1d74fa12737352bb0e1006 | `tests/test_mcp_lsp_server.py` (+3), `claude-work/2026-9-30-impl-overlay-probes/smoke_mcp1_scratch.py` (live) | `claude-work/2026-9-30-impl-overlay-probes/` (Part 4) |
 | MCP-2 | High | Binding registered before the `isfile` check; a bogus path pins a leased session | `mcp_servers/lsp/pool.py:125,149` | fixed + verified 2026-09-30 — `_create_binding` checks `isfile` before acquiring; see Bug 19 | 4e5128d0a4d3b0667cc9154f71c08a5a398067d6 | `tests/test_mcp_lsp_server.py::test_binding_missing_file_acquires_nothing`, `claude-work/2026-9-30-impl-overlay-probes/smoke_mcp2_missing_file.py` (live) | `claude-work/2026-9-30-impl-overlay-probes/` (Part 6) |
 | MCP-3 | High | `get_binding` reads `_bindings` outside the lock; two first calls → two sessions | `mcp_servers/lsp/pool.py:136` | fixed + verified 2026-09-30 — `get_binding` looks up under the lock and is single-flight per path (`_creating` futures); see Bug 20 | f83d9b5682d938f9ac7d05c07d7bf6b5f9630d1e | `tests/test_mcp_lsp_server.py` (+2), `claude-work/2026-9-30-impl-overlay-probes/smoke_mcp3_single_flight.py` (live) | `claude-work/2026-9-30-impl-overlay-probes/` (Part 7) |
-| REPL-4 | High | Checkpoint soundness: `valid` accepts `state_id == count`; unknown id restores empty edits and reports success | `server/repl/src/main/scala/repl/repl_session.scala:45`, `thy_info.scala:92` | fixed + verified 2026-09-30 — issued-ids-only validation, all-or-nothing restore, Python honours the backend result; see Bug 22 — commit pending | (pending) | `tests/test_checkpoint_restore.py` (3), `claude-work/2026-9-30-impl-overlay-probes/smoke_checkpoint_soundness.py` + `smoke_checkpoint_restore.py` (live) | `claude-work/2026-9-30-impl-overlay-probes/` (Part 9) |
+| REPL-4 | High | Checkpoint soundness: `valid` accepts `state_id == count`; unknown id restores empty edits and reports success | `server/repl/src/main/scala/repl/repl_session.scala:45`, `thy_info.scala:92` | fixed + verified 2026-09-30 — issued-ids-only validation, all-or-nothing restore, Python honours the backend result; see Bug 22 | 56b85f1 | `tests/test_checkpoint_restore.py` (3), `claude-work/2026-9-30-impl-overlay-probes/smoke_checkpoint_soundness.py` + `smoke_checkpoint_restore.py` (live) | `claude-work/2026-9-30-impl-overlay-probes/` (Part 9) |
 | MCP-4 | Med | LSP pool acquires with default `reuse_dirty=True` (stepwise uses `False`); stale errors leak across attempts (reproduced 2026-09-30 during the RC2 smoke test) | `mcp_servers/lsp/pool.py` | fixed + verified 2026-09-30 — file bindings acquire with `reuse_dirty=False` (clean-only reuse, as the stepwise pool); see Bug 21 | d4a54ae630632fa8522ef48743a260b2cf6e30a0 | `tests/test_mcp_lsp_server.py::test_binding_reuse_is_clean_only`, `claude-work/2026-9-30-impl-overlay-probes/smoke_mcp4_clean_reuse.py` (live) | `claude-work/2026-9-30-impl-overlay-probes/` (Part 8) |
-| TEST-1 | P0 | Missing regression suites: in-process MCP `list_tools()` smoke; security-inputs (`../`, `ML <...>`, quote injection) — `tests/test_input_guards.py` covers part | `tests/` | fixed + verified 2026-09-30 — `test_mcp_tools_smoke.py` (6) + `test_security_inputs.py` (78, HTTP-layer payload matrix); both found real gaps, fixed as Bug 23 (theory-name injection) and Bug 24 (13 LSP tools with empty descriptions); suite runs with no ignore flag (openai skip) — commit pending | (pending) | the two new modules; suite 376 passed / 2 skipped | `claude-work/2026-9-30-impl-overlay-probes/` (Part 10) |
+| TEST-1 | P0 | Missing regression suites: in-process MCP `list_tools()` smoke; security-inputs (`../`, `ML <...>`, quote injection) — `tests/test_input_guards.py` covers part | `tests/` | fixed + verified 2026-09-30 — `test_mcp_tools_smoke.py` (6) + `test_security_inputs.py` (78, HTTP-layer payload matrix); both found real gaps, fixed as Bug 23 (theory-name injection) and Bug 24 (13 LSP tools with empty descriptions); suite runs with no ignore flag (openai skip) | afd0ecc (tests), f6c9a36 (Bugs 23/24) | the two new modules; suite 376 passed / 2 skipped | `claude-work/2026-9-30-impl-overlay-probes/` (Part 10) |
 | SEC-1 | Crit | `/admin` inlines the admin token into an unauthenticated page | `server/app/main.py` | deferred (owner, 2026-09-22; keep the port firewalled) | | | |
 | RC2-1 | — | Isabelle2026-RC2 image: in-container unit suite, route smoke, MCP stdio smoke not yet run on the new image | `deploy/Dockerfile` | open — PARTIAL 2026-09-30: unit suite runs green on the RC2 image with no flags (376/2 skipped) and the MCP servers are smoke-tested in-process (TEST-1); still not done: a route smoke on the image itself and spawning each MCP over stdio | | | `claude-work/2026-9-29-impl-isabelle2026-image/`, `claude-work/rc2-fontconfig/` |
 | RC2-2 | — | Retire `deploy/Dockerfile.rc0`, `build_rc0_image.sh`; make `Dockerfile.export` a heap-baking stage; rewrite `RC0-image-instructions.md` for the 2026 image | `deploy/` | open (after RC2-1; RC0 image itself is kept until the Isabelle2026 release) | | | |

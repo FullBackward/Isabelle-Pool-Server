@@ -1,4 +1,4 @@
-# mcp_lsp_server — LSP-like MCP server (file-sync workflow)
+# mcp_servers.lsp — LSP-like MCP server (file-sync workflow)
 
 An MCP server for agent-driven Isabelle development over *files*, in the spirit
 of lean-lsp-mcp: tools take a `file_path` (never a session id), the file is

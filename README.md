@@ -18,12 +18,12 @@ Components:
 | `server/` | FastAPI service: session pool, leases, memory admission, metrics (`server/app/api/v1/routes/` holds the endpoints) |
 | `server/repl/` | Scala/ML Isabelle REPL backend (PIDE sessions, one shared gateway JVM); launched only by the server |
 | `client/` | Async Python HTTP client (`IsabelleGymAsyncClient`); its own package (`pip install -e ./client`), httpx only, never imports server code |
-| `mcp_servers/` | MCP servers for LLM agents: `lsp/` (file-sync, the one the humanize harness uses), `stepwise/` (chunk-centric), `common/` shared bits. `mcp_lsp_server/` and `mcp_stepwise_server/` are deprecated launch/import shims |
-| `deploy/` | Dockerfiles, `setup.sh`, RC0 image scripts, Prometheus/Grafana/cAdvisor configs (`docker-compose.yml` stays at the root) |
+| `mcp_servers/` | MCP servers for LLM agents: `stepwise/` (chunk-centric, `verify_chunk` as the one execution tool), `lsp/` (file-sync, LSP-style — tools take a file path), `common/` shared bits |
+| `deploy/` | `Dockerfile` (one file, every Isabelle version via `ISABELLE_VERSION`), `setup.sh`, turnkey-image scripts, Prometheus/Grafana/cAdvisor configs (`docker-compose.yml` stays at the root) |
 | `evaluation/` | Benchmark CLIs, `results/benchmark_runs.json` (consolidated runs), `MCP-comparison/` harness |
-| `examples/` | Demo notebook, figures, heap demo project |
-| `tests/` | Unit tests (no Isabelle needed); run the full suite inside the container |
-| `docs/` | `DESIGN_CHOICES.md`, `ISSUES.md` (bug log + work log), `devnote.md` (experiment notes) |
+| `examples/` | `demo.ipynb` API walkthrough (HTTP client + both MCP servers), figures, heap demo project |
+| `tests/` | Unit tests (no Isabelle needed; ~380 tests); run the full suite inside the container |
+| `docs/` | `DESIGN_CHOICES.md` (rationale), `ISSUES.md` (bug log + dated work log), `devnote.md` → `experiments/` (MCP-comparison experiment logs) |
 | `archive/` | Read-only history: IsabelleGym 1.0 sources, the 2.0 in-process gym and its baseline scripts, the unmaintained `install.sh` |
 
 Design rationale for the architecture lives in [DESIGN_CHOICES.md](docs/DESIGN_CHOICES.md);
@@ -121,10 +121,22 @@ ISABELLE_ADMIN_TOKEN=...          # admin console / admin endpoints credential
 docker compose build isabelle-gym
 ```
 
-This downloads the Isabelle 2025-2 distribution (~1.2 GB). The official server
-(`isabelle.in.tum.de`) is sometimes down; the build automatically falls back through
-mirrors (Clarkson → Cambridge → Proofcraft). The build takes 10–30 minutes (Isabelle
-download + Scala backend build).
+This downloads the Isabelle distribution (~1.2 GB) and builds the Scala backend against
+it; allow 10–30 minutes. The version is the `ISABELLE_VERSION` build argument in
+`deploy/Dockerfile` — **Isabelle 2026** (currently the `Isabelle2026-RC2` release
+candidate; it becomes `Isabelle2026` when the final release ships). The official server
+(`isabelle.in.tum.de`) is sometimes down or slow; the build abandons any mirror under
+1 MB/s and falls back through `isabelle.sketis.net` → Cambridge → Proofcraft → Clarkson.
+
+The same Dockerfile still builds the previous release if you need it:
+
+```bash
+docker build -f deploy/Dockerfile --build-arg ISABELLE_VERSION=Isabelle2025-2 \
+  -t isabellegym-isabelle-gym:2025-2 .
+```
+
+Heaps are version-locked — never share the `isabelle_user_data` volume between two
+Isabelle versions.
 
 ### 4. Start the server
 
@@ -176,20 +188,20 @@ docker compose exec isabelle-gym isabelle build -b HOL-Computational_Algebra
   `docker compose up -d --force-recreate isabelle-gym`.
 - **After an image rebuild**, if the server fails with `Not found: py4j`: a pre-existing
   named volume shadows the component registration. The container entrypoint
-  (`server/server/repl/Admin/container_entrypoint.sh`) re-registers automatically on every start; the
-  manual fix is `docker compose exec isabelle-gym ./server/repl/Admin/init`
+  (`server/repl/Admin/container_entrypoint.sh`) re-registers automatically on every
+  start; the manual fix is `docker compose exec isabelle-gym ./server/repl/Admin/init`
   (docs/ISSUES.md Bug 7).
 - **Remote access:** the API listens on `0.0.0.0:8000` with no authentication — keep it
   firewalled (`sudo ufw allow from <your-ip> to any port 8000`) or tunnel over SSH.
 
-### 6. Isabelle 2026-RC0 track
+### 6. Pre-built turnkey image
 
-`main` tracks Isabelle 2025-2. The `2026-RC0` branch carries the same server features
-plus the compatibility patch set for the Isabelle 2026 release candidate (its own
-`deploy/Dockerfile.rc0`, Scala API adjustments). Everything above applies identically — check
-out that branch and run the same commands. A pre-built turnkey image (heaps included,
-for reproducing published results) is distributed separately; see
-`deploy/RC0-image-instructions.md`.
+For reproducing published results without building anything, a self-contained image
+(Isabelle + backend + server + pre-built session heaps) is distributed separately as a
+`docker load`-able tarball; the recipient runbook is `deploy/RC0-image-instructions.md`.
+The scripts that produced it (`deploy/Dockerfile.rc0`, `build_rc0_image.sh`,
+`Dockerfile.export`) predate the single multi-version Dockerfile and are kept until the
+Isabelle 2026 final release (docs/ISSUES.md RC2-2).
 
 ---
 
@@ -201,9 +213,18 @@ The MCP server is a thin agent-facing layer over the HTTP API:
 LLM agent  ⇄  MCP server (stdio or streamable-HTTP)  ⇄  IsabelleGym HTTP server  ⇄  Isabelle
 ```
 
-Sessions and leases are managed automatically per MCP connection — the agent never sees a
-`session_id`. Each connection gets an isolated Isabelle session; a fresh `enter_theory`
-always starts from a clean document.
+There are two MCP servers, for two agent shapes (rationale: DESIGN_CHOICES §2.9):
+
+| Server | Launch | Shape |
+|---|---|---|
+| `mcp_servers.stepwise` | `python -m mcp_servers.stepwise.app` | **Chunk-centric.** The agent submits Isar text; `verify_chunk` is the one execution tool, failed text rolls back. Env prefix `ISABELLE_MCP_`. Documented below. |
+| `mcp_servers.lsp` | `python -m mcp_servers.lsp.app` | **File-sync (LSP-style).** Tools take a `file_path`; the file is re-read from disk before every query and the broken state is kept for inspection. Env prefix `ISABELLE_MCP_LSP_`, HTTP port 8849. See [mcp_servers/lsp/README.md](mcp_servers/lsp/README.md). |
+
+The rest of this section walks through the stepwise server; the lsp server is wired up
+the same way (same `PYTHONPATH`, its own env prefix). Sessions and leases are managed
+automatically per MCP connection — the agent never sees a `session_id`. Each connection
+gets an isolated Isabelle session; a fresh `enter_theory` always starts from a clean
+document.
 
 ### Prerequisites (on the machine that runs the agent/MCP client)
 
@@ -365,11 +386,17 @@ Expected: the tool list, then `success=True proof_open=False used_sorry=False ..
 
 ## Beyond the basics
 
-- **HTTP API directly** (no MCP): see the endpoint modules in `server/app/api/v1/routes/`
-  and the client in `client/async_client.py`; API reference PDFs are in the repo root.
+- **HTTP API directly** (no MCP): the live OpenAPI spec is at `/openapi.json` (Swagger UI
+  at `/docs`); endpoint modules are in `server/app/api/v1/routes/`, the async client in
+  `client/` (`pip install -e ./client`). [examples/demo.ipynb](examples/demo.ipynb) walks
+  through the client and both MCP servers end-to-end.
 - **MCP comparison harness** (this MCP vs Isabelle-MCP vs AutoCorrode I/Q):
-  [evaluation/MCP-comparison/README.md](evaluation/MCP-comparison/README.md).
+  [evaluation/MCP-comparison/README.md](evaluation/MCP-comparison/README.md); the
+  experiment write-ups are under [docs/experiments/](docs/experiments/).
 - **Evaluation scripts** for small-step/big-step benchmarking: `evaluation/scripts/`
-  (each runs as `python -m evaluation.scripts.<name>`).
-- **Developer docs:** [CLAUDE.md](CLAUDE.md) (architecture + conventions),
-  [DESIGN_CHOICES.md](docs/DESIGN_CHOICES.md) (rationale), [ISSUES.md](docs/ISSUES.md) (bug log).
+  (each runs as `python -m evaluation.scripts.<name>`); consolidated results in
+  [evaluation/results/](evaluation/results/README.md).
+- **Developer docs:** [CLAUDE.md](CLAUDE.md) / [AGENTS.md](AGENTS.md) (architecture,
+  conventions, env reference), [DESIGN_CHOICES.md](docs/DESIGN_CHOICES.md) (rationale),
+  [ISSUES.md](docs/ISSUES.md) (bug log). The older API/client reference PDFs and the
+  1.0/2.0 reports live in `archive/previous-works/`.

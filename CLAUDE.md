@@ -31,7 +31,7 @@ This is only for the demonstration/test artifacts — not every file touched dur
 
 ## Project Overview
 
-**IsabelleGym Server** is a containerized system for machine learning research on formal theorem proving. It provides a RESTful API to interact with Isabelle 2025-2 theorem prover through a three-tier architecture:
+**IsabelleGym Server** is a containerized system for machine learning research on formal theorem proving. It provides a RESTful API to interact with the Isabelle theorem prover (Isabelle 2026 — currently the RC2 release candidate, selected by the `ISABELLE_VERSION` build arg in `deploy/Dockerfile`; 2025-2 still builds from the same file) through a three-tier architecture:
 
 1. **Scala/ML backend** (server/repl/) - Isabelle REPL wrapping via Scala/ML, exposing interactive proof state operations
 2. **FastAPI server** (server/) - RESTful HTTP service with session pooling, resource management, and lease-based concurrency
@@ -42,31 +42,39 @@ This is only for the demonstration/test artifacts — not every file touched dur
 ## Quick Start (Docker Recommended)
 
 ```bash
-# Build and start the containerized stack
-docker compose up -d --build
+# Configure (.env from .env.example), build, start, health-check in one go:
+./deploy/setup.sh            # --verify for a smoke test, --build-heaps "HOL-Library" to prebuild heaps
 
-# Open a shell in the running container
-docker compose exec isabelle-gym bash
+# Or by hand:
+cp .env.example .env
+docker compose build isabelle-gym
+docker compose up -d isabelle-gym   # the entrypoint registers components and STARTS the server
 
-# Inside the container, start the server
-python -m server.app.main
-
-# From host, verify server is healthy
+# From host, verify server is healthy (allow 1-2 min for the gateway JVM)
+curl http://localhost:8000/healthz   # {"status":"alive"}
 curl http://localhost:8000/
+
+# A shell in the running container (tests, isabelle build, ...)
+docker compose exec isabelle-gym bash
 ```
 
-Expected health response:
+Expected `GET /` response:
 ```json
 {
   "service": "IsabelleGym Server",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "status": "healthy",
+  "gateway_alive": true,
   "active_sessions": 0,
   "busy_sessions": 0,
-  "max_pool_size": 24,
+  "max_pool_size": 3,
+  "max_concurrent_sledgehammer": 1,
+  "memory_management_enabled": true,
+  "memory_used_mb": 0, "memory_limit_mb": 0, "memory_pressure_pct": 0,
   "timestamp": "..."
 }
 ```
+(`max_pool_size` echoes `ISABELLE_POOL_SIZE`; `.env.example` sets 3, the code default is 24.)
 
 ## Architecture & Key Components
 
@@ -164,7 +172,7 @@ export PYTHONPATH="$PWD:${PYTHONPATH:-}"
 **Requirements:**
 - Python 3.12+ (3.10+ for local dev, Docker uses 3.12)
 - JDK 17+ (Docker uses OpenJDK 21)
-- Isabelle 2025-2 installed and on PATH
+- Isabelle 2026 (the version the Dockerfile builds; 2025-2 also works) installed and on PATH as `isabelle`
 - Scala 2.13 or 3.3 (managed by Gradle)
 
 ### Building & Testing
@@ -177,17 +185,23 @@ cd server/repl
 
 **Python linting & formatting (dev dependencies):**
 ```bash
-pylint repl server client evaluation  # Lint (ignores venv, import-error, line-too-long)
-black repl server client evaluation   # Format (line-length=88)
-isort repl server client evaluation   # Sort imports (profile=black)
-mypy repl server client evaluation    # Type check (strict=true, disable import-untyped)
+pylint server client mcp_servers evaluation  # Lint (ignores venv, import-error, line-too-long)
+black server client mcp_servers evaluation   # Format (line-length=88)
+isort server client mcp_servers evaluation   # Sort imports (profile=black)
+mypy server client mcp_servers evaluation    # Type check (strict=true, disable import-untyped)
 ```
 
-**Tests:**
+**Tests** (`tests/`, ~380 unit tests, no Isabelle needed — they stub the backend/HTTP layer;
+run from the repo root, on the host with `conda run -n IsabelleGym pytest` or inside the
+container with `docker exec isabelle-gym pytest`):
 ```bash
-pytest --cov --cov=gym --cov-report=term
+pytest                       # whole suite
+pytest tests/test_mcp_lsp_server.py -q
 ```
-Note: Current test coverage is limited; most validation is through evaluation scripts.
+Two of them are repository gates, not feature tests: `tests/test_dependency_rules.py`
+(package import direction) and `tests/test_source_limits.py` (600-line cap on source
+files, with a ratcheting allow-list). Live/integration smoke scripts against a running
+server live under `claude-work/<task>/` and are not collected.
 
 ### Running the Server Locally
 
@@ -223,7 +237,7 @@ ISABELLE_INITIAL_SESSIONS=8        # Pre-warm sessions on startup (default 3)
 ISABELLE_IDLE_TIMEOUT=1800         # Session idle timeout in seconds (default 1800)
 ISABELLE_MAX_CONCURRENT_SLEDGEHAMMER=4  # Cap in-flight sledgehammers (default ~cores/8); prevents gateway OOM
 
-# Per-session parallel proof checking (repl/.../session_manager.scala, read by Scala via sys.env)
+# Per-session parallel proof checking (server/repl/src/main/scala/repl/session_manager.scala, read by Scala via sys.env)
 ISABELLE_PARALLEL_PROOFS=2         # Isabelle parallel_proofs per session (default 2): 0=sequential,
                                    # 1=fork top-level proofs, 2=also fork nested have/show bodies.
                                    # VERIFIED effective: ~8x on independent structured proofs.
@@ -255,7 +269,7 @@ ISABELLE_MEMORY_MIN_AVAILABLE_MB=256    # Also block if available memory below t
 ISABELLE_MEMORY_FALLBACK_SYSTEM_MB=4096 # Limit used when cgroup + MemTotal unreadable (default 4096)
 
 # Proof state and field
-ISABELLE_SHOW_STATES=false         # Include raw proof states in responses (default false)
+ISABELLE_SHOW_STATES=true          # Include raw proof states in responses (default true)
 ISABELLE_DEFAULT_FIELD=HOL         # Default field if not specified (default HOL)
 
 # Server and logging
@@ -300,7 +314,7 @@ docker compose up -d prometheus grafana cadvisor
 # raw        http://localhost:8000/metrics
 ```
 Config lives under `deploy/monitoring/` (prometheus.yml, Grafana datasource + dashboard
-provisioning). `docker-compose.yml` also sets `mem_limit: 12g` on `isabelle-gym` so the
+provisioning). `docker-compose.yml` also sets `mem_limit: 14g` on `isabelle-gym` so the
 memory admission gate has a real cgroup ceiling and cAdvisor can report OOM events.
 Note: the compose service runs `bash`; start the server manually (`python -m
 server.app.main`) or Prometheus targets show DOWN until it is up.
@@ -393,12 +407,13 @@ Session caching can be enabled to reuse initialized sessions for the same import
 - This repo uses requirement.txt (singular), not requirements.txt (plural).
 
 **Docker container is up but API not responding**
-- The compose setup does not auto-launch Uvicorn. Open a shell and manually start: python -m server.app.main.
+- The entrypoint starts the server automatically; the gateway JVM takes 1-2 min. Check `docker compose logs -f isabelle-gym` and `curl localhost:8000/readyz` (503 until the gateway is up). If you overrode `command:` to `bash`, start it yourself: `python -m server.app.main`.
 
 **pip install -e . fails with dependency issues**
 - Ensure pip is upgraded: pip install --upgrade pip.
-- Core deps: py4j, numpy, torch, matplotlib, tqdm.
-- Server deps: fastapi, uvicorn, watchfiles, httpx.
+- Core deps (pyproject.toml): py4j, numpy, matplotlib, tqdm.
+- Server deps (requirement.txt): fastapi, uvicorn, httpx, prometheus-client, prometheus-fastapi-instrumentator.
+- MCP deps (mcp_servers/requirements.txt): `mcp>=1.2,<2` — mcp 2.0 removed `mcp.server.fastmcp`.
 
 ## File Structure Summary
 
@@ -415,7 +430,7 @@ repo_root/
 ├── server/                        # FastAPI server
 │   └── app/
 │       ├── main.py                # FastAPI app, middleware, exception handlers
-│       ├── api/v1/router.py       # All HTTP endpoints
+│       ├── api/v1/router.py       # Aggregates api/v1/routes/*.py (one module per concern) + deps.py, serializers.py
 │       ├── api/v1/schemas/API_models.py  # Pydantic request/response models
 │       ├── services/
 │       │   ├── session_manager.py # Session pool, LRU, lease management
@@ -424,18 +439,23 @@ repo_root/
 │       │   ├── threaded_backend.py  # Thread pool for backend ops
 │       │   ├── internal_models.py # Internal domain models
 │       │   ├── theory_chunks.py   # Command preview helpers
-│       │   ├── theory_parsing.py  # Theory parsing utilities
+│       │   ├── theory_parsing.py  # Canonical theory-header parsing (also POST /parse_theory_header)
+│       │   ├── heap_pool.py       # Verified per-project heaps (isabelle build -b)
+│       │   ├── memory_monitor.py  # cgroup memory admission gate
+│       │   ├── success_checker.py # Result classification
 │       ├── core/
 │       │   ├── config.py          # Environment-based config
-│       │   └── logging.py         # Structured logging setup
+│       │   ├── logging.py         # Structured logging setup
+│       │   ├── metrics.py         # Prometheus counters/gauges
+│       │   ├── input_guards.py    # ML-execution denylist, safe names, heap roots
+│       │   └── diagnostic_guard.py # /diagnostic command allowlist
 │       ├── errors.py              # Custom exception classes
 │       └── dependencies.py        # FastAPI dependency injection
 ├── client/                        # Async Python client — own package (client/pyproject.toml), httpx only,
 │   ├── async_client.py            #   never imports server code (tests/test_dependency_rules.py)
 │   └── __init__.py
-├── mcp_servers/                   # lsp/ (file-sync MCP, used by the humanize harness), stepwise/ (chunk-centric), common/;
-├── mcp_lsp_server/, mcp_stepwise_server/  # deprecated shims re-exporting mcp_servers.*; imports client only
-├── deploy/                        # Dockerfile, setup.sh, RC0 image scripts, monitoring/ configs
+├── mcp_servers/                   # stepwise/ (chunk-centric MCP), lsp/ (file-sync MCP), common/; imports client only
+├── deploy/                        # Dockerfile (multi-version via ISABELLE_VERSION), setup.sh, turnkey-image scripts, monitoring/ configs
 ├── docker-compose.yml             # root; build context . with dockerfile deploy/Dockerfile
 ├── evaluation/                    # Benchmarking and analysis (imports client only)
 │   ├── scripts/                   # eval_smallstep_server_client_*, eval_bigstep_*, consolidate_runs, preprocess
@@ -457,7 +477,7 @@ repo_root/
 
 - **API Documentation**: archive/previous-works/Isabelle Server System API Documentation.pdf (older OpenAPI export; the live spec is at /openapi.json)
 - **Async Client Documentation**: archive/previous-works/Async Client for Isabelle Server Documentation.pdf
-- **Isabelle Proof Engine**: See official Isabelle2025-2 documentation for proof state semantics
+- **Isabelle Proof Engine**: See the official Isabelle 2026 documentation for proof state semantics
 - **Theory Corpus**: evaluation/HOL_corpus/Examples/processed/ - small example theories for smoke tests
 - **Previous Works**: archive/previous-works/ contains IsabelleGym 1.0 source and the 2.0 report; archive/isabellegym2/ the 2.0 in-process gym
 - **Demo**: examples/demo.ipynb walks through the API (including a sledgehammer-via-step example); examples/draft.md and examples/figs/ hold dissertation write-up material

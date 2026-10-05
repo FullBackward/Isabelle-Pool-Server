@@ -60,4 +60,7 @@ line-length = 88
 source = ["server", "client"]
 
 [tool.pytest.ini_options]
+# Only tests/ is the unit suite; archive/ holds frozen 1.0/2.0 test files that no
+# longer import, and evaluation/ scripts are not tests.
+testpaths = ["tests"]
 addopts = ""
