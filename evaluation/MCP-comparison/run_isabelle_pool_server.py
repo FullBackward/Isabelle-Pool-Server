@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""IsabelleGym MCP comparison runner."""
+"""Isabelle Pool Server MCP comparison runner."""
 from __future__ import annotations
 
 import argparse
@@ -420,7 +420,7 @@ async def run_attempt(
     ]
 
     result = AttemptResult(
-        system="isabellegym",
+        system="isabelle_pool_server",
         problem=problem.name,
         repeat=repeat,
         model_id=cfg.model.model_id,
@@ -433,16 +433,16 @@ async def run_attempt(
     tool_times: list[float] = []
     round_latencies: list[float] = []
 
-    runs_dir = cfg.paths.runs_dir / "isabellegym"
+    runs_dir = cfg.paths.runs_dir / "isabelle_pool_server"
     runs_dir.mkdir(parents=True, exist_ok=True)
     final_thy_path = runs_dir / f"{problem.name}_rep{repeat}.thy"
-    logger = SessionLogger("isabellegym", problem.name, repeat, cfg.paths.runs_dir)
+    logger = SessionLogger("isabelle_pool_server", problem.name, repeat, cfg.paths.runs_dir)
     if system_prompt:
         logger.log_text("SYSTEM_PROMPT", system_prompt)
     logger.log_message(messages[0])
 
     try:
-        async with mcp_session(cfg.mcp_servers["isabellegym"]) as session:
+        async with mcp_session(cfg.mcp_servers["isabelle_pool_server"]) as session:
             mcp_tools = await list_tools(session)
             # Setup is bounded and fail-fast (mirrors the I/Q runner): an
             # unresponsive server used to hang this call for the full HTTP
@@ -655,7 +655,7 @@ async def run_attempt(
 
 
 async def main() -> None:
-    parser = argparse.ArgumentParser(description="Run IsabelleGym MCP comparison")
+    parser = argparse.ArgumentParser(description="Run Isabelle Pool Server MCP comparison")
     parser.add_argument("--thy-dir", required=True, type=Path, help="Directory containing .thy problems")
     parser.add_argument("--repeats", type=int, default=None, help="Overrides config repeats")
     parser.add_argument("--select", help="Only run problems whose name contains this substring")
@@ -669,7 +669,7 @@ async def main() -> None:
     if args.select:
         problems = [p for p in problems if args.select in p.name]
 
-    results_path = cfg.paths.runs_dir / "isabellegym" / "results.jsonl"
+    results_path = cfg.paths.runs_dir / "isabelle_pool_server" / "results.jsonl"
     results_path.parent.mkdir(parents=True, exist_ok=True)
 
     for problem in problems:
@@ -681,7 +681,7 @@ async def main() -> None:
                 traceback.print_exc()
                 print(f"FAILED {problem.name} rep{repeat}: {e}")
                 res = AttemptResult(
-                    system="isabellegym",
+                    system="isabelle_pool_server",
                     problem=problem.name,
                     repeat=repeat,
                     model_id=cfg.model.model_id,

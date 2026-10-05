@@ -3,7 +3,7 @@
 The "current session" is keyed by the MCP connection (``id(ctx.session)``) so concurrent
 Streamable-HTTP clients are isolated and never share Isabelle state — this is what keeps us
 from re-introducing the single-global-session limitation of other Isabelle MCP servers.
-All Isabelle access goes through one shared ``IsabelleGymAsyncClient`` (httpx is safe for
+All Isabelle access goes through one shared ``PoolAsyncClient`` (httpx is safe for
 concurrent requests on distinct sessions/leases).
 """
 from __future__ import annotations
@@ -13,7 +13,7 @@ import weakref
 from dataclasses import dataclass
 from typing import Any, List, MutableMapping, Optional
 
-from client.async_client import IsabelleGymAsyncClient
+from client.async_client import PoolAsyncClient
 
 from ..common import GymClientMixin
 from .config import Config

@@ -12,14 +12,14 @@
 #                    isabelle/      prebuilt RC0 Isabelle tree
 #                    isabelle_user/ installed components (contrib/, etc/)
 #                    app/           repo content (git archive of 2026-RC0)
-#     tag          default isabellegym-isabelle-gym:2026rc0-clean
+#     tag          default isabelle-pool-server:2026rc0-clean
 #
 # Base: the LOCAL 2025-2 gym image (python3.12, openjdk-21, app deps).
 
 set -euo pipefail
 
 S="${1:-$HOME/isabelle2026-build}"
-TAG="${2:-isabellegym-isabelle-gym:2026rc0-clean}"
+TAG="${2:-isabelle-pool-server:2026rc0-clean}"
 NAME="rc0-assembly"
 
 for d in isabelle isabelle_user app; do
@@ -31,7 +31,7 @@ docker run -d --name "$NAME" \
   -e HOME=/root \
   -e ISABELLE_HOME=/opt/isabelle \
   -e JAVA_HOME=/root/.isabelle/contrib/jdk-25.0.4/x86_64-linux \
-  isabellegym-isabelle-gym:latest sleep infinity
+  isabelle-pool-server:latest sleep infinity
 
 echo "==> replacing /opt/isabelle, /root/.isabelle, /app with RC0 content"
 docker exec "$NAME" rm -rf /opt/isabelle /root/.isabelle /app

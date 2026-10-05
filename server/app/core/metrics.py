@@ -1,4 +1,4 @@
-"""Prometheus metrics for the IsabelleGym server.
+"""Prometheus metrics for the Isabelle Pool Server.
 
 Event metrics (counters / histogram / inflight gauge) are module-level and
 incremented at the relevant code points. Current-state gauges (pool counts,
@@ -25,40 +25,40 @@ logger = get_logger(__name__)
 # --- event metrics (incremented in code) ---------------------------------
 
 sessions_created = Counter(
-    "isabellegym_sessions_created_total", "Isabelle sessions created"
+    "isabelle_pool_server_sessions_created_total", "Isabelle sessions created"
 )
 sessions_evicted = Counter(
-    "isabellegym_sessions_evicted_total",
+    "isabelle_pool_server_sessions_evicted_total",
     "Sessions evicted/closed by the manager",
     ["reason"],  # memory | lru | idle
 )
 pool_exhausted = Counter(
-    "isabellegym_pool_exhausted_total",
+    "isabelle_pool_server_pool_exhausted_total",
     "Session creations refused with 503",
     ["reason"],  # memory | all_busy
 )
 sessions_force_closed = Counter(
-    "isabellegym_sessions_force_closed_total",
+    "isabelle_pool_server_sessions_force_closed_total",
     "Sessions destroyed via DELETE (audit counter for the alarm path)",
 )
 gateway_restarts = Counter(
-    "isabellegym_gateway_restarts_total", "Dead REPL gateway recoveries"
+    "isabelle_pool_server_gateway_restarts_total", "Dead REPL gateway recoveries"
 )
 sledgehammer_total = Counter(
-    "isabellegym_sledgehammer_total",
+    "isabelle_pool_server_sledgehammer_total",
     "Sledgehammer calls by outcome",
     ["result"],  # success | failure
 )
 sledgehammer_seconds = Histogram(
-    "isabellegym_sledgehammer_seconds",
+    "isabelle_pool_server_sledgehammer_seconds",
     "Sledgehammer wall-clock duration",
     buckets=(1, 2, 5, 10, 20, 30, 45, 60, 90, 120),
 )
 sledgehammer_inflight = Gauge(
-    "isabellegym_sledgehammer_inflight", "Sledgehammer calls currently executing"
+    "isabelle_pool_server_sledgehammer_inflight", "Sledgehammer calls currently executing"
 )
 heap_build_seconds = Histogram(
-    "isabellegym_heap_build_seconds",
+    "isabelle_pool_server_heap_build_seconds",
     "Heap build wall-clock duration",
     ["task_group"],
     buckets=(5, 15, 30, 60, 120, 300, 600, 1800, 3600),
@@ -92,17 +92,17 @@ class SessionPoolCollector(Collector):
             fam.add_metric([], float(mb) * 1024.0 * 1024.0)  # MB -> bytes
             return fam
 
-        yield g("isabellegym_sessions_active", "Active sessions in pool", "active_sessions")
-        yield g("isabellegym_sessions_busy", "Sessions processing a request", "busy_sessions")
-        yield g("isabellegym_sessions_leased", "Leased sessions", "leased_sessions")
-        yield g("isabellegym_pool_size", "Configured max pool size", "max_pool_size")
-        yield g("isabellegym_max_concurrent_sledgehammer",
+        yield g("isabelle_pool_server_sessions_active", "Active sessions in pool", "active_sessions")
+        yield g("isabelle_pool_server_sessions_busy", "Sessions processing a request", "busy_sessions")
+        yield g("isabelle_pool_server_sessions_leased", "Leased sessions", "leased_sessions")
+        yield g("isabelle_pool_server_pool_size", "Configured max pool size", "max_pool_size")
+        yield g("isabelle_pool_server_max_concurrent_sledgehammer",
                 "Concurrent sledgehammer limit", "max_concurrent_sledgehammer")
-        yield g_bytes("isabellegym_memory_used_bytes", "Container memory used (cgroup)", "memory_used_mb")
-        yield g_bytes("isabellegym_memory_limit_bytes", "Container memory limit (cgroup)", "memory_limit_mb")
-        yield g("isabellegym_memory_pressure_pct", "Container memory pressure %", "memory_pressure_pct")
+        yield g_bytes("isabelle_pool_server_memory_used_bytes", "Container memory used (cgroup)", "memory_used_mb")
+        yield g_bytes("isabelle_pool_server_memory_limit_bytes", "Container memory limit (cgroup)", "memory_limit_mb")
+        yield g("isabelle_pool_server_memory_pressure_pct", "Container memory pressure %", "memory_pressure_pct")
 
-        gw = GaugeMetricFamily("isabellegym_gateway_up", "1 if the REPL gateway is alive, else 0")
+        gw = GaugeMetricFamily("isabelle_pool_server_gateway_up", "1 if the REPL gateway is alive, else 0")
         gw.add_metric([], 1.0 if info.get("gateway_alive") else 0.0)
         yield gw
 
@@ -132,7 +132,7 @@ class HeapPoolCollector(Collector):
             logger.exception("HeapPoolCollector failed to read heap pool")
             return
         fam = GaugeMetricFamily(
-            "isabellegym_heap_pool_heaps",
+            "isabelle_pool_server_heap_pool_heaps",
             "Heap-pool entries by task group and status",
             labels=["task_group", "status"],
         )

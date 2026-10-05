@@ -1,4 +1,4 @@
-"""IsabelleGym MCP servers (agent-facing layers over the HTTP client only).
+"""Isabelle Pool Server MCP servers (agent-facing layers over the HTTP client only).
 
 - ``mcp_servers.lsp``      file-sync (LSP-style) workflow: ``python -m mcp_servers.lsp.app``
 - ``mcp_servers.stepwise`` chunk-centric workflow:       ``python -m mcp_servers.stepwise.app``

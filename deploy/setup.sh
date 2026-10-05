@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# IsabelleGym one-shot setup: configure .env, build the image, start the
+# Isabelle Pool Server one-shot setup: configure .env, build the image, start the
 # server, wait for health. Run from the repo root (Linux/macOS/WSL/Git Bash):
 #
 #   ./deploy/setup.sh                          # configure + build + start + health-wait
@@ -54,11 +54,11 @@ fi
 
 if [[ "$DO_BUILD" -eq 1 ]]; then
   echo "==> building image (first build downloads Isabelle — long)"
-  docker compose build isabelle-gym
+  docker compose build isabelle-pool-server
 fi
 
 echo "==> starting server"
-docker compose up -d isabelle-gym
+docker compose up -d isabelle-pool-server
 
 echo "==> waiting for healthz on port $PORT"
 for i in $(seq 1 90); do
@@ -66,7 +66,7 @@ for i in $(seq 1 90); do
     break
   fi
   if [[ "$i" -eq 90 ]]; then
-    echo "server did not become healthy in ~7.5 min; check: docker compose logs isabelle-gym" >&2
+    echo "server did not become healthy in ~7.5 min; check: docker compose logs isabelle-pool-server" >&2
     exit 1
   fi
   sleep 5
@@ -77,7 +77,7 @@ curl -fsS -m 5 "http://localhost:${PORT}/" | python3 -m json.tool 2>/dev/null ||
 if [[ -n "$HEAPS" ]]; then
   for heap in $HEAPS; do
     echo "==> building heap: $heap (long for Analysis-scale; safe to re-run)"
-    docker compose exec isabelle-gym isabelle build -b "$heap"
+    docker compose exec isabelle-pool-server isabelle build -b "$heap"
   done
   echo "==> heaps now available:"
   curl -fsS -m 5 "http://localhost:${PORT}/api/v1/heaps/available" | python3 -m json.tool 2>/dev/null || true
@@ -99,8 +99,8 @@ if [[ "$DO_VERIFY" -eq 1 ]]; then
 fi
 
 echo
-echo "IsabelleGym is up:"
+echo "Isabelle Pool Server is up:"
 echo "  API:          http://localhost:${PORT}/  (healthz: /healthz)"
 echo "  Admin console: http://localhost:${PORT}/admin"
-echo "  Live logs:    docker compose logs -f isabelle-gym   (or: tail -f logs/server.log)"
-echo "  Stop:         docker compose stop isabelle-gym"
+echo "  Live logs:    docker compose logs -f isabelle-pool-server   (or: tail -f logs/server.log)"
+echo "  Stop:         docker compose stop isabelle-pool-server"

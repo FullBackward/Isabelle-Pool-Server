@@ -63,6 +63,20 @@ class Server:
     )
 
 
+def _heap_env(name: str, default: str) -> str:
+    """Heap-pool knob: `ISABELLE_HEAP_POOL_<name>`, falling back to the pre-rename
+    `ISABELLE_HEAP_<name>` (renamed 2026-10-05 so nothing in our namespace shadows
+    Isabelle's own ISABELLE_HEAPS family). Fallback is kept for one release."""
+    new, old = f"ISABELLE_HEAP_POOL_{name}", f"ISABELLE_HEAP_{name}"
+    if new in os.environ:
+        return os.environ[new]
+    if old in os.environ:
+        import warnings
+        warnings.warn(f"{old} is deprecated; use {new}", DeprecationWarning, stacklevel=2)
+        return os.environ[old]
+    return default
+
+
 class Heap:
     # Heap pool (Stage 3): verified per-project heaps built with
     # `isabelle build -b`, shareable by every session of the owning task group.
@@ -70,17 +84,17 @@ class Heap:
     # manifests survive container restarts.
     STATE_DIR: Final = os.getenv("ISABELLE_HEAP_POOL_DIR", "/root/.isabelle/heap_pool")
     MAX_CONCURRENT_BUILDS: Final = int(os.getenv("ISABELLE_MAX_CONCURRENT_BUILDS", "1"))
-    BUILD_TIMEOUT_S: Final = float(os.getenv("ISABELLE_HEAP_BUILD_TIMEOUT_S", "3600"))
+    BUILD_TIMEOUT_S: Final = float(_heap_env("BUILD_TIMEOUT_S", "3600"))
     DEFAULT_TASK_GROUP: Final = "default"
     # Remove the on-disk heap image + build logs when a heap record is deleted
     # and no other pool entry references the same session name.
-    GC_IMAGES: Final = os.getenv("ISABELLE_HEAP_GC_IMAGES", "true").lower() == "true"
+    GC_IMAGES: Final = _heap_env("GC_IMAGES", "true").lower() == "true"
     # Directories under which heap `project` dirs may live (colon-separated).
     # `isabelle build -d <project>` executes whatever theories/ROOT are there,
     # so the set is operator-chosen; anything else is 422. Default: the repo
     # mount and the Isabelle user-data volume.
     ALLOWED_ROOTS: Final = [
-        r for r in os.getenv("ISABELLE_HEAP_ALLOWED_ROOTS", "/app:/root/.isabelle").split(":") if r
+        r for r in _heap_env("ALLOWED_ROOTS", "/app:/root/.isabelle").split(":") if r
     ]
 
 class Repl:

@@ -188,7 +188,7 @@ async def parse_theory_header_endpoint(request: ParseTheoryHeaderRequest):
     The one parser every consumer should use: comments (nested) are stripped
     first, then the `theory <name> imports <...> begin` header is anchored —
     so a leading `(* TASK: ... *)`-style comment can never pollute the import
-    list (isabellegym-header-imports-issue.md)."""
+    list (isabelle-pool-server-header-imports-issue.md)."""
     with logging_context():
         name, imports = parse_theory_header(request.text)
         return ParseTheoryHeaderResponse(

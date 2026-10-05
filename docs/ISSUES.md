@@ -1,6 +1,7 @@
 # IsabelleGym Server — Issues, Fixes & Work Log
 
 **Started:** 2026-06-04 · **Last structural update:** 2026-10-05
+**Name:** the project was *IsabelleGym Server* until 2026-10-05 and is now *Isabelle Pool Server*; entries below keep the name in use at the time (metric names `isabellegym_*`, image `isabellegym-isabelle-gym`, class `IsabelleGymAsyncClient` → now `isabelle_pool_server_*`, `isabelle-pool-server`, `PoolAsyncClient`).
 **Scope:** server layer (`server/app/`), REPL backend (`server/repl/`), MCP servers (`mcp_servers/`), deployment (`deploy/`).
 
 How this file works: every confirmed defect gets a numbered **Bug N** section (symptom, root cause,

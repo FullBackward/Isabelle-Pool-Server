@@ -1,5 +1,5 @@
 """Unit tests for mcp_servers.lsp (file-sync pool logic) — no backend, no mcp
-package: tests target pool.py with a fake IsabelleGymAsyncClient.
+package: tests target pool.py with a fake PoolAsyncClient.
 """
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from mcp_servers.lsp.pool import (
 
 
 class FakeClient:
-    """Stub for IsabelleGymAsyncClient — records calls, programmable 404s.
+    """Stub for PoolAsyncClient — records calls, programmable 404s.
 
     Emulates the server's acquire semantics: released sessions go back to an
     idle pool and the next acquire reuses one (warm) before creating new."""

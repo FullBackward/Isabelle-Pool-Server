@@ -55,7 +55,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="IsabelleGym Server",
+    title="Isabelle Pool Server",
     description="RESTful API for Isabelle theorem proving",
     version=API.VERSION,
     lifespan=lifespan,
@@ -192,14 +192,14 @@ app.include_router(api_router)
 
 # HTTP request metrics (count + latency histograms, grouped by route template)
 # and the /metrics endpoint serving the default registry — which also includes
-# the isabellegym_* counters/gauges defined in server.app.core.metrics.
+# the isabelle_pool_server_* counters/gauges defined in server.app.core.metrics.
 Instrumentator().instrument(app).expose(app, endpoint="/metrics", include_in_schema=False)
 
 
 if __name__ == "__main__":
     import uvicorn
 
-    logger.info("starting IsabelleGym Server on %s:%s", Server.HOST, Server.PORT)
+    logger.info("starting Isabelle Pool Server on %s:%s", Server.HOST, Server.PORT)
     uvicorn.run(
         app,
         host=Server.HOST,

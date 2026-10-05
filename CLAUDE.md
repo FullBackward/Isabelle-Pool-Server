@@ -31,13 +31,13 @@ This is only for the demonstration/test artifacts — not every file touched dur
 
 ## Project Overview
 
-**IsabelleGym Server** is a containerized system for machine learning research on formal theorem proving. It provides a RESTful API to interact with the Isabelle theorem prover (Isabelle 2026 — currently the RC2 release candidate, selected by the `ISABELLE_VERSION` build arg in `deploy/Dockerfile`; 2025-2 still builds from the same file) through a three-tier architecture:
+**Isabelle Pool Server** is a containerized system for machine learning research on formal theorem proving. It provides a RESTful API to interact with the Isabelle theorem prover (Isabelle 2026 — currently the RC2 release candidate, selected by the `ISABELLE_VERSION` build arg in `deploy/Dockerfile`; 2025-2 still builds from the same file) through a three-tier architecture:
 
 1. **Scala/ML backend** (server/repl/) - Isabelle REPL wrapping via Scala/ML, exposing interactive proof state operations
 2. **FastAPI server** (server/) - RESTful HTTP service with session pooling, resource management, and lease-based concurrency
 3. **Python async client** (client/) - User-facing SDK for small-step (interactive) and big-step (batch) proof verification
 
-**Core purpose**: Enable LLM training and evaluation on formal theorem proving via both interactive step-by-step verification and whole-theory batch verification.
+**Core purpose**: Isabelle as a managed, concurrent service (the Isabelle counterpart of Kimina Lean Server). Three uses on one core: a training/evaluation environment for LLM provers (small-step with checkpoints/rollback, chunk, big-step), a verification service for single theories or batch workloads (batch loop is client/MCP-side — no server job queue), and a platform for many concurrent agents (MCP servers; agents are isolated, not coordinated; no authentication — trusted network only). Known as IsabelleGym 3.0 until 2026-10-05.
 
 ## Quick Start (Docker Recommended)
 
@@ -47,21 +47,21 @@ This is only for the demonstration/test artifacts — not every file touched dur
 
 # Or by hand:
 cp .env.example .env
-docker compose build isabelle-gym
-docker compose up -d isabelle-gym   # the entrypoint registers components and STARTS the server
+docker compose build isabelle-pool-server
+docker compose up -d isabelle-pool-server   # the entrypoint registers components and STARTS the server
 
 # From host, verify server is healthy (allow 1-2 min for the gateway JVM)
 curl http://localhost:8000/healthz   # {"status":"alive"}
 curl http://localhost:8000/
 
 # A shell in the running container (tests, isabelle build, ...)
-docker compose exec isabelle-gym bash
+docker compose exec isabelle-pool-server bash
 ```
 
 Expected `GET /` response:
 ```json
 {
-  "service": "IsabelleGym Server",
+  "service": "Isabelle Pool Server",
   "version": "0.1.0",
   "status": "healthy",
   "gateway_alive": true,
@@ -87,7 +87,7 @@ The REPL backend bridges Python ↔ Scala ↔ Isabelle/ML. It uses **Py4J** for 
 - server/repl/src/main/scala/repl/repl_backend.scala - Core backend class managing Isabelle sessions, state, and proof operations
 - server/repl/src/main/scala/repl/server_utils.scala - Low-level Isabelle server/session creation utilities
 - server/repl/src/main/scala/repl/backend_probes.scala - Read-only state queries (subgoals, in-proof, facts, sledgehammer, proof state) run as PIDE OVERLAY queries on the document's last command via Document_Utils.overlay_query — no document edits, no ML→Scala channels (since 2026-09-30); probe_transient (POST /diagnostic) is the one insertion-based probe left
-- server/repl/src/ml/REPL.ML - ML-side Query_Operation registrations (isabellegym_goals / in_proof / local_facts / global_facts / state / sledgehammer) plus the extraction functions they call (NOTE: path is src/ml/, not src/main/ml/)
+- server/repl/src/ml/REPL.ML - ML-side Query_Operation registrations (isabelle_pool_server_goals / in_proof / local_facts / global_facts / state / sledgehammer) plus the extraction functions they call (NOTE: path is src/ml/, not src/main/ml/)
 - server/repl/src/main/scala/repl/thy_*.scala - Theory parsing, status tracking, and checkpoint utilities
 - server/repl/src/python/repl_backend_gateway.py - Python wrapper (ReplBackendGatewayProcess) that spawns the Scala gateway as a subprocess and manages the Py4J bridge
 - server/repl/build.gradle - Gradle build config; depends on Isabelle JAR (auto-built via isabelle scala -e)
@@ -123,7 +123,7 @@ FastAPI application providing HTTP endpoints for session management (create, acq
 Async HTTP client for end-users. Provides high-level workflows for session creation, command execution, and theory verification.
 
 **Key file:**
-- client/async_client.py - IsabelleGymAsyncClient class with methods:
+- client/async_client.py - PoolAsyncClient class with methods:
   - Session lifecycle: create_session(), acquire_session(), release_session(), close_session()
   - Small-step: execute_command(), enter_theory(), get_proof_state()
   - Automation: sledgehammer() - runs Isabelle's sledgehammer on the current proof goal; returns success/suggestions/raw_output/execution_time
@@ -137,7 +137,7 @@ Suite of benchmarking scripts comparing server performance against local Isabell
 **Scripts in evaluation/scripts/:**
 - process.py - Preprocessing: normalize Analysis-style imports to fully qualified HOL-Analysis.<Theory> imports
 - clean_example_dir.py - Remove documentation keywords (text, section, subsection) from theory files
-- eval_smallstep_isabellegym.py - Local baseline (IsabelleGym 2.0)
+- eval_smallstep_isabelle-pool-server.py - Local baseline (IsabelleGym 2.0)
 - eval_smallstep_server_client_1_worker_no_reuse.py - Server small-step with fresh session per theory
 - eval_smallstep_server_client_with_reuse.py - Server small-step with pooled session reuse and parallel workers
 - eval_smallstep_qisabelle.py - qIsabelle comparison
@@ -149,11 +149,11 @@ Suite of benchmarking scripts comparing server performance against local Isabell
 
 ### Environment Setup (Local, non-Docker)
 
-**Local Python lives in the conda environment named `IsabelleGym`.** There is no
-bare `python` on PATH on the host — activate it first (`conda activate IsabelleGym`,
-or run one-off commands with `conda run -n IsabelleGym python ...`). Inside the
+**Local Python lives in the conda environment named `Isabelle Pool Server`.** There is no
+bare `python` on PATH on the host — activate it first (`conda activate Isabelle Pool Server`,
+or run one-off commands with `conda run -n Isabelle Pool Server python ...`). Inside the
 Docker container, Python is the image interpreter at `/usr/local/bin/python`
-(invoke with `docker exec isabelle-gym python ...`), not a conda env.
+(invoke with `docker exec isabelle-pool-server python ...`), not a conda env.
 
 ```bash
 # Create and activate venv
@@ -192,8 +192,8 @@ mypy server client mcp_servers evaluation    # Type check (strict=true, disable 
 ```
 
 **Tests** (`tests/`, ~380 unit tests, no Isabelle needed — they stub the backend/HTTP layer;
-run from the repo root, on the host with `conda run -n IsabelleGym pytest` or inside the
-container with `docker exec isabelle-gym pytest`):
+run from the repo root, on the host with `conda run -n Isabelle Pool Server pytest` or inside the
+container with `docker exec isabelle-pool-server pytest`):
 ```bash
 pytest                       # whole suite
 pytest tests/test_mcp_lsp_server.py -q
@@ -214,10 +214,10 @@ uvicorn server.app.main:app --host 0.0.0.0 --port 8000
 # Terminal 2: Run a client example
 python -c "
 import asyncio
-from client.async_client import IsabelleGymAsyncClient
+from client.async_client import PoolAsyncClient
 
 async def main():
-    async with IsabelleGymAsyncClient('http://localhost:8000') as client:
+    async with PoolAsyncClient('http://localhost:8000') as client:
         created = await client.create_session(theories=['Main'], field='HOL')
         print(f'Session: {created[\"session_id\"]}')
         await client.close_session(created['session_id'])
@@ -268,6 +268,11 @@ ISABELLE_MEMORY_PRESSURE_THRESHOLD=85.0 # Block new sessions above this used% (d
 ISABELLE_MEMORY_MIN_AVAILABLE_MB=256    # Also block if available memory below this (default 256)
 ISABELLE_MEMORY_FALLBACK_SYSTEM_MB=4096 # Limit used when cgroup + MemTotal unreadable (default 4096)
 
+# Isabelle location (gateway + heap pool resolve $ISABELLE_HOME/bin/isabelle; container default)
+ISABELLE_HOME=/opt/isabelle
+ISABELLE_HEAP_POOL_DIR=/root/.isabelle/heap_pool      # native installs: $HOME/.isabelle/heap_pool
+ISABELLE_HEAP_POOL_ALLOWED_ROOTS=/app:/root/.isabelle      # native installs: <repo>:$HOME/.isabelle
+
 # Proof state and field
 ISABELLE_SHOW_STATES=true          # Include raw proof states in responses (default true)
 ISABELLE_DEFAULT_FIELD=HOL         # Default field if not specified (default HOL)
@@ -295,12 +300,12 @@ The server exposes Prometheus metrics and k8s-style health probes (no extra flag
 
 - `GET /metrics` — Prometheus metrics. HTTP request count/latency histograms (per route
   template, via `prometheus-fastapi-instrumentator`) plus domain metrics defined in
-  `server/app/core/metrics.py`: `isabellegym_sessions_created_total`,
-  `isabellegym_sessions_evicted_total{reason}`, `isabellegym_pool_exhausted_total{reason}`,
-  `isabellegym_gateway_restarts_total`, `isabellegym_sledgehammer_{total{result},seconds,inflight}`,
-  and current-state gauges `isabellegym_sessions_{active,busy,leased}`,
-  `isabellegym_memory_{used,limit}_bytes`, `isabellegym_memory_pressure_pct`,
-  `isabellegym_gateway_up` (from `SessionManager.get_lru_info()`).
+  `server/app/core/metrics.py`: `isabelle_pool_server_sessions_created_total`,
+  `isabelle_pool_server_sessions_evicted_total{reason}`, `isabelle_pool_server_pool_exhausted_total{reason}`,
+  `isabelle_pool_server_gateway_restarts_total`, `isabelle_pool_server_sledgehammer_{total{result},seconds,inflight}`,
+  and current-state gauges `isabelle_pool_server_sessions_{active,busy,leased}`,
+  `isabelle_pool_server_memory_{used,limit}_bytes`, `isabelle_pool_server_memory_pressure_pct`,
+  `isabelle_pool_server_gateway_up` (from `SessionManager.get_lru_info()`).
 - `GET /healthz` — liveness (always 200 if the process serves).
 - `GET /readyz` — readiness: 200 when the gateway is alive, else 503.
 - `GET /` — human-readable health summary (sessions, memory, `gateway_alive`).
@@ -309,12 +314,12 @@ Bring up the monitoring stack (compose services `prometheus`, `grafana`, `cadvis
 start the server first, then:
 ```bash
 docker compose up -d prometheus grafana cadvisor
-# Grafana   http://localhost:3000  (admin/admin) — "IsabelleGym Server" dashboard
-# Prometheus http://localhost:9090/targets       — isabelle-gym + cadvisor should be UP
+# Grafana   http://localhost:3000  (admin/admin) — "Isabelle Pool Server" dashboard
+# Prometheus http://localhost:9090/targets       — isabelle-pool-server + cadvisor should be UP
 # raw        http://localhost:8000/metrics
 ```
 Config lives under `deploy/monitoring/` (prometheus.yml, Grafana datasource + dashboard
-provisioning). `docker-compose.yml` also sets `mem_limit: 14g` on `isabelle-gym` so the
+provisioning). `docker-compose.yml` also sets `mem_limit: 14g` on `isabelle-pool-server` so the
 memory admission gate has a real cgroup ceiling and cAdvisor can report OOM events.
 Note: the compose service runs `bash`; start the server manually (`python -m
 server.app.main`) or Prometheus targets show DOWN until it is up.
@@ -323,7 +328,7 @@ server.app.main`) or Prometheus targets show DOWN until it is up.
 
 One-time setup:
 ```bash
-cd /path/to/IsabelleGym
+cd /path/to/Isabelle-Pool-Server
 source .venv/bin/activate
 export PYTHONPATH="$PWD:${PYTHONPATH:-}"
 mkdir -p evaluation/results
@@ -333,10 +338,10 @@ OUT="evaluation/results"
 
 Small-step baseline (local):
 ```bash
-python -m evaluation.scripts.eval_smallstep_isabellegym \
+python -m evaluation.scripts.eval_smallstep_isabelle-pool-server \
   --repo-root . \
   --corpus "$CORPUS" \
-  --output "$OUT/smallstep_isabellegym_aligned.json"
+  --output "$OUT/smallstep_isabelle_pool_server_aligned.json"
 ```
 
 Small-step server (session reuse, parallel workers):
@@ -388,7 +393,7 @@ The server maintains a pool of warm Isabelle sessions. Idle sessions (older than
 - **Big-step** (verify_bigstep_text): Batch verification via isabelle build, no session reuse, good for whole-theory checking and parallelization.
 
 ### Sledgehammer Integration
-Sledgehammer is exposed end-to-end as a small-step automation primitive: the `isabellegym_sledgehammer` Query_Operation in server/repl/src/ml/REPL.ML runs Isabelle's sledgehammer as a PIDE overlay on a host command (Document_Utils.overlay_query), Backend_Probes.sledgehammer hosts it on the document's last command (the LSP-like sledgehammer_at hosts it on the command at a given line — same operation), and the FastAPI endpoint POST /api/v1/sessions/{session_id}/sledgehammer (routes/automation.py, schemas SledgehammerRequest/SledgehammerResponse) runs it on the current proof goal under a lease. Outside a proof it returns no suggestions. No text edit is made, so nothing can leak into the proof script. NOTE: the Query_Operation registrations are intentionally at the top level of REPL.ML, outside the `Repl` struct (the struct only holds the extraction functions); see commit ca73379 for the original placement conflict.
+Sledgehammer is exposed end-to-end as a small-step automation primitive: the `isabelle_pool_server_sledgehammer` Query_Operation in server/repl/src/ml/REPL.ML runs Isabelle's sledgehammer as a PIDE overlay on a host command (Document_Utils.overlay_query), Backend_Probes.sledgehammer hosts it on the document's last command (the LSP-like sledgehammer_at hosts it on the command at a given line — same operation), and the FastAPI endpoint POST /api/v1/sessions/{session_id}/sledgehammer (routes/automation.py, schemas SledgehammerRequest/SledgehammerResponse) runs it on the current proof goal under a lease. Outside a proof it returns no suggestions. No text edit is made, so nothing can leak into the proof script. NOTE: the Query_Operation registrations are intentionally at the top level of REPL.ML, outside the `Repl` struct (the struct only holds the extraction functions); see commit ca73379 for the original placement conflict.
 
 ### Caching (Optional)
 Session caching can be enabled to reuse initialized sessions for the same import dependencies. By default disabled to avoid stale state issues.
@@ -407,7 +412,7 @@ Session caching can be enabled to reuse initialized sessions for the same import
 - This repo uses requirement.txt (singular), not requirements.txt (plural).
 
 **Docker container is up but API not responding**
-- The entrypoint starts the server automatically; the gateway JVM takes 1-2 min. Check `docker compose logs -f isabelle-gym` and `curl localhost:8000/readyz` (503 until the gateway is up). If you overrode `command:` to `bash`, start it yourself: `python -m server.app.main`.
+- The entrypoint starts the server automatically; the gateway JVM takes 1-2 min. Check `docker compose logs -f isabelle-pool-server` and `curl localhost:8000/readyz` (503 until the gateway is up). If you overrode `command:` to `bash`, start it yourself: `python -m server.app.main`.
 
 **pip install -e . fails with dependency issues**
 - Ensure pip is upgraded: pip install --upgrade pip.
@@ -466,7 +471,7 @@ repo_root/
 ├── examples/                      # demo.ipynb (API walkthrough incl. sledgehammer), figs, heap_demo_project
 ├── docs/                          # DESIGN_CHOICES.md, ISSUES.md, devnote.md
 ├── archive/                       # read-only history: previous-works/ (1.0 sources, thesis PDFs),
-│                                  #   isabellegym2/ (2.0 in-process gym + baseline scripts), install.sh
+│                                  #   isabelle-pool-server2/ (2.0 in-process gym + baseline scripts), install.sh
 ├── tests/                         # unit tests; dependency-direction and 600-line size gates live here
 ├── pyproject.toml                 # setuptools config for server+repl, dev deps, tool config
 ├── requirement.txt                # Core + server deps (singular)
@@ -479,7 +484,7 @@ repo_root/
 - **Async Client Documentation**: archive/previous-works/Async Client for Isabelle Server Documentation.pdf
 - **Isabelle Proof Engine**: See the official Isabelle 2026 documentation for proof state semantics
 - **Theory Corpus**: evaluation/HOL_corpus/Examples/processed/ - small example theories for smoke tests
-- **Previous Works**: archive/previous-works/ contains IsabelleGym 1.0 source and the 2.0 report; archive/isabellegym2/ the 2.0 in-process gym
+- **Previous Works**: archive/previous-works/ contains IsabelleGym 1.0 source and the 2.0 report; archive/isabelle-pool-server2/ the 2.0 in-process gym
 - **Demo**: examples/demo.ipynb walks through the API (including a sledgehammer-via-step example); examples/draft.md and examples/figs/ hold dissertation write-up material
 - **Known Issues**: docs/ISSUES.md tracks open bugs and design discussions
 

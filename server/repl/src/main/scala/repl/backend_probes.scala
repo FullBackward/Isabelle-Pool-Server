@@ -82,7 +82,7 @@ trait Backend_Probes { this: ReplBackend =>
     val subgoals =
       if (!repl_session.current_thy_begun) List()
       else if (repl_session.current_thy_ended) List()  // post-`end`: no proof can be open
-      else state_query("isabellegym_goals_query", Nil, SUBGOALS_BUDGET_MS, skip_end = false)
+      else state_query("isabelle_pool_server_goals_query", Nil, SUBGOALS_BUDGET_MS, skip_end = false)
     subgoals.asJava
   }
 
@@ -93,7 +93,7 @@ trait Backend_Probes { this: ReplBackend =>
   def in_proof(): Boolean =
     if (!repl_session.current_thy_begun) false
     else if (repl_session.current_thy_ended) false  // post-`end`: no proof can be open
-    else state_query("isabellegym_in_proof_query", Nil, SUBGOALS_BUDGET_MS, skip_end = false) == List("1")
+    else state_query("isabelle_pool_server_in_proof_query", Nil, SUBGOALS_BUDGET_MS, skip_end = false) == List("1")
 
   /** Facts visible in the current proof context; consumed via
    *  GET .../facts/local by both MCPs. On a finished theory the query hosts on
@@ -102,7 +102,7 @@ trait Backend_Probes { this: ReplBackend =>
   def local_facts(): java.util.List[String] = {
     val facts =
       if (!repl_session.current_thy_begun) List()
-      else state_query("isabellegym_local_facts_query", Nil, LOCAL_FACTS_BUDGET_MS,
+      else state_query("isabelle_pool_server_local_facts_query", Nil, LOCAL_FACTS_BUDGET_MS,
              skip_end = repl_session.current_thy_ended)
     facts.asJava
   }
@@ -113,7 +113,7 @@ trait Backend_Probes { this: ReplBackend =>
     require(limit > 0, "limit must be positive")
     val facts =
       if (!repl_session.current_thy_begun) List()
-      else state_query("isabellegym_global_facts_query", List(limit.toString), GLOBAL_FACTS_BUDGET_MS,
+      else state_query("isabelle_pool_server_global_facts_query", List(limit.toString), GLOBAL_FACTS_BUDGET_MS,
              skip_end = repl_session.current_thy_ended)
     facts.asJava
   }
@@ -130,7 +130,7 @@ trait Backend_Probes { this: ReplBackend =>
       else if (repl_session.current_thy_ended) List()  // post-`end`: no open goal
       else
         try
-          state_query("isabellegym_sledgehammer_query", List(timeout_s.toString, "1"),
+          state_query("isabelle_pool_server_sledgehammer_query", List(timeout_s.toString, "1"),
             timeout_s.toLong * 1000L + SLEDGEHAMMER_GRACE_MS, skip_end = false)
         catch {
           // not inside a proof: definitional "no suggestions", not a failure
@@ -153,7 +153,7 @@ trait Backend_Probes { this: ReplBackend =>
       )
     else
       try
-        state_query("isabellegym_state_query", Nil, SUBGOALS_BUDGET_MS, skip_end = false)
+        state_query("isabelle_pool_server_state_query", Nil, SUBGOALS_BUDGET_MS, skip_end = false)
           .foreach(Repl_Output.add_output)
       catch { case ERROR(msg) => Repl_Output.add_error(msg) }
   }

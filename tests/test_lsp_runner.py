@@ -1,7 +1,7 @@
-"""Tests for the LSP-MCP comparison runner (run_isabellegym_lsp.py).
+"""Tests for the LSP-MCP comparison runner (run_isabelle_pool_server_lsp.py).
 
 Unit-level tests import the runner WITHOUT openai/mcp (the runner imports those
-lazily). The mock-LLM smoke needs mcp + openai + a running IsabelleGym HTTP
+lazily). The mock-LLM smoke needs mcp + openai + a running Isabelle Pool Server HTTP
 server — it skips cleanly when any is missing.
 """
 from __future__ import annotations
@@ -19,7 +19,7 @@ _REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_REPO))
 sys.path.insert(0, str(_REPO / "evaluation" / "MCP-comparison"))
 
-import run_isabellegym_lsp as runner
+import run_isabelle_pool_server_lsp as runner
 
 
 # ------------------------------------------------------- local file tools
@@ -60,7 +60,7 @@ def test_file_tools_validate_input(tmp_path):
 
 def test_tool_surface_is_mcp_plus_file_tools():
     assert [t["name"] for t in runner.FILE_TOOLS] == ["read_file", "write_file"]
-    assert runner.SYSTEM == "isabellegym_lsp"
+    assert runner.SYSTEM == "isabelle_pool_server_lsp"
 
 
 # ------------------------------------------------------- mock-LLM smoke
@@ -101,7 +101,7 @@ def _server_up() -> bool:
         return False
 
 
-@pytest.mark.skipif(not _server_up(), reason="needs the IsabelleGym HTTP server on :8000")
+@pytest.mark.skipif(not _server_up(), reason="needs the Isabelle Pool Server on :8000")
 def test_mock_llm_solves_through_arbiter(tmp_path):
     """Scripted model: write_file(good proof) → DONE. Asserts the full path —
     stdio MCP spawn, file tools, sync, DONE gate, arbiter — yields a solved row."""
@@ -126,7 +126,7 @@ def test_mock_llm_solves_through_arbiter(tmp_path):
 
     rows = load_results(results_path)
     assert len(rows) == 1
-    assert rows[0].system == "isabellegym_lsp"
+    assert rows[0].system == "isabelle_pool_server_lsp"
     assert rows[0].arbiter_solved is True
     assert rows[0].agent_claimed_solved is True
     assert rows[0].error is None

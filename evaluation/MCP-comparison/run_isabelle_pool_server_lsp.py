@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""IsabelleGym LSP-MCP comparison runner (file-sync workflow).
+"""Isabelle Pool Server LSP-MCP comparison runner (file-sync workflow).
 
 Drives the LSP-like MCP server (mcp_servers.lsp) through the same
 OpenAI-compatible agent loop, problems, and neutral arbiter as the other
@@ -36,7 +36,7 @@ from common.session_logger import SessionLogger
 # module stays importable without either (unit tests exercise the local
 # file-tool logic only).
 
-SYSTEM = "isabellegym_lsp"
+SYSTEM = "isabelle_pool_server_lsp"
 
 # ── Local file tools (runner-side; the MCP is read-only by design) ──────
 
@@ -421,7 +421,7 @@ async def run_attempt(problem, repeat: int, results_path: Path, client=None, cfg
 
 
 async def main() -> None:
-    parser = argparse.ArgumentParser(description="Run IsabelleGym LSP-MCP comparison")
+    parser = argparse.ArgumentParser(description="Run Isabelle Pool Server LSP-MCP comparison")
     parser.add_argument("--thy-dir", required=True, type=Path, help="Directory containing .thy problems")
     parser.add_argument("--repeats", type=int, default=None, help="Overrides config repeats")
     parser.add_argument("--select", help="Only run problems whose name contains this substring")

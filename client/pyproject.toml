@@ -3,14 +3,14 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "isabellegym-client"
+name = "isabelle-pool-server-client"
 version = "0.1.0"
-description = "Async HTTP client for the IsabelleGym server (httpx only; no server code)."
+description = "Async HTTP client for the Isabelle Pool Server (httpx only; no server code)."
 requires-python = ">=3.10"
 dependencies = ["httpx"]
 
 # The import name stays `client` (e.g. `from client.async_client import
-# IsabelleGymAsyncClient`) — that is what the MCP servers, the evaluation
+# PoolAsyncClient`) — that is what the MCP servers, the evaluation
 # scripts and external harnesses use. Install standalone with
 # `pip install -e ./client`. The client MUST NOT import from `server`, `repl`,
 # `mcp_*` or `evaluation` (enforced by tests/test_dependency_rules.py);

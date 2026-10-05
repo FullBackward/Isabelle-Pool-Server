@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# DESCRIPTION: register the IsabelleGym REPL component (server/repl) and its
+# DESCRIPTION: register the Isabelle Pool Server REPL component (server/repl) and its
 # py4j/spliff contribs with Isabelle. Idempotent; safe to re-run on a warm
 # isabelle_user_data volume (container_init.sh does exactly that).
 #

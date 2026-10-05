@@ -29,7 +29,7 @@ Three guards, one module, so the policy has a single source of truth:
 
 3. ``validate_project_path(path)`` — heap ``project`` directories must be
    absolute and resolve under one of ``Heap.ALLOWED_ROOTS`` (env
-   ``ISABELLE_HEAP_ALLOWED_ROOTS``, colon-separated, default
+   ``ISABELLE_HEAP_POOL_ALLOWED_ROOTS``, colon-separated, default
    ``/app:/root/.isabelle``). ``isabelle build -d <project>`` executes whatever
    theories (and ROOT) live there, so the directory set must be operator-chosen.
 
@@ -240,7 +240,7 @@ def validate_project_path(project: str, roots: Optional[Iterable[str]] = None) -
         raise ValueError(
             f"project {project!r} is outside the allowed heap roots "
             f"({':'.join(str(r) for r in allowed) or '<none>'}); set "
-            "ISABELLE_HEAP_ALLOWED_ROOTS to widen"
+            "ISABELLE_HEAP_POOL_ALLOWED_ROOTS to widen"
         )
     return project
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# DESCRIPTION: container entrypoint for the IsabelleGym server. Performs all
+# DESCRIPTION: container entrypoint for the Isabelle Pool Server. Performs all
 # one-time setup that must survive volume/image drift, then execs the API
 # server in the FOREGROUND (so `docker logs`/`docker compose logs` work and
 # the container's lifetime equals the server's lifetime):
@@ -40,7 +40,7 @@ else
   mkdir -p "$(dirname "$SETTINGS")"
   cat >> "$SETTINGS" <<EOF
 
-# IsabelleGym container_entrypoint: hard per-process ML heap cap. One
+# Isabelle Pool Server container_entrypoint: hard per-process ML heap cap. One
 # pathological theory must fail gracefully (ML exception -> Build FAILED)
 # instead of OOM-killing the container. Full replacement of the platform
 # default, so --minheap/--enablegcsharing are restated explicitly.
@@ -60,7 +60,7 @@ else
   mkdir -p "$(dirname "$SETTINGS")" /app/logs
   cat >> "$SETTINGS" <<'EOF'
 
-# IsabelleGym container_entrypoint: GC logging for every Isabelle-launched
+# Isabelle Pool Server container_entrypoint: GC logging for every Isabelle-launched
 # JVM (gateway, build tools). The JVM's own output is the only source of
 # truth for GC storms — the 2026-09-10 slowdown was undiagnosable without it.
 ISABELLE_TOOL_JAVA_OPTIONS="$ISABELLE_TOOL_JAVA_OPTIONS -Xlog:gc*:file=/app/logs/isabelle-jvm-gc-%p.log:time,uptime,level,tags:filecount=3,filesize=10M"
@@ -69,5 +69,5 @@ EOF
 fi
 
 # 3. Start the API server in the foreground.
-echo "container_entrypoint: starting IsabelleGym API server"
+echo "container_entrypoint: starting Isabelle Pool Server API server"
 exec python -m server.app.main

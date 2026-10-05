@@ -1,4 +1,4 @@
-"""IsabelleGym MCP server: tools / resources / prompts over IsabelleGymAsyncClient.
+"""Isabelle Pool Server MCP server: tools / resources / prompts over PoolAsyncClient.
 
 Tools wrap the (now-complete) async client only — no direct HTTP. Sessions/leases are
 auto-managed and isolated per MCP connection (see pool.py). Parallelism is exposed at two
@@ -12,19 +12,19 @@ from typing import Any, Dict, List, Optional
 
 from mcp.server.fastmcp import Context, FastMCP
 
-from client.async_client import IsabelleGymAsyncClient
+from client.async_client import PoolAsyncClient
 
 from .config import Config
 from .pool import SessionPool
 
-mcp = FastMCP("isabellegym", host=Config.HOST, port=Config.PORT)
+mcp = FastMCP("isabelle-pool-server", host=Config.HOST, port=Config.PORT)
 pool = SessionPool()
 
 
 def _render_chunk(report: Dict[str, Any], detail: bool) -> str:
     """Terse-by-default: summary + only failed/running rows. detail=True → full table."""
     if detail:
-        return IsabelleGymAsyncClient.format_chunk_report(report)
+        return PoolAsyncClient.format_chunk_report(report)
     cmds = report.get("commands", []) or []
     proof_open = report.get("proof_open")
     pending_qed = report.get("pending_qed")
@@ -220,14 +220,14 @@ async def verify_batch(
 
 # ----------------------------------------------------------------------- resources
 
-@mcp.resource("isabellegym://health")
+@mcp.resource("isabelle-pool-server://health")
 async def health() -> str:
     """Server health: gateway_alive, pool size, memory pressure."""
     c = await pool.client()
     return json.dumps(await c.health(), default=str, indent=1)
 
 
-@mcp.resource("isabellegym://sessions")
+@mcp.resource("isabelle-pool-server://sessions")
 async def sessions() -> str:
     """Active sessions in the server pool."""
     c = await pool.client()

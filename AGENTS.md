@@ -1,4 +1,4 @@
-# AGENTS.md — IsabelleGym Server
+# AGENTS.md — Isabelle Pool Server
 
 > This file is written for AI coding agents. The reader is assumed to know nothing about the project. All commands are given relative to the repository root. `CLAUDE.md` is the companion file (architecture walkthrough, env reference, troubleshooting); this one is the compact reference — when the two disagree, the code wins and both should be fixed.
 
@@ -30,7 +30,7 @@ Test/demonstration artifacts for a task (ad-hoc smoke scripts, the write-up of w
 
 ## Project overview
 
-**IsabelleGym Server** is a containerised service for training and evaluating LLM-based theorem provers on Isabelle. It exposes Isabelle's interactive proof state through a REST API, an async Python client, and two MCP (Model Context Protocol) servers. It supports **small-step** (stepwise REPL execution with checkpoints/rollback), **chunk** (`verify_chunk`: a whole proof chunk in one PIDE edit with per-command status), and **big-step** (whole `.thy` file verification via `isabelle build`) workflows.
+**Isabelle Pool Server** turns Isabelle into a managed, concurrent service — a pool of warm PIDE sessions behind a REST API with lease-based ownership, memory-aware admission control and Prometheus observability (the Isabelle counterpart of Kimina Lean Server). It exposes the prover through the HTTP API, an async Python client (`PoolAsyncClient`), and two MCP (Model Context Protocol) servers, and serves three uses on that core: a **training/evaluation environment** for LLM provers (**small-step** execution with checkpoints/rollback, **chunk** verification via `verify_chunk`, **big-step** whole-`.thy` verification via `isabelle build`), a **verification service** for single or batch workloads (the batch loop is client/MCP-side; there is no server job queue), and a **platform for many concurrent agents** (isolated sessions over a shared pool; no coordination between agents; no authentication — trusted network only). The project was *IsabelleGym Server* (3.0) until 2026-10-05.
 
 It is based on IsabelleGym 1.0 by Tom Milan (University of Cambridge) and IsabelleGym 2.0 by Zijing Li (University of Edinburgh); this server iteration is implemented by Xuanwei Ren (University of Edinburgh).
 
@@ -47,7 +47,7 @@ Design rationale for the architecture lives in `docs/DESIGN_CHOICES.md`; the liv
 ## Technology stack
 
 - **Theorem prover**: Isabelle 2026 — the `ISABELLE_VERSION` build arg in `deploy/Dockerfile` (currently `Isabelle2026-RC2`; `Isabelle2025-2` still builds from the same file). Heaps are version-locked: never share a user-data volume across versions.
-- **Python**: 3.12 in Docker; 3.10+ acceptable for local dev. On the maintainer's host Python lives in the conda env `IsabelleGym` (`conda run -n IsabelleGym ...`); in the container it is `/usr/local/bin/python`.
+- **Python**: 3.12 in Docker; 3.10+ acceptable for local dev. On the maintainer's host Python lives in the conda env `Isabelle Pool Server` (`conda run -n Isabelle Pool Server ...`); in the container it is `/usr/local/bin/python`.
 - **Scala**: Scala 3.3.4 / Scala 2.13.14, built with Gradle (`server/repl/gradlew`). Scala 3 dialect, scalafmt 3.8.3.
 - **Interop**: Py4J (`server/repl/src/python/repl_backend_gateway.py` ↔ one shared gateway JVM).
 - **Web framework**: FastAPI + Uvicorn. **HTTP client**: `httpx`.
@@ -60,12 +60,12 @@ Design rationale for the architecture lives in `docs/DESIGN_CHOICES.md`; the liv
 
 | File | Purpose |
 |------|---------|
-| `pyproject.toml` | setuptools package `isabelle-gym` (packages: `server*` only); core deps (`py4j`, `numpy`, `matplotlib`, `tqdm`); tool config for black/isort/mypy/pylint/pytest/coverage. `[tool.pytest.ini_options] addopts = ""` — pytest adds no coverage flags by itself. |
+| `pyproject.toml` | setuptools package `isabelle-pool-server` (packages: `server*` only); core deps (`py4j`, `numpy`, `matplotlib`, `tqdm`); tool config for black/isort/mypy/pylint/pytest/coverage. `[tool.pytest.ini_options] addopts = ""` — pytest adds no coverage flags by itself. |
 | `client/pyproject.toml` | The async client is its own distribution (`pip install -e ./client`), httpx only. |
 | `requirement.txt` | **Singular** runtime + dev + server dependency list (the repo does **not** use `requirements.txt`). |
 | `mcp_servers/requirements.txt` | MCP SDK pin. |
 | `deploy/Dockerfile` | `python:3.12-slim` + fontconfig + system JDK (Gradle only) + Isabelle tarball for the build arch (x86-64 or ARM, mirror fallback with a 1 MB/s floor); installs deps, runs `server/repl/Admin/init`, `gradlew build`. `CMD` is `server/repl/Admin/container_entrypoint.sh`, which **starts the server**. |
-| `docker-compose.yml` | Services `isabelle-gym` (builds natively for the host arch — do not pin `platform: linux/amd64`, qemu emulation makes Isabelle 5–20x slower), `prometheus`, `grafana`, `cadvisor`; `env_file: .env`; named volume `isabelle_user_data` → `/root/.isabelle`; `mem_limit: 14g` so the cgroup memory gate bites at a known ceiling. |
+| `docker-compose.yml` | Services `isabelle-pool-server` (builds natively for the host arch — do not pin `platform: linux/amd64`, qemu emulation makes Isabelle 5–20x slower), `prometheus`, `grafana`, `cadvisor`; `env_file: .env`; named volume `isabelle_user_data` → `/root/.isabelle`; `mem_limit: 14g` so the cgroup memory gate bites at a known ceiling. |
 | `.env.example` / `.env` | Every server knob, annotated. `.env` is **not** tracked — `./deploy/setup.sh` creates it (with a random `ISABELLE_ADMIN_TOKEN`), or `cp .env.example .env`. Value lines must not carry inline `#` comments (`int()` parsing in `core/config.py` fails on them). |
 | `deploy/setup.sh` | One-shot configure/build/start/health-check (`--verify`, `--build-heaps "..."`). |
 | `deploy/Dockerfile.rc0`, `build_rc0_image.sh`, `Dockerfile.export`, `RC0-image-instructions.md` | The pre-built turnkey image (heaps baked in) and how it was produced. Predate the multi-version Dockerfile; retire after the Isabelle 2026 final release (ISSUES.md RC2-2). |
@@ -82,27 +82,27 @@ Design rationale for the architecture lives in `docs/DESIGN_CHOICES.md`; the liv
 
 # or step by step
 cp .env.example .env
-docker compose build isabelle-gym      # 10–30 min: Isabelle download + Scala build
-docker compose up -d isabelle-gym      # entrypoint registers components, writes the ML heap cap, starts the server
+docker compose build isabelle-pool-server      # 10–30 min: Isabelle download + Scala build
+docker compose up -d isabelle-pool-server      # entrypoint registers components, writes the ML heap cap, starts the server
 curl http://localhost:8000/healthz     # {"status":"alive"}
 curl http://localhost:8000/readyz      # 200 once the gateway JVM is up (1–2 min), else 503
 curl http://localhost:8000/            # full health: version, gateway_alive, pool, memory
 
-docker compose exec isabelle-gym bash  # shell for pytest / isabelle build / debugging
-docker compose logs -f isabelle-gym    # live server log (also logs/server.log, rotating)
+docker compose exec isabelle-pool-server bash  # shell for pytest / isabelle build / debugging
+docker compose logs -f isabelle-pool-server    # live server log (also logs/server.log, rotating)
 docker compose up -d prometheus grafana cadvisor   # Grafana :3000 (admin/admin), Prometheus :9090, cAdvisor :8080
 ```
 
 `GET /` returns `service`, `version` (`0.1.0`, `server/app/core/config.py::API.VERSION`), `status` (`healthy`/`degraded`), `gateway_alive`, `active_sessions`, `busy_sessions`, `max_pool_size`, `max_concurrent_sledgehammer`, memory fields, `timestamp`. The admin console is `GET /admin`; the OpenAPI spec is `/openapi.json` (Swagger UI `/docs`).
 
-Changing `.env` needs `docker compose up -d --force-recreate isabelle-gym`, not a restart.
+Changing `.env` needs `docker compose up -d --force-recreate isabelle-pool-server`, not a restart.
 
 ### Local (non-Docker)
 
 Prerequisites: Python 3.10+, JDK 17+ (for Gradle only — see the JAVA_HOME note below), Isabelle installed and on `PATH` as `isabelle`.
 
 ```bash
-python -m venv .venv && source .venv/bin/activate   # or the IsabelleGym conda env
+python -m venv .venv && source .venv/bin/activate   # or the Isabelle Pool Server conda env
 python -m pip install --upgrade pip
 python -m pip install -r requirement.txt
 python -m pip install -e . -e ./client
@@ -113,7 +113,7 @@ export PYTHONPATH="$PWD:${PYTHONPATH:-}"
 python -m server.app.main                                  # or: uvicorn server.app.main:app --host 0.0.0.0 --port 8000
 ```
 
-> **Stale volume (ISSUES.md Bug 7):** if the image is rebuilt while the named volume `isabelle_user_data` still exists, old component state can shadow the new image and the gateway fails with `Not found: py4j`. The container entrypoint re-runs `Admin/init` on every start; the manual fix is `docker compose exec isabelle-gym ./server/repl/Admin/init`.
+> **Stale volume (ISSUES.md Bug 7):** if the image is rebuilt while the named volume `isabelle_user_data` still exists, old component state can shadow the new image and the gateway fails with `Not found: py4j`. The container entrypoint re-runs `Admin/init` on every start; the manual fix is `docker compose exec isabelle-pool-server ./server/repl/Admin/init`.
 
 ### Isabelle 2026 environment gotchas (cost real time; still apply)
 
@@ -129,7 +129,7 @@ Dependency direction (enforced by `tests/test_dependency_rules.py`): `client` im
 ```text
 repo_root/
 ├── client/                         # Async Python client — own package, httpx only
-│   ├── async_client.py             # IsabelleGymAsyncClient = _base + sessions + execution + inspection + heaps mixins
+│   ├── async_client.py             # PoolAsyncClient = _base + sessions + execution + inspection + heaps mixins
 │   └── _base.py, sessions.py, execution.py, inspection.py, heaps.py
 ├── mcp_servers/                    # MCP servers (import `client` only; NOT named `mcp` — that is the SDK)
 │   ├── stepwise/                   # chunk-centric MCP: verify_chunk is the single execution tool; env prefix ISABELLE_MCP_
@@ -189,7 +189,7 @@ repo_root/
 ├── examples/                       # demo.ipynb (HTTP client + both MCP servers), figs/, heap_demo_project/, demo .thy files
 ├── docs/                           # DESIGN_CHOICES.md, ISSUES.md (bug + work log), devnote.md → experiments/
 ├── archive/                        # read-only history: previous-works/ (1.0 sources, API/client PDFs, thesis PDFs),
-│                                   #   isabellegym2/ (2.0 in-process gym + its baseline scripts), install.sh
+│                                   #   isabelle-pool-server2/ (2.0 in-process gym + its baseline scripts), install.sh
 ├── docker-compose.yml              # stays at the root (build context .; dockerfile deploy/Dockerfile)
 └── claude-work/                    # per-task implementation artifacts (gitignored)
 ```
@@ -205,9 +205,9 @@ The former top-level `mcp_lsp_server/` / `mcp_stepwise_server/` shim packages we
 - **Lease model**: clients acquire a session with a `lease_id` (`X-Lease-Id` header). A session can have multiple leases; releasing a lease returns the session to the pool. Abandoned leased sessions are force-closed after `ISABELLE_MAX_LEASE_AGE`. Lease ids are never published (Bug 10); the admin listing is behind `X-Admin-Token`.
 - **Memory gate**: `MemoryMonitor` reads cgroup memory (subtracting reclaimable `inactive_file` page cache); under pressure the manager evicts idle LRU sessions before admitting new ones, returning HTTP 503 if nothing can be evicted. Eviction waits `ISABELLE_MEMORY_EVICTION_SETTLE_S` and retries admission `ISABELLE_MEMORY_ADMISSION_RETRIES` times before 503ing.
 - **Wall budgets (Bug 15)**: the request `timeout` on `POST .../commands`, `verify_chunk`, `diagnostic` is a JVM wall budget — an expired command is **rolled back** and reported `success=false` with a timeout error; it never keeps running. Read-only queries (goals/facts/state) are overlay queries with their own budgets (`ISABELLE_REPL_*_TIMEOUT`) and never wait on a running command. The Python-side future timeout is request timeout + `ISABELLE_TIMEOUT_BACKEND_GRACE`.
-- **Sledgehammer**: a PIDE overlay on the current goal (`isabellegym_sledgehammer` Query_Operation); an `asyncio.Semaphore` caps in-flight sledgehammers to `ISABELLE_MAX_CONCURRENT_SLEDGEHAMMER` to avoid OOM-killing the gateway (Bug 6).
+- **Sledgehammer**: a PIDE overlay on the current goal (`isabelle_pool_server_sledgehammer` Query_Operation); an `asyncio.Semaphore` caps in-flight sledgehammers to `ISABELLE_MAX_CONCURRENT_SLEDGEHAMMER` to avoid OOM-killing the gateway (Bug 6).
 - **Big-step verification**: `BuildVerifier` writes a temporary `ROOT` and runs `isabelle build`; results are cached by SHA256. Endpoint `POST /api/v1/sessions/bigstep` (lease-free). `services/session_bigstep.py` is the in-session variant.
-- **Heap pool** (`services/heap_pool.py`, routes `heaps.py`): verified per-project heaps built with `isabelle build -b`, task-group tenancy, destructive endpoints admin-token gated (Bug 13).
+- **Heap pool** (`services/heap_pool.py`, routes `heaps.py`): verified per-project heaps built with `isabelle build -b` (launcher from `ISABELLE_HOME`, else `/opt/isabelle`), task-group tenancy, destructive endpoints admin-token gated (Bug 13). Its `STATE_DIR` / `ALLOWED_ROOTS` defaults are container paths — native installs override them (README B7).
 - **Checkpoints**: issued ids only; an unknown/invalidated id fails all-or-nothing (Bug 22).
 
 ## Important environment variables
@@ -230,6 +230,7 @@ All variables are read from `server/app/core/config.py` unless noted; `.env.exam
 | `ISABELLE_ENABLE_MEMORY_MANAGEMENT` | true | Enable the cgroup memory admission gate. |
 | `ISABELLE_MEMORY_PRESSURE_THRESHOLD` / `_MIN_AVAILABLE_MB` / `_FALLBACK_SYSTEM_MB` | 85.0 / 256 / 4096 | Block new sessions above this used %, below this free MB; assumed total when cgroup info is unavailable. |
 | `ISABELLE_MEMORY_EVICTION_SETTLE_S` / `_ADMISSION_RETRIES` / `_ADMISSION_RETRY_DELAY_S` | 2.0 / 3 / 2.0 | Settle wait and retry policy around memory-gated admission. |
+| `ISABELLE_HOME` | /opt/isabelle | Where the gateway (`repl_backend_gateway.py`) and the heap pool (`heap_pool.default_isabelle()`) find `bin/isabelle`; `Admin/init` and the entrypoint read it too. Set it on native installs. |
 | `ISABELLE_ML_MAXHEAP_MB` | 9216 | Per-process Poly/ML `--maxheap` written into the user settings by the container entrypoint (not read by config.py). |
 | `ISABELLE_MAX_CONCURRENT_SLEDGEHAMMER` | max(1, min(8, cpu//8)) | Server-wide sledgehammer cap. |
 | `ISABELLE_PARALLEL_PROOFS` | 2 | Isabelle `parallel_proofs` per session (Scala side, `session_manager.scala`). `ISABELLE_SESSION_THREADS` exists but is a no-op (see CLAUDE.md). |
@@ -237,7 +238,7 @@ All variables are read from `server/app/core/config.py` unless noted; `.env.exam
 | `ISABELLE_TIMEOUT_BACKEND_GRACE` | 10 | Python future timeout = request timeout + this, so the JVM's own timeout result (with rollback) arrives first. |
 | `ISABELLE_REPL_SUBGOALS_TIMEOUT` / `_LOCAL_FACTS_TIMEOUT` / `_GLOBAL_FACTS_TIMEOUT_MINUTES` / `ISABELLE_REPL_SETTLE_TIMEOUT` | 20 / 20 / 5 / 60 | Overlay-query and settle budgets (read by both Python and the Scala gateway; ENV-1 in ISSUES.md notes a case where a command-line value did not reach the JVM). |
 | `ISABELLE_REPL_GATEWAY_POLL_INTERVAL` / `_POLL_TIMEOUT` / `_TERMINATE_WAIT`, `ISABELLE_BACKEND_EXIT_TIMEOUT` / `_JOIN_TIMEOUT` / `_QUEUE_POLL`, `ISABELLE_PY4J_READ_TIMEOUT` | 0.1 / 20 / 3, 60 / 5 / 0.1, 900 | Gateway spawn/exit and Py4J plumbing. |
-| `ISABELLE_HEAP_POOL_DIR` / `ISABELLE_HEAP_ALLOWED_ROOTS` / `ISABELLE_HEAP_BUILD_TIMEOUT_S` / `ISABELLE_MAX_CONCURRENT_BUILDS` / `ISABELLE_HEAP_GC_IMAGES` | /root/.isabelle/heap_pool / /app:/root/.isabelle / 3600 / 1 / true | Heap pool. |
+| `ISABELLE_HEAP_POOL_DIR` / `ISABELLE_HEAP_POOL_ALLOWED_ROOTS` / `ISABELLE_HEAP_POOL_BUILD_TIMEOUT_S` / `ISABELLE_MAX_CONCURRENT_BUILDS` / `ISABELLE_HEAP_POOL_GC_IMAGES` | /root/.isabelle/heap_pool / /app:/root/.isabelle / 3600 / 1 / true | Heap pool. |
 | `ISABELLE_SERVER_HOST` / `PORT` | 0.0.0.0 / 8000 | Uvicorn bind address/port. |
 | `ISABELLE_SERVER_LOG_LEVEL` / `LOG_DIR` / `LOG_FILE` / `MAX_LOG_SIZE_BYTES` / `LOG_BACKUP_COUNT` / `ENABLE_FILE_LOGGING` | INFO / logs / server.log / 10 MB / 5 / true | Logging and rotation. |
 | `ISABELLE_SERVER_REQUEST_ID_HEADER` | X-Request-ID | Header used for request correlation. |
@@ -259,7 +260,7 @@ MCP variables: `mcp_servers/stepwise/config.py` (prefix `ISABELLE_MCP_`: `GYM_UR
 `tests/` holds ~380 unit tests, all runnable **without an Isabelle backend** (they stub the backend, the gateway subprocess, or the HTTP transport). Run from the repo root:
 
 ```bash
-pytest                                   # host: conda run -n IsabelleGym pytest; container: docker exec isabelle-gym pytest
+pytest                                   # host: conda run -n Isabelle Pool Server pytest; container: docker exec isabelle-pool-server pytest
 pytest tests/test_mcp_lsp_server.py -q   # one module
 ```
 
@@ -312,7 +313,7 @@ python -m evaluation.scripts.eval_bigstep_server_client_ver \
   --corpus "$CORPUS" --server http://localhost:8000 --field HOL \
   --timeout 1800 --output "$OUT/bigstep_server.json"
 
-# Local baselines (need isabelle on PATH): eval_smallstep_isabellegym (archive/isabellegym2 gym),
+# Local baselines (need isabelle on PATH): eval_smallstep_isabelle-pool-server (archive/isabelle-pool-server2 gym),
 # eval_bigstep_isabelle_build (--isabelle-bin "$(which isabelle)" --parent-session HOL --jobs 4)
 ```
 
@@ -324,7 +325,7 @@ For the cross-MCP comparison harness, see `evaluation/MCP-comparison/README.md` 
 
 - The image is large because it bundles Isabelle and the JDK. Keep it lean: no heavy ML frameworks in `requirement.txt` unless required.
 - The Dockerfile downloads the Isabelle tarball for the build architecture (x86-64 or ARM) and falls back across mirrors, abandoning any mirror under 1 MB/s. Do not pin `platform: linux/amd64` in compose.
-- The container entrypoint **starts the server** (`exec python -m server.app.main`) after re-registering components and writing the ML heap cap; `docker compose logs -f isabelle-gym` is the live log.
+- The container entrypoint **starts the server** (`exec python -m server.app.main`) after re-registering components and writing the ML heap cap; `docker compose logs -f isabelle-pool-server` is the live log.
 - `mem_limit: 14g` must stay below the Docker VM's own memory or the cgroup gate goes blind; on smaller machines lower it **and** `ISABELLE_POOL_SIZE`.
 - Logs rotate by size (`ISABELLE_SERVER_MAX_LOG_SIZE_BYTES`, default 10 MB, 5 backups) in `logs/server.log`.
 - **JVM observability (Bug 11):** `ISABELLE_SCALA_JAVA_OPTIONS` in `.env` is **dead config** — nothing in the Isabelle toolchain consumes it, and neither `JAVA_TOOL_OPTIONS` (filtered) nor env-set `ISABELLE_TOOL_JAVA_OPTIONS` (clobbered by settings evaluation) reaches the JVM. The only reliable channel for JVM/ML options is the Isabelle user settings file (`$ISABELLE_HOME_USER/etc/settings`), which the entrypoint manages: it writes the `ML_OPTIONS` heap cap and an `-Xlog:gc*` line producing per-PID rotated GC logs at `logs/isabelle-jvm-gc-<pid>.log`; JVM stdout/stderr land in `logs/gateway-jvm.log`. The gateway JVM runs ZGC with `-Xmx4g` (launcher defaults).
@@ -334,10 +335,10 @@ For the cross-MCP comparison harness, see `evaluation/MCP-comparison/README.md` 
 ## Security considerations
 
 - **No authentication/authorisation** is implemented. Do not expose the server directly to untrusted networks; run it behind a firewall / SSH tunnel or a reverse proxy.
-- **Leases are the only ownership proof** on mutation paths — and they are never published: the public pool listing (`GET /api/v1/sessions`) carries no `lease_id` fields (Bug 10). The full listing lives behind `GET /api/v1/admin/sessions`, gated by `X-Admin-Token` against `ISABELLE_ADMIN_TOKEN` (empty = disabled; this is the server's only credential, opt-in). Every DELETE is audit-logged and counted (`isabellegym_sessions_force_closed_total`).
+- **Leases are the only ownership proof** on mutation paths — and they are never published: the public pool listing (`GET /api/v1/sessions`) carries no `lease_id` fields (Bug 10). The full listing lives behind `GET /api/v1/admin/sessions`, gated by `X-Admin-Token` against `ISABELLE_ADMIN_TOKEN` (empty = disabled; this is the server's only credential, opt-in). Every DELETE is audit-logged and counted (`isabelle_pool_server_sessions_force_closed_total`).
 - **CORS** is configured with `allow_origins=["*"]`. Tighten this for production deployments.
 - **Code execution in client text (Bug 12).** Every endpoint that hands client Isar to the prover — `POST .../commands`, `.../verify_chunk`, `PUT .../document`, the lease-free `POST /api/v1/sessions/bigstep`, and heap-pool project sources — runs `server/app/core/input_guards.reject_code_execution`, which rejects `ML*`, `SML_*`, `setup`/`*_setup`, `declaration`, `oracle`, translation hooks, `*_file`, `compile_generated_files` with HTTP 422 (comments and string/cartouche bodies are ignored first, so prose mentioning ML passes). The denylist is shared with `diagnostic_guard.py` (which additionally allowlists the leading keyword for `/diagnostic`). Policy switch: `ISABELLE_ALLOW_ML_COMMANDS` (default false) — with it true **any client can execute arbitrary code in the container**; the MCP tools go through the same endpoints, so the guard covers them too. Theory and import names quoted into generated headers are validated (`validate_import_names`, Bug 23) so a name containing `"` cannot inject commands.
-- **Heap pool inputs (Bug 13).** `task_group`, `session_name`, image `session`/`platform` must match `^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`; `project` must resolve under `ISABELLE_HEAP_ALLOWED_ROOTS` (default `/app:/root/.isabelle`); manifest and image paths are containment-checked before write/delete; project theories are scanned for code-executing commands before `isabelle build`. The destructive heap endpoints require `X-Admin-Token`; `POST /api/v1/heaps/build` stays open (owner decision) but is path-restricted.
+- **Heap pool inputs (Bug 13).** `task_group`, `session_name`, image `session`/`platform` must match `^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`; `project` must resolve under `ISABELLE_HEAP_POOL_ALLOWED_ROOTS` (default `/app:/root/.isabelle`); manifest and image paths are containment-checked before write/delete; project theories are scanned for code-executing commands before `isabelle build`. The destructive heap endpoints require `X-Admin-Token`; `POST /api/v1/heaps/build` stays open (owner decision) but is path-restricted.
 - **Known, deferred (owner decision 2026-09-22, tracker SEC-1):** `GET /admin` is unauthenticated and inlines `ISABELLE_ADMIN_TOKEN` into the page, so anyone who can reach the port can obtain the token (and thereby lease ids / force-close / heap deletes). Keep the port firewalled; a real admin login is future work.
 - **Sledgehammer and big-step builds** can spawn external ATP provers and consume large amounts of memory/CPU. The sledgehammer semaphore and the cgroup memory gate limit abuse (`BuildVerifier` is *not* wired to the memory gate; the per-process `ML_OPTIONS --maxheap` cap is the only bound on builds), but resource exhaustion is still possible from trusted clients.
 - **MCP servers** run with the privileges of the user invoking them and have access to the underlying Isabelle session. Treat MCP connections as trusted; the streamable-HTTP transports bind 127.0.0.1 by default.

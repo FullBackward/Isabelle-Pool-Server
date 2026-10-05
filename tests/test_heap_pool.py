@@ -77,6 +77,35 @@ def _fake_homes(tmp_path):
     return tmp_path / "user", tmp_path / "dist"
 
 
+def test_isabelle_binary_follows_isabelle_home(tmp_path, monkeypatch):
+    """Native installs put Isabelle anywhere; the heap pool must resolve the
+    launcher from ISABELLE_HOME exactly like the gateway does, with the
+    container path as the fallback (2026-10-05, native-install README)."""
+    monkeypatch.setenv("ISABELLE_HOME", "/srv/Isabelle2026")
+    assert HeapPool(state_dir=str(tmp_path)).isabelle == "/srv/Isabelle2026/bin/isabelle"
+    monkeypatch.delenv("ISABELLE_HOME")
+    assert HeapPool(state_dir=str(tmp_path)).isabelle == "/opt/isabelle/bin/isabelle"
+    assert HeapPool(state_dir=str(tmp_path), isabelle="/x/isabelle").isabelle == "/x/isabelle"
+
+
+def test_heap_env_prefers_new_name_and_falls_back_to_old(monkeypatch):
+    """ISABELLE_HEAP_* → ISABELLE_HEAP_POOL_* (2026-10-05, so nothing shadows Isabelle's
+    own ISABELLE_HEAPS family); the old name keeps working for one release."""
+    import warnings
+    from server.app.core.config import _heap_env
+
+    monkeypatch.delenv("ISABELLE_HEAP_POOL_GC_IMAGES", raising=False)
+    monkeypatch.delenv("ISABELLE_HEAP_GC_IMAGES", raising=False)
+    assert _heap_env("GC_IMAGES", "dflt") == "dflt"
+    monkeypatch.setenv("ISABELLE_HEAP_GC_IMAGES", "old")
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        assert _heap_env("GC_IMAGES", "dflt") == "old"
+    assert any(issubclass(x.category, DeprecationWarning) for x in w)
+    monkeypatch.setenv("ISABELLE_HEAP_POOL_GC_IMAGES", "new")
+    assert _heap_env("GC_IMAGES", "dflt") == "new"
+
+
 def test_available_heaps_lists_base_images(tmp_path, monkeypatch):
     pool = _pool(tmp_path, monkeypatch)
     user, dist = _fake_homes(tmp_path)

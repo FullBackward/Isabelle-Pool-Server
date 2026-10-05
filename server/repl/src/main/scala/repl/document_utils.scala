@@ -647,7 +647,7 @@ object Document_Utils {
     }
   }
 
-  /** Sledgehammer at a 1-based line via the `isabellegym_sledgehammer` overlay op
+  /** Sledgehammer at a 1-based line via the `isabelle_pool_server_sledgehammer` overlay op
    *  (REPL.ML). Host = the command containing the line (jEdit cursor semantics);
    *  the op normalizes Forward-mode proof states via Proof.enter_backward, so any
    *  in-proof position works. Clean {found:false, error} when the line has no open
@@ -664,7 +664,7 @@ object Document_Utils {
       case Some((_, _, command, _)) =>
         val (done, content, errors) = overlay_query(
           session, node_name, command,
-          "isabellegym_sledgehammer_query",
+          "isabelle_pool_server_sledgehammer_query",
           List(timeout_s.toString, subgoal.toString),
           (timeout_s + 30).toLong * 1000L)
         if (!done)

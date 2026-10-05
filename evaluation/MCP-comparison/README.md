@@ -2,8 +2,8 @@
 
 This directory compares Isabelle MCP servers on the same set of `.thy` problems:
 
-1. **IsabelleGym MCP** (`run_isabellegym.py`) — this repo (chunk-centric MCP)
-2. **IsabelleGym LSP MCP** (`run_isabellegym_lsp.py`) — this repo (file-sync LSP-like MCP)
+1. **Isabelle Pool Server MCP** (`run_isabelle_pool_server.py`) — this repo (chunk-centric MCP)
+2. **Isabelle Pool Server LSP MCP** (`run_isabelle_pool_server_lsp.py`) — this repo (file-sync LSP-like MCP)
 3. **Isabelle-MCP** (`run_isabelle_mcp.py`) — `~/GitHub/Isabelle-MCP`
 4. **AutoCorrode I/Q** (`run_autocorrode_iq.py`) — `~/GitHub/AutoCorrode`
 
@@ -28,8 +28,8 @@ MCP-comparison/
 │   ├── metrics.py               # result schema, JSONL, timing
 │   └── arbiter.py               # neutral isabelle build checker
 ├── problems/                    # benchmark .thy files (theorem … sorry)
-├── run_isabellegym.py           # IsabelleGym runner
-├── run_isabellegym_lsp.py       # IsabelleGym LSP-MCP runner (file-sync workflow)
+├── run_isabelle_pool_server.py           # Isabelle Pool Server runner
+├── run_isabelle_pool_server_lsp.py       # Isabelle Pool Server LSP-MCP runner (file-sync workflow)
 ├── run_isabelle_mcp.py          # Isabelle-MCP runner
 ├── run_autocorrode_iq.py        # AutoCorrode I/Q runner
 ├── analyze.py                   # print summary tables
@@ -62,18 +62,18 @@ Optional, for I/Q:
 
 ```bash
 export IQ_AUTH_TOKEN="eval-secret-token"      # or paste into evaluation/MCP-comparison/iq_token.txt
-export IQ_MCP_ALLOWED_ROOTS="/abs/path/to/IsabelleGym/evaluation/MCP-comparison/runs/autocorrode/work"
+export IQ_MCP_ALLOWED_ROOTS="/abs/path/to/Isabelle-Pool-Server/evaluation/MCP-comparison/runs/autocorrode/work"
 ```
 
 ### Backends
 
 | System | Required backend |
 |---|---|
-| IsabelleGym | IsabelleGym HTTP server running on `http://localhost:8000` |
+| Isabelle Pool Server | Isabelle Pool Server running on `http://localhost:8000` |
 | Isabelle-MCP | A running Docker container built from `Isabelle-MCP/container/` (or a native patched Isabelle with `isabelle-mcp` on PATH) |
 | AutoCorrode I/Q | Isabelle/jEdit running with the I/Q plugin listening on `127.0.0.1:8765` |
 
-The **arbiter** (used by all three runners after every attempt) also needs the IsabelleGym
+The **arbiter** (used by all three runners after every attempt) also needs the Isabelle Pool Server
 server on `http://localhost:8000`.
 
 ---
@@ -101,7 +101,7 @@ budgets:
   repeats: 5
 
 mcp_servers:
-  isabellegym:
+  isabelle_pool_server:
     command: [python, -m, mcp_servers.stepwise.app]
   isabelle_mcp:
     command: [docker, exec, -i, isabelle-eval, isabelle-mcp]   # container mode
@@ -142,8 +142,8 @@ All runners accept `--prompt` (default differs per runner):
 | variant | systems | content |
 |---|---|---|
 | `general` | all three | interface-level rules only: solver rule (+ fallback, escalation, timeout discipline), DONE criteria, unicode rule (file-based systems), no strategy coaching |
-| `stepwise` | isabellegym | + layered incremental proving (REPL-style, small layers) |
-| `segment` | isabellegym | + chunked segment submission with recovery examples (the most efficient IsabelleGym playbook) |
+| `stepwise` | isabelle_pool_server | + layered incremental proving (REPL-style, small layers) |
+| `segment` | isabelle_pool_server | + chunked segment submission with recovery examples (the most efficient Isabelle Pool Server playbook) |
 | `guided` | autocorrode I/Q | general + AutoCorrode's vendor playbook (`iq_guidance.md`) |
 | `guided` | isabelle_mcp | general + the server's own `instructions.py`, captured live from the MCP initialize handshake |
 
@@ -154,9 +154,9 @@ for the product-playbook comparison.
 
 ## Run the comparison
 
-### 1. IsabelleGym
+### 1. Isabelle Pool Server
 
-Start the IsabelleGym server first:
+Start the Isabelle Pool Server first:
 
 ```bash
 python -m server.app.main
@@ -165,10 +165,10 @@ python -m server.app.main
 Then run:
 
 ```bash
-python evaluation/MCP-comparison/run_isabellegym.py --thy-dir evaluation/MCP-comparison/problems --prompt segment --repeats 10
+python evaluation/MCP-comparison/run_isabelle_pool_server.py --thy-dir evaluation/MCP-comparison/problems --prompt segment --repeats 10
 ```
 
-### 1b. IsabelleGym LSP (file-sync workflow)
+### 1b. Isabelle Pool Server LSP (file-sync workflow)
 
 The LSP-like MCP (`mcp_servers/lsp/`) is READ-ONLY by design — it observes files.
 So this runner differs in shape: the agent edits a per-attempt workdir copy of
@@ -179,10 +179,10 @@ arbiter on the final file state.
 
 ```bash
 python -m server.app.main   # the LSP MCP talks to the same HTTP server
-python evaluation/MCP-comparison/run_isabellegym_lsp.py --thy-dir evaluation/MCP-comparison/problems --repeats 10
+python evaluation/MCP-comparison/run_isabelle_pool_server_lsp.py --thy-dir evaluation/MCP-comparison/problems --repeats 10
 ```
 
-Results land in `runs/isabellegym_lsp/` (same results.jsonl schema;
+Results land in `runs/isabelle_pool_server_lsp/` (same results.jsonl schema;
 `analyze.py` picks it up as a fourth system row).
 
 ### 2. Isabelle-MCP
@@ -253,7 +253,7 @@ restarted), then:
 
 ```bash
 export IQ_AUTH_TOKEN="eval-secret-token"     # or paste into iq_token.txt (re-read each attempt)
-export IQ_MCP_ALLOWED_ROOTS="/abs/path/to/IsabelleGym/evaluation/MCP-comparison/runs/autocorrode/work"
+export IQ_MCP_ALLOWED_ROOTS="/abs/path/to/Isabelle-Pool-Server/evaluation/MCP-comparison/runs/autocorrode/work"
 ```
 
 Run:
@@ -265,8 +265,8 @@ python evaluation/MCP-comparison/run_autocorrode_iq.py --thy-dir evaluation/MCP-
 ### Run a subset / override repeats
 
 ```bash
-python evaluation/MCP-comparison/run_isabellegym.py --thy-dir evaluation/MCP-comparison/problems --select putnam_1988
-python evaluation/MCP-comparison/run_isabellegym.py --thy-dir evaluation/MCP-comparison/problems --repeats 20
+python evaluation/MCP-comparison/run_isabelle_pool_server.py --thy-dir evaluation/MCP-comparison/problems --select putnam_1988
+python evaluation/MCP-comparison/run_isabelle_pool_server.py --thy-dir evaluation/MCP-comparison/problems --repeats 20
 ```
 
 ---
@@ -274,13 +274,13 @@ python evaluation/MCP-comparison/run_isabellegym.py --thy-dir evaluation/MCP-com
 ## Arbiter
 
 Each runner calls the neutral arbiter automatically after every attempt (it runs
-`isabelle build` on the final file via the IsabelleGym server's bigstep endpoint; the
+`isabelle build` on the final file via the Isabelle Pool Server's bigstep endpoint; the
 first call for a heavy parent session can take minutes — `ARBITER_BUILD_TIMEOUT_S`,
 default 900 s). You can also run it manually:
 
 ```bash
 cd evaluation/MCP-comparison   # `common` is imported relative to the harness directory
-python -m common.arbiter problems/Putnam_1988_B1.thy runs/isabellegym/Putnam_1988_B1_rep0.thy
+python -m common.arbiter problems/Putnam_1988_B1.thy runs/isabelle_pool_server/Putnam_1988_B1_rep0.thy
 ```
 
 The arbiter checks:
@@ -308,7 +308,7 @@ Each runner appends one JSON line per `(system, problem, repeat)` to its `result
 
 ```json
 {
-  "system": "isabellegym",
+  "system": "isabelle_pool_server",
   "problem": "mathd_algebra_276",
   "repeat": 0,
   "rounds": 10,
@@ -327,7 +327,7 @@ Each runner appends one JSON line per `(system, problem, repeat)` to its `result
   "cached_tokens": 98000,
   "agent_claimed_solved": true,
   "arbiter_solved": true,
-  "final_thy_path": "evaluation/MCP-comparison/runs/isabellegym/mathd_algebra_276_rep0.thy",
+  "final_thy_path": "evaluation/MCP-comparison/runs/isabelle_pool_server/mathd_algebra_276_rep0.thy",
   "error": null
 }
 ```
@@ -347,11 +347,11 @@ Headline numbers use `arbiter_solved`. Field notes:
 ## Harness safeguards (affects how to read results)
 
 - **DONE gate (all runners).** An agent's DONE is verified before acceptance: settled
-  document, no errors, no sorries, closed proof (`pending_qed` on IsabelleGym). A false
+  document, no errors, no sorries, closed proof (`pending_qed` on Isabelle Pool Server). A false
   DONE costs a nudge round (max 2), then the arbiter judges.
 - **Setup guards (I/Q).** Buffer reset + sorry-presence poll prevent phantom solves from
   stale jEdit buffers.
-- **Auto seeding (IsabelleGym).** The theorem statement is pre-submitted so agents start
+- **Auto seeding (Isabelle Pool Server).** The theorem statement is pre-submitted so agents start
   from an open goal, matching the file-based systems' starting state.
 - **Truncated rounds.** `finish_reason=length` rounds are nudged, not killed
   (`n_truncated_rounds` is informational).

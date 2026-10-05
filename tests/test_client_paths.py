@@ -14,7 +14,7 @@ import json
 import httpx
 import pytest
 
-from client.async_client import IsabelleGymAsyncClient
+from client.async_client import PoolAsyncClient
 
 
 def _client_with_recorder(recorded):
@@ -26,7 +26,7 @@ def _client_with_recorder(recorded):
                 "proof_finished": True, "facts": []}
         return httpx.Response(200, json=body)
 
-    c = IsabelleGymAsyncClient("http://gym")
+    c = PoolAsyncClient("http://gym")
     c.client = httpx.AsyncClient(base_url="http://gym", transport=httpx.MockTransport(handler))
     return c
 

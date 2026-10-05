@@ -1,6 +1,6 @@
-"""IsabelleGym LSP-like MCP server (file-sync workflow).
+"""Isabelle Pool Server LSP-like MCP server (file-sync workflow).
 
-Tools wrap IsabelleGymAsyncClient only — no direct HTTP, no server-core edits.
+Tools wrap PoolAsyncClient only — no direct HTTP, no server-core edits.
 State is keyed by canonical FILE PATH (the agent never sees session ids).
 
 SYNC MODEL (copied buffer): the MCP never writes files. Every file-scoped tool
@@ -24,7 +24,7 @@ from ..common import dump_json as _j
 from .config import Config
 from .pool import LspPool, attempt_prefix, header_imports
 
-mcp = FastMCP("isabellegym-lsp", host=Config.HOST, port=Config.PORT)
+mcp = FastMCP("isabelle-pool-server-lsp", host=Config.HOST, port=Config.PORT)
 pool = LspPool()
 
 _SYNC_NOTE = (

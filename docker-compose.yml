@@ -1,23 +1,5 @@
-#services:
-#  isabelle-gym:
-#    build: .
-#    container_name: isabelle-gym
-#    volumes:
-#      - .:/app
-#      - isabelle_user_data:/root/.isabelle
-#    environment:
-#      - ISABELLE_HOME=/app/isabelle
-#      - PYTHONPATH=/app
-#    working_dir: /app
-#    stdin_open: true
-#    tty: true
-#    command: bash
-
-#volumes:
-#  isabelle_user_data: 
-
 services:
-  isabelle-gym:
+  isabelle-pool-server:
     # No platform pin: build/run natively for the host architecture. The old
     # `platform: linux/amd64` forced qemu-x86_64 emulation on Apple Silicon
     # (5-20x slower Isabelle; session creation took many minutes). The
@@ -28,7 +10,10 @@ services:
       args:
         # Isabelle distribution name (RCs: website-<name>/dist; finals: dist/).
         ISABELLE_VERSION: ${ISABELLE_VERSION:-Isabelle2026-RC2}
-    container_name: isabelle-gym
+    # Explicit image name: without it compose derives one from the checkout
+    # directory (it used to be `isabellegym-isabelle-gym`).
+    image: isabelle-pool-server:local
+    container_name: isabelle-pool-server
     volumes:
       - .:/app
       - isabelle_user_data:/root/.isabelle
@@ -54,7 +39,7 @@ services:
     # (docs/ISSUES.md Bug 7), ensures the ML heap cap in the user settings,
     # then starts the API server in the foreground — `docker compose up -d`
     # gives a running server, no manual exec needed. Logs:
-    # `docker compose logs -f isabelle-gym`.
+    # `docker compose logs -f isabelle-pool-server`.
     command: ./server/repl/Admin/container_entrypoint.sh
     restart: unless-stopped
 

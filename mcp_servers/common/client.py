@@ -7,11 +7,11 @@ from typing import Any, Optional
 
 import httpx
 
-from client.async_client import IsabelleGymAsyncClient
+from client.async_client import PoolAsyncClient
 
 
 class GymClientMixin:
-    """Lazily creates ONE shared ``IsabelleGymAsyncClient`` per pool.
+    """Lazily creates ONE shared ``PoolAsyncClient`` per pool.
 
     httpx is safe for concurrent requests on distinct sessions/leases, so one
     client serves every MCP connection. Subclasses call ``_init_client(url,
@@ -19,7 +19,7 @@ class GymClientMixin:
     ``pool._client`` directly (the attribute name is part of the test contract).
     """
 
-    _client: Optional[IsabelleGymAsyncClient]
+    _client: Optional[PoolAsyncClient]
     _client_lock: asyncio.Lock
     _gym_url: str
     _http_timeout: float
@@ -30,11 +30,11 @@ class GymClientMixin:
         self._gym_url = gym_url
         self._http_timeout = http_timeout
 
-    async def client(self) -> IsabelleGymAsyncClient:
+    async def client(self) -> PoolAsyncClient:
         if self._client is None:
             async with self._client_lock:
                 if self._client is None:
-                    self._client = IsabelleGymAsyncClient(self._gym_url, timeout=self._http_timeout)
+                    self._client = PoolAsyncClient(self._gym_url, timeout=self._http_timeout)
         return self._client
 
 

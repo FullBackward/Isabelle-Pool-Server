@@ -1,9 +1,9 @@
-"""IsabelleGym async HTTP client (httpx only; never imports server code).
+"""Isabelle Pool Server async HTTP client (httpx only; never imports server code).
 
-``IsabelleGymAsyncClient`` is composed from one mixin per concern so each file
+``PoolAsyncClient`` is composed from one mixin per concern so each file
 stays small; the public surface and import path are unchanged:
 
-    from client.async_client import IsabelleGymAsyncClient
+    from client.async_client import PoolAsyncClient
 
 - ``sessions``   create / acquire / release / close / enter_theory / listings
 - ``execution``  execute_command / diagnostic / verify_chunk / load_document /
@@ -20,7 +20,8 @@ from .inspection import InspectionMixin
 from .sessions import SessionsMixin
 
 __all__ = [
-    "IsabelleGymAsyncClient",
+    "PoolAsyncClient",
+    "IsabelleGymAsyncClient",  # deprecated alias (project renamed 2026-10-05)
     "extract_theory_name",
     "THEORY_RE",
     "BASE_URL",
@@ -29,6 +30,11 @@ __all__ = [
 ]
 
 
-class IsabelleGymAsyncClient(SessionsMixin, ExecutionMixin, InspectionMixin, HeapsMixin):
-    """Async client for the IsabelleGym server. See the mixin modules for the
-    method groups; construct with ``IsabelleGymAsyncClient(base_url, timeout)``."""
+class PoolAsyncClient(SessionsMixin, ExecutionMixin, InspectionMixin, HeapsMixin):
+    """Async client for the Isabelle Pool Server. See the mixin modules for the
+    method groups; construct with ``PoolAsyncClient(base_url, timeout)``."""
+
+
+# Deprecated alias — the project was IsabelleGym Server until 2026-10-05. Kept for one
+# release so external harnesses importing the old name keep working.
+IsabelleGymAsyncClient = PoolAsyncClient

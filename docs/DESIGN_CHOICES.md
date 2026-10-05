@@ -1,6 +1,6 @@
 # DESIGN_CHOICES.md
 
-Design rationale for IsabelleGym 3.0, written down after the fact so the choices — and the
+Design rationale for Isabelle Pool Server (IsabelleGym 3.0 until its renaming on 2026-10-05), written down after the fact so the choices — and the
 roads not taken — survive the people who made them. Format per choice: what we chose, what
 the old/alternative option was, pros and cons of each, why the chosen option won, and what
 possibilities the choice deliberately gave up. Bug numbers refer to ISSUES.md; deeper
@@ -8,7 +8,7 @@ histories live in `claude-work/`.
 
 ---
 
-## 1. IsabelleGym server — from local REPL gym to a concurrent server
+## 1. Isabelle Pool Server — from local REPL gym to a concurrent server
 
 ### 1.1 Deployment model: embedded Python library → HTTP service
 
@@ -298,7 +298,7 @@ blocked on that queue, waited for the probe to consolidate ("settle"), then remo
 edit (`discard_last_edit`). Finished theories needed a second path that inserted the probe
 *before* the trailing `end`.
 **Chosen:** every state query is a PIDE **overlay query**: a `Query_Operation` registered in
-`REPL.ML` (`isabellegym_goals`, `_in_proof`, `_local_facts`, `_global_facts`, `_state`,
+`REPL.ML` (`isabelle_pool_server_goals`, `_in_proof`, `_local_facts`, `_global_facts`, `_state`,
 `_sledgehammer`) is attached as a temporary overlay to the document's **last command**
 (`Document_Utils.current_state_host`; the command before `end` for the fact queries on a
 finished theory), runs against that command's result state — which IS the current toplevel
@@ -388,7 +388,7 @@ an ordinary error result. **Given up:** background completion of timed-out small
 ### 2.1 Thin layer over the HTTP client — no prover logic in the MCP process
 
 **Chosen:** `mcp_servers/` — the chunk-centric `stepwise/` server this part describes and the
-LSP-like `lsp/` server of 2.9, over shared `common/` helpers — wraps `IsabelleGymAsyncClient`
+LSP-like `lsp/` server of 2.9, over shared `common/` helpers — wraps `PoolAsyncClient`
 (plain HTTP). No Py4J, no Isabelle,
 no core edits.
 **Alternative:** embed the gym in the MCP process (one fewer hop), or fork a special agent

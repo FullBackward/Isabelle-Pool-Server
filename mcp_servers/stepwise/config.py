@@ -1,4 +1,4 @@
-"""Configuration for the IsabelleGym chunk-centric MCP server (all via env, prefix ISABELLE_MCP_)."""
+"""Configuration for the Isabelle Pool Server chunk-centric MCP server (all via env, prefix ISABELLE_MCP_)."""
 from __future__ import annotations
 
 from ..common.config import env_float, env_int, env_str
@@ -7,7 +7,7 @@ _P = "ISABELLE_MCP_"
 
 
 class Config:
-    # Where the running IsabelleGym HTTP server lives.
+    # Where the running Isabelle Pool Server lives.
     GYM_URL: str = env_str(_P, "GYM_URL", "http://localhost:8000")
     DEFAULT_FIELD: str = env_str(_P, "FIELD", "HOL")
 

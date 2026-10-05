@@ -1,4 +1,4 @@
-"""Configuration for the IsabelleGym LSP-like MCP server (all via env, prefix ISABELLE_MCP_LSP_)."""
+"""Configuration for the Isabelle Pool Server LSP-like MCP server (all via env, prefix ISABELLE_MCP_LSP_)."""
 from __future__ import annotations
 
 from ..common.config import env_bool, env_float, env_int, env_str
@@ -7,7 +7,7 @@ _P = "ISABELLE_MCP_LSP_"
 
 
 class Config:
-    # Where the running IsabelleGym HTTP server lives.
+    # Where the running Isabelle Pool Server lives.
     GYM_URL: str = env_str(_P, "GYM_URL", "http://localhost:8000")
     DEFAULT_FIELD: str = env_str(_P, "FIELD", "HOL")
     DEFAULT_TASK_GROUP: str = env_str(_P, "TASK_GROUP", "default")

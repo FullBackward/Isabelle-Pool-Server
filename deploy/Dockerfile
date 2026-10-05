@@ -1,7 +1,7 @@
-# IsabelleGym server image — ONE Dockerfile for every Isabelle version.
+# Isabelle Pool Server image — ONE Dockerfile for every Isabelle version.
 #
-#   docker compose build isabelle-gym                                  # default version below
-#   docker build -f deploy/Dockerfile --build-arg ISABELLE_VERSION=Isabelle2026-RC2 -t isabellegym-isabelle-gym:2026rc2 .
+#   docker compose build isabelle-pool-server                                  # default version below
+#   docker build -f deploy/Dockerfile --build-arg ISABELLE_VERSION=Isabelle2026-RC2 -t isabelle-pool-server:2026rc2 .
 #
 # ISABELLE_VERSION is the distribution name (Isabelle2026-RC2, Isabelle2026,
 # Isabelle2025-2 …). Release candidates live in a per-RC website directory
@@ -30,9 +30,9 @@ ARG ISABELLE_DIST_URLS="https://isabelle.in.tum.de/website-${ISABELLE_VERSION}/d
     https://mirror.clarkson.edu/isabelle/dist"
 ARG GIT_REVISION=unknown
 
-LABEL org.opencontainers.image.title="IsabelleGym server" \
+LABEL org.opencontainers.image.title="Isabelle Pool Server" \
       org.opencontainers.image.revision="${GIT_REVISION}" \
-      isabellegym.isabelle_version="${ISABELLE_VERSION}"
+      isabelle-pool-server.isabelle_version="${ISABELLE_VERSION}"
 
 ENV HOME=/root
 WORKDIR /app

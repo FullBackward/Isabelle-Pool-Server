@@ -1,5 +1,5 @@
 """Tracker TEST-1 (audit P0 item 10): spawn each MCP server IN-PROCESS and assert
-its tool surface. No IsabelleGym HTTP server is contacted — the servers are
+its tool surface. No Isabelle Pool Server is contacted — the servers are
 only instantiated, and tools are listed, not called.
 
 Guards against the failure class DOC-1 exposed (a renamed/lost module or tool

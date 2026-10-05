@@ -121,7 +121,7 @@ def test_load_results_accepts_rows_without_new_fields(tmp_path):
     from common.metrics import AttemptResult, append_result, load_results
 
     path = tmp_path / "results.jsonl"
-    append_result(path, AttemptResult(system="isabellegym", problem="p", repeat=0))
+    append_result(path, AttemptResult(system="isabelle_pool_server", problem="p", repeat=0))
     # simulate an OLD row (pre new fields) by dropping them
     import json
     row = json.loads(path.read_text().splitlines()[0])

@@ -4,7 +4,7 @@ An MCP server for agent-driven Isabelle development over *files*, in the spirit
 of lean-lsp-mcp: tools take a `file_path` (never a session id), the file is
 re-synced from disk before every query, and execution happens on warm scratch
 sessions — never on the file's session. Built strictly on top of
-`IsabelleGymAsyncClient` (no server-core edits); needs the IsabelleGym HTTP
+`PoolAsyncClient` (no server-core edits); needs the Isabelle Pool Server HTTP
 server running (`docker compose up -d`, `python -m server.app.main` in the
 container, port 8000).
 
@@ -72,7 +72,7 @@ parser (client wrapper: `async_client.parse_theory_header`).
 
 | Var | Default | Meaning |
 |---|---|---|
-| `..._GYM_URL` | `http://localhost:8000` | IsabelleGym HTTP server |
+| `..._GYM_URL` | `http://localhost:8000` | Isabelle Pool Server |
 | `..._FIELD` / `..._TASK_GROUP` | `HOL` / `default` | session field / default heap task group |
 | `..._HTTP_TIMEOUT` | 600 | httpx timeout (s) |
 | `..._LOAD_TIMEOUT` | 120 | load_document sync budget (s) |

@@ -1,4 +1,4 @@
-"""Neutral solved check via IsabelleGym server bigstep endpoint."""
+"""Neutral solved check via Isabelle Pool Server bigstep endpoint."""
 from __future__ import annotations
 
 import asyncio
@@ -13,7 +13,7 @@ _REPO_ROOT = str(Path(__file__).resolve().parents[2])
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
-from client.async_client import IsabelleGymAsyncClient
+from client.async_client import PoolAsyncClient
 
 from .problems import Problem
 
@@ -32,7 +32,7 @@ async def check(
 ) -> dict[str, object]:
     """Return {"solved": bool, "error": str|None, "build_log": str}.
 
-    Submits the theory to the IsabelleGym server's bigstep endpoint
+    Submits the theory to the Isabelle Pool Server's bigstep endpoint
     (POST /api/v1/sessions/bigstep).  The server must be running with
     a warm session pool.
     """
@@ -69,7 +69,7 @@ async def check(
     if deps:
         effective_field = deps[0]
 
-    # 4. Send to the IsabelleGym server via async client.
+    # 4. Send to the Isabelle Pool Server via async client.
     # Budget note: the FIRST arbiter call for a problem importing a heavy session
     # (e.g. HOL-Computational_Algebra) also builds that parent session; 300 s was
     # not enough and produced false "unsolved" verdicts with an empty ReadTimeout.
@@ -78,7 +78,7 @@ async def check(
     # paying this during scoring at all.
     build_budget = float(os.environ.get("ARBITER_BUILD_TIMEOUT_S", "900"))
     try:
-        async with IsabelleGymAsyncClient(base_url=gym_url, timeout=build_budget + 60.0) as client:
+        async with PoolAsyncClient(base_url=gym_url, timeout=build_budget + 60.0) as client:
             resp = await client.verify_bigstep_text(
                 theory_name=problem.name,
                 theory_text=final_text,

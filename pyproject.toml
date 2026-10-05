@@ -3,8 +3,9 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "isabelle-gym"
+name = "isabelle-pool-server"
 version = "0.1.0"
+description = "Isabelle as a managed, concurrent service: a pool of warm prover sessions behind a REST API, with leases, memory-aware admission, metrics, and MCP servers for LLM agents."
 dependencies = [
     "py4j",
     "numpy",

@@ -1,6 +1,6 @@
 """Shared pytest fixtures.
 
-The server's base logger (``isabelleserver``, server/app/core/logging.py) has
+The server's base logger (``isabelle_pool_server``, server/app/core/logging.py) has
 ``propagate = False`` so its records are not emitted twice via the root
 fallback handlers. pytest's ``caplog`` only listens on the root logger, so
 without help no assertion on ``caplog.records`` can ever see a server log line

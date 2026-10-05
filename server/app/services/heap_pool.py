@@ -32,6 +32,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -51,7 +52,9 @@ from server.app.core.logging import get_logger
 
 logger = get_logger(__name__)
 
-ISABELLE = "/opt/isabelle/bin/isabelle"
+def default_isabelle() -> str:
+    """`isabelle` launcher, resolved like the gateway: $ISABELLE_HOME (native) else /opt/isabelle."""
+    return str(Path(os.environ.get("ISABELLE_HOME", "/opt/isabelle")) / "bin" / "isabelle")
 
 _STATUS_BUILDING = "building"
 _STATUS_READY = "ready"
@@ -64,7 +67,6 @@ _ROOT_SESSION_RE = re.compile(r"(?m)^\s*session\s+\"?([A-Za-z][A-Za-z0-9_]*)\"?"
 
 class HeapPoolError(Exception):
     """Base error for heap-pool operations."""
-
     status_code = 500
 
 
@@ -74,7 +76,6 @@ class HeapNotFound(HeapPoolError):
 
 class HeapCrossGroup(HeapPoolError):
     """The named heap exists, but in another task group (isolation rule)."""
-
     status_code = 403
 
 
@@ -84,7 +85,6 @@ class HeapBuildInProgress(HeapPoolError):
 
 class HeapNotReady(HeapPoolError):
     """Entry exists but is building/failed/stale — not usable for sessions."""
-
     status_code = 422
 
 
@@ -130,11 +130,11 @@ class HeapPool:
     def __init__(
         self,
         state_dir: Optional[str] = None,
-        isabelle: str = ISABELLE,
+        isabelle: Optional[str] = None,
         allowed_roots: Optional[List[str]] = None,
     ):
         self.state_dir = Path(state_dir or Heap.STATE_DIR)
-        self.isabelle = isabelle
+        self.isabelle = isabelle or default_isabelle()
         # None → Heap.ALLOWED_ROOTS at check time (so env/monkeypatch applies).
         self.allowed_roots: Optional[List[str]] = list(allowed_roots) if allowed_roots else None
         self._entries: Dict[Tuple[str, str], Dict[str, Any]] = {}

@@ -1,7 +1,7 @@
 {
-  "uid": "isabellegym",
-  "title": "IsabelleGym Server",
-  "tags": ["isabellegym"],
+  "uid": "isabelle-pool-server",
+  "title": "Isabelle Pool Server",
+  "tags": ["isabelle-pool-server"],
   "timezone": "browser",
   "schemaVersion": 39,
   "version": 1,
@@ -40,7 +40,7 @@
       "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
       "targets": [
         { "refId": "A", "expr": "sum(rate(http_request_duration_seconds_count{status=~\"5.*\"}[5m]))", "legendFormat": "5xx/s" },
-        { "refId": "B", "expr": "sum by (reason) (rate(isabellegym_pool_exhausted_total[5m]))", "legendFormat": "503 {{reason}}/s" }
+        { "refId": "B", "expr": "sum by (reason) (rate(isabelle_pool_server_pool_exhausted_total[5m]))", "legendFormat": "503 {{reason}}/s" }
       ]
     },
     {
@@ -50,7 +50,7 @@
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
       "fieldConfig": { "defaults": { "unit": "percent", "max": 100, "min": 0 }, "overrides": [] },
       "targets": [
-        { "refId": "A", "expr": "isabellegym_memory_pressure_pct", "legendFormat": "pressure %" }
+        { "refId": "A", "expr": "isabelle_pool_server_memory_pressure_pct", "legendFormat": "pressure %" }
       ]
     },
     {
@@ -60,10 +60,10 @@
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
       "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
       "targets": [
-        { "refId": "A", "expr": "isabellegym_sessions_active", "legendFormat": "active" },
-        { "refId": "B", "expr": "isabellegym_sessions_busy", "legendFormat": "busy" },
-        { "refId": "C", "expr": "isabellegym_sessions_leased", "legendFormat": "leased" },
-        { "refId": "D", "expr": "isabellegym_pool_size", "legendFormat": "pool size" }
+        { "refId": "A", "expr": "isabelle_pool_server_sessions_active", "legendFormat": "active" },
+        { "refId": "B", "expr": "isabelle_pool_server_sessions_busy", "legendFormat": "busy" },
+        { "refId": "C", "expr": "isabelle_pool_server_sessions_leased", "legendFormat": "leased" },
+        { "refId": "D", "expr": "isabelle_pool_server_pool_size", "legendFormat": "pool size" }
       ]
     },
     {
@@ -73,10 +73,10 @@
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
       "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
       "targets": [
-        { "refId": "A", "expr": "isabellegym_sledgehammer_inflight", "legendFormat": "inflight" },
-        { "refId": "B", "expr": "isabellegym_max_concurrent_sledgehammer", "legendFormat": "limit" },
-        { "refId": "C", "expr": "histogram_quantile(0.95, sum(rate(isabellegym_sledgehammer_seconds_bucket[5m])) by (le))", "legendFormat": "p95 s" },
-        { "refId": "D", "expr": "sum by (result) (rate(isabellegym_sledgehammer_total[5m]))", "legendFormat": "{{result}}/s" }
+        { "refId": "A", "expr": "isabelle_pool_server_sledgehammer_inflight", "legendFormat": "inflight" },
+        { "refId": "B", "expr": "isabelle_pool_server_max_concurrent_sledgehammer", "legendFormat": "limit" },
+        { "refId": "C", "expr": "histogram_quantile(0.95, sum(rate(isabelle_pool_server_sledgehammer_seconds_bucket[5m])) by (le))", "legendFormat": "p95 s" },
+        { "refId": "D", "expr": "sum by (result) (rate(isabelle_pool_server_sledgehammer_total[5m]))", "legendFormat": "{{result}}/s" }
       ]
     },
     {
@@ -86,8 +86,8 @@
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 24 },
       "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
       "targets": [
-        { "refId": "A", "expr": "isabellegym_gateway_up", "legendFormat": "gateway up (1/0)" },
-        { "refId": "B", "expr": "increase(isabellegym_gateway_restarts_total[15m])", "legendFormat": "restarts /15m" }
+        { "refId": "A", "expr": "isabelle_pool_server_gateway_up", "legendFormat": "gateway up (1/0)" },
+        { "refId": "B", "expr": "increase(isabelle_pool_server_gateway_restarts_total[15m])", "legendFormat": "restarts /15m" }
       ]
     },
     {
@@ -97,8 +97,8 @@
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 24 },
       "fieldConfig": { "defaults": { "unit": "bytes" }, "overrides": [] },
       "targets": [
-        { "refId": "A", "expr": "container_memory_working_set_bytes{name=\"isabelle-gym\"}", "legendFormat": "working set" },
-        { "refId": "B", "expr": "increase(container_oom_events_total{name=\"isabelle-gym\"}[15m])", "legendFormat": "OOM /15m" }
+        { "refId": "A", "expr": "container_memory_working_set_bytes{name=\"isabelle-pool-server\"}", "legendFormat": "working set" },
+        { "refId": "B", "expr": "increase(container_oom_events_total{name=\"isabelle-pool-server\"}[15m])", "legendFormat": "OOM /15m" }
       ]
     }
   ]

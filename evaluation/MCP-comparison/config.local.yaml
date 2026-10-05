@@ -28,7 +28,7 @@ system_prompt: |
 
 
 mcp_servers:
-  isabellegym:
+  isabelle_pool_server:
     command: [python, -m, mcp_servers.stepwise.app]
     env:
       PYTHONPATH: C:/Users/winst/GitHub/IsabelleGym

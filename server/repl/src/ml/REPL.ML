@@ -1,4 +1,4 @@
-(* REPL.ML — the Isabelle/ML side of IsabelleGym's read-only state queries.
+(* REPL.ML — the Isabelle/ML side of Isabelle Pool Server's read-only state queries.
 
    Loaded into every session via the generated wrapper theories
    (server/repl/thys/, see thy_init.py). Every query is a Query_Operation
@@ -15,13 +15,13 @@
    tracker REPL-1.)
 
    Registered operations (Scala passes "<name>_query" as the print function):
-     isabellegym_goals         []                  one line per open subgoal
-     isabellegym_in_proof      []                  "1" | "0" (Toplevel.is_proof)
-     isabellegym_local_facts   []                  one line per proof-context fact
-     isabellegym_global_facts  [limit]             one line per global fact, bounded
-     isabellegym_state         []                  rendered proof state, one line per
+     isabelle_pool_server_goals         []                  one line per open subgoal
+     isabelle_pool_server_in_proof      []                  "1" | "0" (Toplevel.is_proof)
+     isabelle_pool_server_local_facts   []                  one line per proof-context fact
+     isabelle_pool_server_global_facts  [limit]             one line per global fact, bounded
+     isabelle_pool_server_state         []                  rendered proof state, one line per
                                                    chunk; empty outside a proof
-     isabellegym_sledgehammer  [timeout_s, subgoal] every line sledgehammer prints;
+     isabelle_pool_server_sledgehammer  [timeout_s, subgoal] every line sledgehammer prints;
                                                    error "Unknown proof context"
                                                    outside a proof
    Serves BOTH MCP workflows: the chunk-centric one queries the document tip,
@@ -156,22 +156,22 @@ end;
    toplevel state when hosted on the document's last command. *)
 
 val _ =
-  Query_Operation.register {name = "isabellegym_goals", pri = 0}
+  Query_Operation.register {name = "isabelle_pool_server_goals", pri = 0}
     (fn {state = st, writeln_result, ...} =>
       List.app writeln_result (Repl.open_subgoals st));
 
 val _ =
-  Query_Operation.register {name = "isabellegym_in_proof", pri = 0}
+  Query_Operation.register {name = "isabelle_pool_server_in_proof", pri = 0}
     (fn {state = st, writeln_result, ...} =>
       writeln_result (if Toplevel.is_proof st then "1" else "0"));
 
 val _ =
-  Query_Operation.register {name = "isabellegym_local_facts", pri = 0}
+  Query_Operation.register {name = "isabelle_pool_server_local_facts", pri = 0}
     (fn {state = st, writeln_result, ...} =>
       List.app writeln_result (Repl.local_facts st));
 
 val _ =
-  Query_Operation.register {name = "isabellegym_global_facts", pri = 0}
+  Query_Operation.register {name = "isabelle_pool_server_global_facts", pri = 0}
     (fn {state = st, args, writeln_result, ...} =>
       let
         val limit =
@@ -181,12 +181,12 @@ val _ =
       in List.app writeln_result (Repl.global_facts st limit) end);
 
 val _ =
-  Query_Operation.register {name = "isabellegym_state", pri = 0}
+  Query_Operation.register {name = "isabelle_pool_server_state", pri = 0}
     (fn {state = st, writeln_result, ...} =>
       List.app writeln_result (Repl.proof_state st));
 
 val _ =
-  Query_Operation.register {name = "isabellegym_sledgehammer", pri = 0}
+  Query_Operation.register {name = "isabelle_pool_server_sledgehammer", pri = 0}
     (fn {state = st, args, writeln_result, ...} =>
       let
         val timeout_s = the_default 30 (Int.fromString (nth args 0));

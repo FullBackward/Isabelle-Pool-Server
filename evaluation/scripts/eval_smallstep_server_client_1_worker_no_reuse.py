@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Optional
 
 import httpx
-from client.async_client import IsabelleGymAsyncClient
+from client.async_client import PoolAsyncClient
 from evaluation.scripts.eval_stats import (
     is_warning_message,
     normalize_execution_time,
@@ -69,7 +69,7 @@ class TheoryResult:
 
 
 async def run_theory(
-    client: IsabelleGymAsyncClient,
+    client: PoolAsyncClient,
     thy_file: Path,
     *,
     field: str,
@@ -267,7 +267,7 @@ async def amain() -> None:
     batch_wall_t0 = time.perf_counter()
     batch_python_cpu_t0 = time.process_time()
 
-    async with IsabelleGymAsyncClient(base_url=args.server, timeout=float(args.timeout)) as client:
+    async with PoolAsyncClient(base_url=args.server, timeout=float(args.timeout)) as client:
         for thy_file in files:
             result = await run_theory(
                 client,
@@ -290,7 +290,7 @@ async def amain() -> None:
     client_overheads = [r.client_overhead_sec for r in results if r.client_overhead_sec is not None]
 
     summary = {
-        "tool": "isabellegym-async-client-smallstep",
+        "tool": "isabelle_pool_server-async-client-smallstep",
         "benchmark_kind": "server_smallstep_verification_benchmark_stepwise_client_1_worker_no_reuse",
         "server": args.server,
         "field": args.field,
@@ -329,7 +329,7 @@ async def amain() -> None:
             "platform": platform.platform(),
             "machine": platform.machine(),
             "processor": platform.processor(),
-            "client": "IsabelleGymAsyncClient",
+            "client": "PoolAsyncClient",
         },
         "results": [
             {

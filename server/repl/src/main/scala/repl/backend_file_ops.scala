@@ -150,7 +150,7 @@ trait Backend_File_Ops { this: ReplBackend =>
   }
 
   /** Sledgehammer on the open goal at a 1-based line (optional subgoal index),
-   *  via the `isabellegym_sledgehammer` overlay print op (REPL.ML) — no text
+   *  via the `isabelle_pool_server_sledgehammer` overlay print op (REPL.ML) — no text
    *  edits, no channel probes. JSON: {found, results: [str]} or
    *  {found:false, error} (no open goal / timeout). Consumed via
    *  POST /api/v1/sessions/{id}/sledgehammer_at (semaphore-bounded server-side). */

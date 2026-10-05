@@ -1,7 +1,7 @@
-# IsabelleGym MCP server
+# Isabelle Pool Server MCP server
 
-Exposes the running IsabelleGym HTTP server to LLM agents via the **Model Context Protocol**.
-It is a thin layer over `client.async_client.IsabelleGymAsyncClient` (no core edits beyond the
+Exposes the running Isabelle Pool Server to LLM agents via the **Model Context Protocol**.
+It is a thin layer over `client.async_client.PoolAsyncClient` (no core edits beyond the
 client wrappers added in Phase 0); it does **not** modify or patch Isabelle.
 
 ## What it offers
@@ -21,13 +21,13 @@ client wrappers added in Phase 0); it does **not** modify or patch Isabelle.
 `verify_chunk` discards), `proof_state`, `source`, `sledgehammer`, `checkpoint`, `restore`,
 `rollback`, `close_theory`, `verify_batch`.
 ### Resources
-`isabellegym://health`, `isabellegym://sessions`.
+`isabelle-pool-server://health`, `isabelle-pool-server://sessions`.
 ### Prompts
 `prove_theorem`.
 
 ## Run
 
-Prereq: a running IsabelleGym server (default `http://localhost:8000`).
+Prereq: a running Isabelle Pool Server (default `http://localhost:8000`).
 
 ```bash
 pip install -r mcp_servers/requirements.txt   # + the repo's client deps (httpx)
@@ -44,10 +44,10 @@ ISABELLE_MCP_TRANSPORT=streamable-http ISABELLE_MCP_PORT=8848 python -m mcp_serv
 ```json
 {
   "mcpServers": {
-    "isabellegym": {
+    "isabelle-pool-server": {
       "command": "python",
       "args": ["-m", "mcp_servers.stepwise.app"],
-      "env": { "PYTHONPATH": "/path/to/IsabelleGym", "ISABELLE_MCP_GYM_URL": "http://localhost:8000" }
+      "env": { "PYTHONPATH": "/path/to/Isabelle-Pool-Server", "ISABELLE_MCP_GYM_URL": "http://localhost:8000" }
     }
   }
 }
@@ -68,7 +68,7 @@ the Anthropic API (Claude calls the tools; the harness executes them via MCP and
 results back). Token usage is the only metric that requires the model in the loop.
 
 **Prerequisites**
-- A running IsabelleGym server (default `http://localhost:8000`) — the MCP layer wraps it.
+- A running Isabelle Pool Server (default `http://localhost:8000`) — the MCP layer wraps it.
 - `ANTHROPIC_API_KEY` exported in the environment (the model must be in the loop).
 - Host deps: `anthropic`, `mcp`, plus the repo's client deps (`httpx`).
 - `PYTHONPATH` set to the repo root so `mcp_servers` / `client` import (the harness forwards it

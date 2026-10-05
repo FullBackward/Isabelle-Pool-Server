@@ -10,7 +10,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Optional
 
-from client.async_client import IsabelleGymAsyncClient
+from client.async_client import PoolAsyncClient
 from evaluation.scripts.eval_stats import safe_mean, safe_median, summarize_metric
 
 
@@ -29,7 +29,7 @@ class FileResult:
 
 
 async def post_bigstep(
-    client: IsabelleGymAsyncClient,
+    client: PoolAsyncClient,
     thy_file: Path,
     timeout: int,
     field: str,
@@ -81,7 +81,7 @@ async def post_bigstep(
 
 
 async def amain() -> None:
-    ap = argparse.ArgumentParser(description="Benchmark whole-file Isabelle verification via IsabelleGym server big-step endpoint.")
+    ap = argparse.ArgumentParser(description="Benchmark whole-file Isabelle verification via Isabelle Pool Server big-step endpoint.")
     ap.add_argument("--corpus", required=True, type=Path)
     ap.add_argument("--server", default="http://localhost:8000")
     ap.add_argument("--timeout", type=int, default=1800)
@@ -96,7 +96,7 @@ async def amain() -> None:
     batch_wall_t0 = time.perf_counter()
     batch_python_cpu_t0 = time.process_time()
 
-    async with IsabelleGymAsyncClient(base_url=args.server, timeout=float(args.timeout)) as client:
+    async with PoolAsyncClient(base_url=args.server, timeout=float(args.timeout)) as client:
         results = [asdict(await post_bigstep(client, f, args.timeout, args.field)) for f in files]
 
     total_wall_time_sec = time.perf_counter() - batch_wall_t0
@@ -108,7 +108,7 @@ async def amain() -> None:
     api_wall_ratios = [r["api_wall_ratio"] for r in results if r["api_wall_ratio"] is not None]
 
     summary = {
-        "tool": "isabellegym-server-bigstep-client",
+        "tool": "isabelle_pool_server-server-bigstep-client",
         "benchmark_kind": "server_whole_file_verification_benchmark",
         "server": args.server,
         "field": args.field,

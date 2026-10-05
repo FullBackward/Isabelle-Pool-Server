@@ -7,7 +7,7 @@ from typing import Any, Iterator
 
 from server.app.core.config import Logging
 
-BASE_LOGGER_NAME = "isabelleserver"
+BASE_LOGGER_NAME = "isabelle_pool_server"
 _CONTEXT: contextvars.ContextVar[dict[str, str]] = contextvars.ContextVar("log_context", default={})
 
 

@@ -1,11 +1,11 @@
 # Runtime image: Isabelle2026-RC0 (built from Mercurial in the stage-1
 # interactive run — see isabelle-humanize/.m0/rc0-migration/ for the recipe)
-# + the IsabelleGym server. The build context is a staging dir containing:
+# + the Isabelle Pool Server. The build context is a staging dir containing:
 #   isabelle/       the prebuilt RC0 tree (~/isabelle2026-build/isabelle)
 #   isabelle_user/  the installed components (~/isabelle2026-build/isabelle_user)
 #   app/            the repo content (git archive of the 2026-RC0 branch)
 #
-#   docker build -f deploy/Dockerfile.rc0 -t isabellegym-isabelle-gym:2026rc0 <ctx>
+#   docker build -f deploy/Dockerfile.rc0 -t isabelle-pool-server:2026rc0 <ctx>
 #
 # Base is the LOCAL 2025-2 gym image (already has python3.12, openjdk-21,
 # curl/git/tar, and the app Python deps incl. the prometheus patch) — NOT
@@ -19,7 +19,7 @@
 # that actually validated. This Dockerfile remains as documentation of the
 # equivalent declarative recipe.
 
-FROM isabellegym-isabelle-gym:latest
+FROM isabelle-pool-server:latest
 
 WORKDIR /app
 

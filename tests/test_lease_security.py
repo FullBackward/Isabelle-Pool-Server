@@ -1,4 +1,4 @@
-"""Lease-leak fix tests (isabellegym-lease-leak-issue.md):
+"""Lease-leak fix tests (isabelle-pool-server-lease-leak-issue.md):
 the public listing must never carry lease ids, the admin listing is
 token-gated, isabelle_close(destroy=…) is the sanctioned teardown, and the
 MCP rebind path survives another client destroying its session.

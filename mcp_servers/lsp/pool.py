@@ -28,7 +28,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 
-from client.async_client import IsabelleGymAsyncClient
+from client.async_client import PoolAsyncClient
 
 from ..common import GymClientMixin, is_not_found  # noqa: F401  (is_not_found re-exported)
 from .config import Config
@@ -38,12 +38,12 @@ def canonical_path(file_path: str) -> str:
     return os.path.realpath(os.path.expanduser(file_path))
 
 
-async def header_imports(client: IsabelleGymAsyncClient, text: str) -> List[str]:
+async def header_imports(client: PoolAsyncClient, text: str) -> List[str]:
     """Import names from a full .thy source's header (quotes stripped).
 
     Asks the server's canonical parser (`POST /api/v1/parse_theory_header`,
     comments stripped first so a leading `(* TASK: ... *)` comment can never
-    pollute the imports — isabellegym-header-imports-issue.md). Going through
+    pollute the imports — isabelle-pool-server-header-imports-issue.md). Going through
     the endpoint keeps the MCP free of server code and guarantees it parses
     headers exactly as the server it talks to does."""
     resp = await client.parse_theory_header(text)

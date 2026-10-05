@@ -228,7 +228,7 @@ def test_project_path_roots(tmp_path, monkeypatch):
 def test_default_allowed_roots_are_app_and_isabelle_home():
     assert Heap.ALLOWED_ROOTS == ["/app", "/root/.isabelle"] or \
         Heap.ALLOWED_ROOTS == [r for r in __import__("os").getenv(
-            "ISABELLE_HEAP_ALLOWED_ROOTS", "/app:/root/.isabelle").split(":") if r]
+            "ISABELLE_HEAP_POOL_ALLOWED_ROOTS", "/app:/root/.isabelle").split(":") if r]
 
 
 def test_heap_build_request_validates_everything(tmp_path, monkeypatch):

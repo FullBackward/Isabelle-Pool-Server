@@ -23,7 +23,7 @@ async def root(session_manager: SessionManagerDep):
     logger.debug("root health endpoint requested")
     gateway_alive = lru.get("gateway_alive", True)
     return {
-        "service": "IsabelleGym Server",
+        "service": "Isabelle Pool Server",
         "version": API.VERSION,
         "status": "healthy" if gateway_alive else "degraded",
         "gateway_alive": gateway_alive,

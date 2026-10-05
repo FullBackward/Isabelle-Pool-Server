@@ -70,7 +70,7 @@ def _general_prompt_body(thy_path: Path) -> str:
 # Vendor guidance shipped with AutoCorrode I/Q (iq/iq_guidance.md) — the
 # "guided" variant appends it verbatim (minus the fs_read/fs_write line, which
 # references tools not present here) so the I/Q agent gets the same class of
-# playbook that IsabelleGym's stepwise/segment prompts provide.
+# playbook that Isabelle Pool Server's stepwise/segment prompts provide.
 _IQ_GUIDANCE = """\
 VENDOR GUIDANCE (from the I/Q project):
 You are a formal proof engineer working with Isabelle/jEdit. Your work

@@ -2,12 +2,12 @@
 """Read MCP-comparison/runs/**/results.jsonl and print summary tables.
 
 Results may live directly under runs/<system>/ or in per-experiment subfolders
-(e.g. runs/isabellegym/segment_prompt/results.jsonl) — each such folder is
+(e.g. runs/isabelle_pool_server/segment_prompt/results.jsonl) — each such folder is
 reported as a separate variant row.
 
 Sledgehammer usage is counted per attempt from the session logs
 (<variant>/logs/<problem>_rep<N>.log):
-  - isabellegym  — `sledgehammer` tool calls
+  - isabelle_pool_server  — `sledgehammer` tool calls
   - autocorrode  — `explore` calls with "query": "sledgehammer"
   - isabelle_mcp — standalone `sledgehammer` commands written into the file
                    (JSON-escaped \nsledgehammer\n in write_thy args)
@@ -24,17 +24,20 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from common.metrics import load_results
 
-SYSTEMS = ["isabellegym", "isabelle_mcp", "autocorrode", "isabellegym_lsp"]
+SYSTEMS = ["isabelle_pool_server", "isabelle_mcp", "autocorrode", "isabelle_pool_server_lsp"]
+# Pre-rename system keys (project was IsabelleGym until 2026-10-05): runs/ folders and
+# the `system` field of their JSONL rows still carry these; map them on read.
+LEGACY_SYSTEMS = {"isabellegym": "isabelle_pool_server", "isabellegym_lsp": "isabelle_pool_server_lsp"}
 
 # How a sledgehammer invocation is detected in each system's session log.
 # NOTE: these count tool-level invocations, not rounds-with-sledgehammer —
 # in this harness one sledgehammer call per round is the norm, so the numbers
 # coincide in practice.
 _SH_PATTERNS = {
-    "isabellegym": re.compile(r"TOOL_CALL \S+: sledgehammer\b"),
+    "isabelle_pool_server": re.compile(r"TOOL_CALL \S+: sledgehammer\b"),
     "autocorrode": re.compile(r'"query": "sledgehammer"'),
     "isabelle_mcp": re.compile(r"\\n\s*sledgehammer\s*\\n"),
-    "isabellegym_lsp": re.compile(r"TOOL_CALL \S+: isabelle_sledgehammer\b"),
+    "isabelle_pool_server_lsp": re.compile(r"TOOL_CALL \S+: isabelle_sledgehammer\b"),
 }
 
 
@@ -72,13 +75,17 @@ def summarize(runs_dir: Path) -> None:
     # (system, variant) -> (results_path, rows)
     groups: dict[tuple[str, str], tuple[Path, list]] = {}
     for system in SYSTEMS:
-        system_dir = runs_dir / system
-        if not system_dir.is_dir():
-            continue
-        for path in sorted(system_dir.rglob("results.jsonl")):
-            variant = str(path.parent.relative_to(system_dir)) or "."
-            groups.setdefault((system, variant), (path, []))[1].extend(
-                load_results(path))
+        legacy = [k for k, v in LEGACY_SYSTEMS.items() if v == system]
+        for folder in [system, *legacy]:
+            system_dir = runs_dir / folder
+            if not system_dir.is_dir():
+                continue
+            for path in sorted(system_dir.rglob("results.jsonl")):
+                variant = str(path.parent.relative_to(system_dir)) or "."
+                rows = load_results(path)
+                for r in rows:
+                    r.system = LEGACY_SYSTEMS.get(r.system, r.system)
+                groups.setdefault((system, variant), (path, []))[1].extend(rows)
 
     if not groups:
         print(f"No results found under {runs_dir}")
@@ -103,7 +110,7 @@ def summarize(runs_dir: Path) -> None:
         mean_wall = sum(r.wall_s for r in solved) / len(solved) if solved else None
         # setup_s / first_tool_s expose the warm-vs-cold protocol asymmetry:
         # I/Q's persistent jEdit amortises warmth across attempts while
-        # IsabelleGym starts a fresh session per attempt.
+        # Isabelle Pool Server starts a fresh session per attempt.
         mean_setup = _mean([r.setup_s for r in rs if getattr(r, "setup_s", None) is not None])
         mean_first = _mean([r.first_tool_s for r in rs if getattr(r, "first_tool_s", None) is not None])
         mean_tok = sum(r.total_tokens for r in solved) / len(solved) if solved else None

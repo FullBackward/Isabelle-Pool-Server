@@ -5,7 +5,7 @@ file per experiment under `docs/experiments/`, in date order:
 
 | Date | File | Contents |
 |---|---|---|
-| 2026-07-16 | [`experiments/2026-07-16-mcp-comparison-mathd276.md`](experiments/2026-07-16-mcp-comparison-mathd276.md) | Single-problem (`mathd_algebra_276`) MCP comparison: the four IsabelleGym prompt variants, the I/Q prompts, the post-harness-fix result tables, methodology finding (in-session vs fresh-build verification) |
+| 2026-07-16 | [`experiments/2026-07-16-mcp-comparison-mathd276.md`](experiments/2026-07-16-mcp-comparison-mathd276.md) | Single-problem (`mathd_algebra_276`) MCP comparison: the four Isabelle Pool Server prompt variants, the I/Q prompts, the post-harness-fix result tables, methodology finding (in-session vs fresh-build verification) |
 | 2026-07-30 | [`experiments/2026-07-30-pipeline-alignment-prompts-results.md`](experiments/2026-07-30-pipeline-alignment-prompts-results.md) | Pipeline alignment across the three systems, the full prompt texts per system/variant, the 10-rep summary table with sledgehammer usage, fairness protocol notes |
 | 2026-07-31 | [`experiments/2026-07-31-new-problems-and-arbiter.md`](experiments/2026-07-31-new-problems-and-arbiter.md) | Two new problems (`imo_2019_p1`, `numbertheory_x5neqy2p4`) × two systems, I/Q sledgehammer usage addendum, the open arbiter multi-parent ROOT problem |
 

@@ -3,7 +3,7 @@
 Task groups are namespace isolation / accident-proofing, NOT a security
 boundary. Hardening (2026-09-22): task_group / session / platform path
 segments are validated (422), `project` must live under
-ISABELLE_HEAP_ALLOWED_ROOTS (422), and the DESTRUCTIVE endpoints (delete
+ISABELLE_HEAP_POOL_ALLOWED_ROOTS (422), and the DESTRUCTIVE endpoints (delete
 heap, delete image, delete group) require X-Admin-Token; build stays open.
 Project paths contain slashes, so manifest/delete use a `:path` converter:
 GET /api/v1/heaps/alpha//tmp/hp1 (note the doubled slash).

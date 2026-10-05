@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Optional
 
 import httpx
-from client.async_client import IsabelleGymAsyncClient
+from client.async_client import PoolAsyncClient
 from evaluation.scripts.eval_stats import (
     is_warning_message,
     normalize_execution_time,
@@ -101,7 +101,7 @@ async def run_theory(
     session_id: Optional[str] = None
     reused_session = False
 
-    async with IsabelleGymAsyncClient(base_url=server_url, timeout=timeout) as client:
+    async with PoolAsyncClient(base_url=server_url, timeout=timeout) as client:
         try:
             t0 = time.perf_counter()
             session_payload = await client.acquire_session(
@@ -383,7 +383,7 @@ async def amain() -> None:
     client_overheads = [r.client_overhead_sec for r in results if r.client_overhead_sec is not None]
 
     summary = {
-        "tool": "isabellegym-async-client-smallstep",
+        "tool": "isabelle_pool_server-async-client-smallstep",
         "benchmark_kind": f"server_smallstep_verification_benchmark_stepwise_client_{num_workers}_workers_acquire",
         "server": args.server,
         "field": args.field,
@@ -423,7 +423,7 @@ async def amain() -> None:
             "platform": platform.platform(),
             "machine": platform.machine(),
             "processor": platform.processor(),
-            "client": "IsabelleGymAsyncClient",
+            "client": "PoolAsyncClient",
             "num_workers": num_workers,
         },
         "results": [
