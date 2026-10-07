@@ -6,14 +6,23 @@ build-backend = "setuptools.build_meta"
 name = "isabelle-pool-server"
 version = "0.1.0"
 description = "Isabelle as a managed, concurrent service: a pool of warm prover sessions behind a REST API, with leases, memory-aware admission, metrics, and MCP servers for LLM agents."
+# Runtime deps of the server — the single source of truth (the Dockerfile
+# installs exactly these plus the `mcp` extra). fastapi[standard] already
+# brings uvicorn, httpx and watchfiles. The async client is a separate
+# distribution (client/pyproject.toml, httpx only).
 dependencies = [
+    "fastapi[standard]",
     "py4j",
-    "numpy",
-    "matplotlib",
-    "tqdm",
+    "prometheus-client",
+    "prometheus-fastapi-instrumentator",
 ]
 
 [project.optional-dependencies]
+# MCP servers (mcp_servers/): <2 because mcp 2.0 removed mcp.server.fastmcp.
+mcp = ["mcp>=1.2,<2"]
+# evaluation/: runs_analysis.ipynb (pandas, matplotlib) and the cross-MCP
+# comparison harness (openai, pyyaml).
+eval = ["pandas", "matplotlib", "openai", "pyyaml"]
 dev = [
     "pre-commit",
     "pytest",

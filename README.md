@@ -55,7 +55,7 @@ Pick **one** of the two paths. Both end with the same HTTP API on port 8000, and
 | Host needs | Docker Engine + Compose v2 | Ubuntu 22.04/24.04 (or similar), sudo |
 | Isabelle, JDK, Python | inside the image | installed by you |
 | Memory cap | `mem_limit` in `docker-compose.yml` (cgroup-aware admission gate) | per-process ML heap cap only; admission gate measures whole-host RAM |
-| Start on boot | `restart: unless-stopped` | systemd unit (step B8) |
+| Start on boot | `restart: unless-stopped` | systemd unit (step B7) |
 | Time to first `healthz` | 10–30 min build + 1–2 min start | ~20 min + 1–2 min start |
 
 Sizing for both: budget **~30 GB disk** (Isabelle + heaps) and **16 GB+ RAM**. Each Isabelle
@@ -180,9 +180,30 @@ curl http://localhost:8000/api/v1/heaps/available
 - **Monitoring:** `docker compose up -d prometheus grafana cadvisor` — Grafana on `:3000`
   (admin/admin, "Isabelle Pool Server" dashboard), Prometheus on `:9090`, raw metrics at
   `/metrics`.
-- **Pre-built turnkey image** (no build, heaps included, for reproducing published results):
-  distributed separately as a `docker load`-able tarball; runbook in
-  [deploy/RC0-image-instructions.md](deploy/RC0-image-instructions.md).
+- **Turnkey image** (no build, heaps included): see A7.
+
+#### A7. Turnkey image (no build, heaps included)
+
+For reproducing published results, or handing the service to someone without the repo: a
+self-contained image with the heaps and Isabelle settings of a running deployment baked in.
+
+```bash
+# maintainer — with the server up and the heaps you want shipped prebuilt (A5):
+./deploy/export_turnkey.sh isabelle-pool-server:turnkey --save   # -> isabelle-pool-server-turnkey.tar.gz
+
+# recipient — Docker only (~35 GB disk, 16 GB+ RAM):
+docker load < isabelle-pool-server-turnkey.tar.gz
+docker run -d --name isabelle-pool-server -p 8000:8000 --memory 14g \
+  -e ISABELLE_ADMIN_TOKEN=$(openssl rand -hex 16) isabelle-pool-server:turnkey
+curl http://localhost:8000/healthz                 # 1-2 min for the gateway JVM
+curl http://localhost:8000/api/v1/heaps/available  # the baked-in heaps
+```
+
+The image label `org.opencontainers.image.revision` carries the source commit
+(`docker image inspect <tag> --format '{{index .Config.Labels "org.opencontainers.image.revision"}}'`);
+cite it in reproduction reports. `deploy/Dockerfile.export` is the recipe (`FROM` the regular
+image plus the exported `~/.isabelle` subtree); the historical RC0 hand-assembly is kept in
+`archive/rc0-image/`.
 
 ### B. Native Linux server setup
 
@@ -239,28 +260,58 @@ isabelle version          # sanity check
 Mirrors if `isabelle.in.tum.de` is down: `https://www.cl.cam.ac.uk/research/hvg/Isabelle/dist/`,
 `https://proofcraft.systems/isabelle/dist/`, `https://mirror.clarkson.edu/isabelle/dist/`.
 
-#### B3. Clone and install the Python side
+#### B3. Clone and run the native setup script
 
 ```bash
 git clone https://github.com/FullBackward/Isabelle-Pool-Server.git ~/Isabelle-Pool-Server
 cd ~/Isabelle-Pool-Server
-python3 -m venv .venv
-source .venv/bin/activate
-pip install --upgrade pip
-pip install -r requirement.txt -r mcp_servers/requirements.txt   # note: requirement.txt, singular
-pip install -e . -e ./client
+./deploy/native_setup.sh --verify
 ```
 
-#### B4. Register the REPL component with Isabelle
+The script creates `.venv` and installs the server (with the `mcp` extra) and the async
+client, registers `server/repl` as an Isabelle component (fetching the `py4j` and `spliff`
+contribs into `~/.isabelle/<version>/contrib/`), writes the ML heap cap and JVM GC logging
+into the Isabelle user settings, and creates `.env` from `.env.example` with a random
+`ISABELLE_ADMIN_TOKEN` plus the native path overrides. With `--verify` it then starts the
+server, waits for `/healthz`, proves `lemma True by simp` and stops it again. It is
+idempotent (re-run it after moving the repo or upgrading Isabelle); `--no-venv` uses the
+active interpreter instead of creating `.venv`. It does not run the Scala build (B5).
+
+The steps below are what the script does, for when you want to do them by hand or
+something goes wrong.
+
+#### B4. By hand: Python, component, settings, `.env`
 
 ```bash
-chmod +x server/repl/Admin/init server/repl/Admin/*.sh server/repl/gradlew
-./server/repl/Admin/init
+python3 -m venv .venv && source .venv/bin/activate
+pip install --upgrade pip
+pip install -e ".[mcp]" -e ./client      # server deps + MCP SDK + async client (pyproject.toml extras)
+
+./server/repl/Admin/init                 # register the REPL component, fetch the py4j/spliff contribs
+./server/repl/Admin/ensure_settings.sh   # ML heap cap + JVM GC logging in the Isabelle user settings
 ```
 
-This registers `server/repl` as an Isabelle component and fetches the `py4j` and `spliff`
-contribs into `~/.isabelle/<version>/contrib/`. Idempotent — re-run it after moving the
-repo or upgrading Isabelle.
+The ML heap cap matters: without it one pathological theory can grow a Poly/ML process
+until the kernel OOM killer takes down the whole server. It **must** live in the Isabelle
+user settings file (`$(isabelle getenv -b ISABELLE_HOME_USER)/etc/settings`), not in the
+environment — the polyml component's own `etc/settings` forces `ML_OPTIONS=""`. The script
+writes `ML_OPTIONS="--minheap 500 --enablegcsharing --maxheap $ISABELLE_ML_MAXHEAP_MB"`
+(default 9216) and leaves an existing `--maxheap` untouched, so hand-tuning wins.
+
+Nothing loads `.env` automatically outside Docker, and three defaults are container paths
+that must be overridden on a host. The setup script appends them; by hand (later lines win,
+both for `source` and for systemd's `EnvironmentFile`; value lines must not carry inline
+`# comments` — the integer knobs are parsed with `int()`):
+
+```bash
+cp .env.example .env
+python3 -c 'import secrets; print("ISABELLE_ADMIN_TOKEN=" + secrets.token_hex(16))'   # paste into .env
+cat >> .env <<EOF
+ISABELLE_HEAP_POOL_DIR=$HOME/.isabelle/heap_pool
+ISABELLE_HEAP_POOL_ALLOWED_ROOTS=$HOME/Isabelle-Pool-Server:$HOME/.isabelle
+ISABELLE_SERVER_LOG_DIR=$HOME/Isabelle-Pool-Server/logs
+EOF
+```
 
 #### B5. Build the Scala backend
 
@@ -273,49 +324,10 @@ cd ../..
 The first run also builds `isabelle.jar` via `isabelle scala -e` (several minutes).
 Re-run after any change under `server/repl/src/`, then restart the server.
 
-#### B6. ML heap cap (strongly recommended)
-
-Without a cap, one pathological theory can grow a Poly/ML process until the kernel OOM
-killer takes down the whole server. The Docker entrypoint writes this into the Isabelle
-user settings; do the same by hand. It **must** live in the user settings file — the
-polyml component's own `etc/settings` forces `ML_OPTIONS=""`, so an environment variable
-is ignored — and it replaces the platform default, so the defaults are restated:
-
-```bash
-SETTINGS="$(isabelle getenv -b ISABELLE_HOME_USER)/etc/settings"
-mkdir -p "$(dirname "$SETTINGS")"
-cat >> "$SETTINGS" <<'EOF'
-# Isabelle Pool Server: hard per-process ML heap cap (MB). Size it to leave room for POOL_SIZE sessions.
-ML_OPTIONS="--minheap 500 --enablegcsharing --maxheap 9216"
-# Optional: GC logs for every Isabelle-launched JVM (the gateway in particular).
-ISABELLE_TOOL_JAVA_OPTIONS="$ISABELLE_TOOL_JAVA_OPTIONS -Xlog:gc*:file=/home/USER/Isabelle-Pool-Server/logs/isabelle-jvm-gc-%p.log:time,uptime,level,tags:filecount=3,filesize=10M"
-EOF
-sed -i "s#/home/USER#$HOME#" "$SETTINGS"
-mkdir -p ~/Isabelle-Pool-Server/logs
-```
-
-#### B7. Configure and run
-
-Nothing loads `.env` automatically outside Docker, so export it into the shell (or let
-systemd do it, B8). Three defaults are container paths and must be overridden on a host:
+#### B6. Run
 
 ```bash
 cd ~/Isabelle-Pool-Server
-cp .env.example .env
-python3 -c 'import secrets; print("ISABELLE_ADMIN_TOKEN=" + secrets.token_hex(16))'   # paste into .env
-cat >> .env <<EOF
-# --- native-host overrides (the defaults are the container's /app and /root paths) ---
-ISABELLE_HEAP_POOL_DIR=$HOME/.isabelle/heap_pool
-ISABELLE_HEAP_POOL_ALLOWED_ROOTS=$HOME/Isabelle-Pool-Server:$HOME/.isabelle
-ISABELLE_SERVER_LOG_DIR=$HOME/Isabelle-Pool-Server/logs
-EOF
-```
-
-Later lines override the defaults above them (both for `source` and for systemd's
-`EnvironmentFile`). `.env` value lines must not carry inline `# comments` (the integer knobs
-are parsed with `int()`). Then:
-
-```bash
 set -a; source .env; set +a
 source .venv/bin/activate
 python -m server.app.main              # foreground; Ctrl-C stops it
@@ -333,7 +345,7 @@ host it falls back to the machine's `MemTotal`, so `ISABELLE_MEMORY_PRESSURE_THR
 percentage of **all** host RAM. Keep `ISABELLE_POOL_SIZE × 4 GB + 9 GB` (one capped build)
 under the memory you are willing to give it.
 
-#### B8. Run as a systemd service
+#### B7. Run as a systemd service
 
 ```bash
 sudo tee /etc/systemd/system/isabelle-pool-server.service > /dev/null <<EOF
@@ -365,7 +377,7 @@ journalctl -u isabelle-pool-server -f           # live log (also logs/server.log
 `KillMode=control-group` matters: a stop must take the gateway JVM and every `poly`
 process with it. `TimeoutStopSec=120` gives the server time to close sessions cleanly.
 
-#### B9. Prebuild heaps (optional)
+#### B8. Prebuild heaps (optional)
 
 Same reasoning as A5. Build with the server **stopped or idle** — a `HOL-Analysis` build
 needs several GB on its own:
@@ -376,15 +388,15 @@ isabelle build -b -j 2 HOL-Analysis
 curl http://localhost:8000/api/v1/heaps/available
 ```
 
-#### B10. Native operating notes
+#### B9. Native operating notes
 
 - **Logs:** `logs/server.log` (rotating, 10 MB × 5), `logs/gateway-jvm.log` (JVM
   stdout/stderr), `journalctl -u isabelle-pool-server`.
-- **Upgrading the code:** `git pull`, then `pip install -r requirement.txt`, re-run B4+B5 if
-  anything under `server/repl/` changed, `sudo systemctl restart isabelle-pool-server`.
-- **Upgrading Isabelle:** install the new version at `/opt/isabelle` (B2), re-run B4, B5, B6
-  — the user settings and contribs live under `~/.isabelle/<version>/` and are per-version.
-  Old heaps are not reusable.
+- **Upgrading the code:** `git pull`, then `pip install -e ".[mcp]"`, re-run B5 if anything
+  under `server/repl/` changed, `sudo systemctl restart isabelle-pool-server`.
+- **Upgrading Isabelle:** install the new version at `/opt/isabelle` (B2), re-run
+  `./deploy/native_setup.sh --no-venv` (B3) and B5 — the user settings and contribs live
+  under `~/.isabelle/<version>/` and are per-version. Old heaps are not reusable.
 - **Stuck processes:** `pgrep -af "poly|isabelle"` — after `systemctl stop isabelle-pool-server`
   nothing should remain; if it does, the gateway did not get the signal (check `KillMode`).
 - **No `Not found: py4j`-style volume problems** exist natively; if the gateway fails to
@@ -412,7 +424,7 @@ curl http://localhost:8000/            # version, gateway_alive, active/busy ses
   locked). The console page itself is unauthenticated — one more reason to firewall the port.
 - Prometheus metrics: `/metrics`.
 
-### 2. The HTTP API in three calls
+### 2. The HTTP API in four calls
 
 Sessions are **leased**: `acquire` gives you a `session_id` and a `lease_id`; every mutating
 call carries the lease in the `X-Lease-Id` header; `release` hands the session back to the
@@ -425,7 +437,12 @@ RESP=$(curl -s -X POST localhost:8000/api/v1/sessions/acquire \
 SID=$(echo "$RESP" | python3 -c 'import json,sys; print(json.load(sys.stdin)["session_id"])')
 LEASE=$(echo "$RESP" | python3 -c 'import json,sys; print(json.load(sys.stdin)["lease_id"])')
 
-# 2. verify a whole proof chunk under one wall budget (seconds)
+# 2. begin a theory in it (the server generates the `theory Scratch imports Main begin` header;
+#    a fresh session has no theory begun — verify_chunk answers "theory not begun" without this)
+curl -s -X POST "localhost:8000/api/v1/sessions/$SID/enter_theory/Scratch" \
+  -H 'Content-Type: application/json' -H "X-Lease-Id: $LEASE" -d '{"imports": ["Main"]}'
+
+# 3. verify a whole proof chunk under one wall budget (seconds)
 curl -s -X POST "localhost:8000/api/v1/sessions/$SID/verify_chunk" \
   -H 'Content-Type: application/json' -H "X-Lease-Id: $LEASE" \
   -d '{"chunk": "theorem t: \"rev (rev xs) = xs\" by (induct xs) auto", "timeout": 60}'
@@ -433,12 +450,12 @@ curl -s -X POST "localhost:8000/api/v1/sessions/$SID/verify_chunk" \
 #    "timed_out": false, "stuck_line": null, "execution_time": ...,
 #    "commands": [{"index": 0, "line": 1, "kind": "theorem", "status": "ok", ...}]}
 
-# 3. release the lease (the session stays warm for the next caller)
+# 4. release the lease (the session stays warm for the next caller)
 curl -s -X POST "localhost:8000/api/v1/sessions/$SID/release" -H "X-Lease-Id: $LEASE"
 ```
 
 The first `acquire` for an import set pays session creation (~1 min; longer if a heap has
-to be built — see A5/B9). A `timeout` on `verify_chunk`/`commands` is a hard wall budget:
+to be built — see A5/B8). A `timeout` on `verify_chunk`/`commands` is a hard wall budget:
 an expired command is rolled back and reported `success=false` with `stuck_line` naming
 the still-running command — nothing keeps running in the background.
 
@@ -513,7 +530,7 @@ always starts from a clean document.
 
 ```bash
 cd Isabelle-Pool-Server
-pip install -r mcp_servers/requirements.txt httpx
+pip install -e ".[mcp]" -e ./client   # MCP SDK (mcp<2) + the async client, from the pyproject.toml extras
 ```
 
 The MCP server needs `PYTHONPATH` pointing at the repo root (so `client` and `mcp_servers`
@@ -654,7 +671,7 @@ Expected: the tool list, then `success=True proof_open=False used_sorry=False ..
 | `Fontconfig head is null` in the JVM log (native) | Install `fontconfig fonts-dejavu-core` (B1) |
 | `Unknown JAVA_HOME` from `isabelle` (native) | A global `JAVA_HOME` is exported; remove it, keep it scoped to the Gradle step (B5) |
 | HTTP 503 "memory pressure" | The admission gate is protecting the host — lower `ISABELLE_POOL_SIZE`, raise `mem_limit`, or wait for idle sessions to be evicted |
-| First `acquire` takes many minutes | A heap for a heavy import set is being built — prebuild it (A5/B9) |
+| First `acquire` takes many minutes | A heap for a heavy import set is being built — prebuild it (A5/B8) |
 | `verify_chunk` returns `success=false, timed_out=true` | The budget expired; `stuck_line` names the looping command; it was rolled back — retry with a larger `timeout` or a different proof |
 | `McpError: Connection closed` immediately | The MCP subprocess died on startup — missing `PYTHONPATH` or pip deps; run `PYTHONPATH=. python -m mcp_servers.stepwise.app` by hand to see the traceback |
 | `enter_theory` hangs then errors | Gym server not running / wrong `ISABELLE_MCP_GYM_URL`, or a heap is being built |

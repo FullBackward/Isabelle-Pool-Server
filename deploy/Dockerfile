@@ -74,12 +74,14 @@ RUN mkdir -p /opt \
 ENV ISABELLE_HOME=/opt/isabelle
 ENV PATH=$ISABELLE_HOME/bin:$PATH
 
-# Python deps first (cached independently of source edits). The MCP SDK is
-# pinned <2 (mcp 2.0 removed mcp.server.fastmcp).
-COPY requirement.txt /app/requirement.txt
-COPY mcp_servers/requirements.txt /app/mcp_servers/requirements.txt
+# Python deps first (cached independently of source edits). pyproject.toml is
+# the single dependency list: install its runtime deps plus the `mcp` extra
+# (mcp<2: mcp 2.0 removed mcp.server.fastmcp); the dev/eval extras stay out of
+# the image. Extracted with tomllib so this layer depends on pyproject.toml only.
+COPY pyproject.toml /app/pyproject.toml
 RUN python -m pip install --upgrade pip \
- && python -m pip install -r /app/requirement.txt -r /app/mcp_servers/requirements.txt
+ && python -c "import tomllib; p = tomllib.load(open('/app/pyproject.toml', 'rb'))['project']; [print(d) for d in p['dependencies'] + p['optional-dependencies']['mcp']]" > /tmp/deps.txt \
+ && python -m pip install -r /tmp/deps.txt && rm /tmp/deps.txt
 
 COPY . /app/
 

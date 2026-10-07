@@ -30,7 +30,7 @@ client wrappers added in Phase 0); it does **not** modify or patch Isabelle.
 Prereq: a running Isabelle Pool Server (default `http://localhost:8000`).
 
 ```bash
-pip install -r mcp_servers/requirements.txt   # + the repo's client deps (httpx)
+pip install -e ".[mcp]" -e ./client           # MCP SDK (mcp<2) + the async client
 export PYTHONPATH=$PWD                        # so `client` imports
 
 # local (stdio) — for Claude Desktop/Code, Cursor:

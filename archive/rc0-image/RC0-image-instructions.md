@@ -1,3 +1,9 @@
+> **Archived 2026-10-07.** This is the Isabelle 2026-**RC0** track: a hand-assembled image
+> (docker cp into a 2025-2 base container + commit) that predates the multi-version
+> `deploy/Dockerfile`. The current turnkey recipe is `deploy/export_turnkey.sh` +
+> `deploy/Dockerfile.export` (README "A7. Turnkey image"). Kept only for the provenance of
+> the `isabelle-pool-server:2026rc0-turnkey` image.
+
 # Isabelle Pool Server turnkey image — distribution & recipient runbook
 
 This document covers the **pre-built Docker image** of the Isabelle Pool Server

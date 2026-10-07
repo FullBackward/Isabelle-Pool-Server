@@ -160,10 +160,9 @@ Docker container, Python is the image interpreter at `/usr/local/bin/python`
 python -m venv .venv
 source .venv/bin/activate  # or .venv\Scripts\activate on Windows
 
-# Install dependencies (note: singular "requirement.txt")
+# Install dependencies — pyproject.toml is the single list (extras: mcp, eval, dev)
 pip install --upgrade pip
-pip install -r requirement.txt
-pip install -e .
+pip install -e ".[mcp,dev]" -e ./client
 
 # Set PYTHONPATH for imports
 export PYTHONPATH="$PWD:${PYTHONPATH:-}"
@@ -409,16 +408,15 @@ Session caching can be enabled to reuse initialized sessions for the same import
 - Run ./server/repl/gradlew build to rebuild Scala components.
 
 **pip install -r requirements.txt fails**
-- This repo uses requirement.txt (singular), not requirements.txt (plural).
+- There is no requirements file: every dependency lives in pyproject.toml. Use `pip install -e ".[mcp,dev]"` (extras `mcp`, `eval`, `dev`).
 
 **Docker container is up but API not responding**
 - The entrypoint starts the server automatically; the gateway JVM takes 1-2 min. Check `docker compose logs -f isabelle-pool-server` and `curl localhost:8000/readyz` (503 until the gateway is up). If you overrode `command:` to `bash`, start it yourself: `python -m server.app.main`.
 
 **pip install -e . fails with dependency issues**
 - Ensure pip is upgraded: pip install --upgrade pip.
-- Core deps (pyproject.toml): py4j, numpy, matplotlib, tqdm.
-- Server deps (requirement.txt): fastapi, uvicorn, httpx, prometheus-client, prometheus-fastapi-instrumentator.
-- MCP deps (mcp_servers/requirements.txt): `mcp>=1.2,<2` — mcp 2.0 removed `mcp.server.fastmcp`.
+- Runtime deps (pyproject.toml): fastapi[standard] (brings uvicorn, httpx, watchfiles), py4j, prometheus-client, prometheus-fastapi-instrumentator.
+- Extras: `mcp` (`mcp>=1.2,<2` — mcp 2.0 removed `mcp.server.fastmcp`), `eval` (pandas, matplotlib, openai, pyyaml), `dev` (pytest, black, isort, pylint, mypy, pre-commit).
 
 ## File Structure Summary
 
@@ -429,7 +427,8 @@ repo_root/
 │   ├── src/ml/REPL.ML             # ML-side Query_Operations (goals/facts/state/sledgehammer) for the overlay queries
 │   ├── src/python/                # Python wrappers for gateway
 │   ├── thys/                      # Cached wrapper .thy files
-│   ├── Admin/init                 # Isabelle component initialization
+│   ├── Admin/                     # init (component registration), ensure_settings.sh (ML heap cap + GC logs),
+│   │                              #   container_entrypoint.sh (init -> settings -> exec server)
 │   ├── gradlew / build.gradle     # Gradle Scala build
 │   └── README.md
 ├── server/                        # FastAPI server
@@ -460,7 +459,8 @@ repo_root/
 │   ├── async_client.py            #   never imports server code (tests/test_dependency_rules.py)
 │   └── __init__.py
 ├── mcp_servers/                   # stepwise/ (chunk-centric MCP), lsp/ (file-sync MCP), common/; imports client only
-├── deploy/                        # Dockerfile (multi-version via ISABELLE_VERSION), setup.sh, turnkey-image scripts, monitoring/ configs
+├── deploy/                        # Dockerfile (multi-version via ISABELLE_VERSION), setup.sh (Docker), native_setup.sh,
+│                                  #   export_turnkey.sh + Dockerfile.export (turnkey image), monitoring/ configs
 ├── docker-compose.yml             # root; build context . with dockerfile deploy/Dockerfile
 ├── evaluation/                    # Benchmarking and analysis (imports client only)
 │   ├── scripts/                   # eval_smallstep_server_client_*, eval_bigstep_*, consolidate_runs, preprocess
@@ -473,8 +473,7 @@ repo_root/
 ├── archive/                       # read-only history: previous-works/ (1.0 sources, thesis PDFs),
 │                                  #   isabelle-pool-server2/ (2.0 in-process gym + baseline scripts), install.sh
 ├── tests/                         # unit tests; dependency-direction and 600-line size gates live here
-├── pyproject.toml                 # setuptools config for server+repl, dev deps, tool config
-├── requirement.txt                # Core + server deps (singular)
+├── pyproject.toml                 # package + ALL deps (extras mcp/eval/dev), tool config
 └── README.md                      # User documentation
 ```
 

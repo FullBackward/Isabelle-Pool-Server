@@ -52,7 +52,7 @@ Design rationale for the architecture lives in `docs/DESIGN_CHOICES.md`; the liv
 - **Interop**: Py4J (`server/repl/src/python/repl_backend_gateway.py` ↔ one shared gateway JVM).
 - **Web framework**: FastAPI + Uvicorn. **HTTP client**: `httpx`.
 - **Metrics**: `prometheus-client`, `prometheus-fastapi-instrumentator`; Prometheus + Grafana + cAdvisor in compose.
-- **MCP**: `mcp>=1.2,<2` (`mcp_servers/requirements.txt`; mcp 2.0 removed `mcp.server.fastmcp`).
+- **MCP**: `mcp>=1.2,<2` (the `mcp` extra in `pyproject.toml`; mcp 2.0 removed `mcp.server.fastmcp`).
 - **Formatting/linting/type-checking**: `black` (88), `isort` (profile black), `pylint`, `mypy --strict`.
 - **Testing**: `pytest` (~380 unit tests, no Isabelle needed).
 
@@ -60,15 +60,14 @@ Design rationale for the architecture lives in `docs/DESIGN_CHOICES.md`; the liv
 
 | File | Purpose |
 |------|---------|
-| `pyproject.toml` | setuptools package `isabelle-pool-server` (packages: `server*` only); core deps (`py4j`, `numpy`, `matplotlib`, `tqdm`); tool config for black/isort/mypy/pylint/pytest/coverage. `[tool.pytest.ini_options] addopts = ""` — pytest adds no coverage flags by itself. |
+| `pyproject.toml` | setuptools package `isabelle-pool-server` (packages: `server*` only); the **single dependency list** — runtime deps (`fastapi[standard]`, `py4j`, prometheus) + extras `mcp`, `eval`, `dev`; tool config for black/isort/mypy/pylint/pytest/coverage. `[tool.pytest.ini_options] addopts = ""` — pytest adds no coverage flags by itself. |
 | `client/pyproject.toml` | The async client is its own distribution (`pip install -e ./client`), httpx only. |
-| `requirement.txt` | **Singular** runtime + dev + server dependency list (the repo does **not** use `requirements.txt`). |
-| `mcp_servers/requirements.txt` | MCP SDK pin. |
 | `deploy/Dockerfile` | `python:3.12-slim` + fontconfig + system JDK (Gradle only) + Isabelle tarball for the build arch (x86-64 or ARM, mirror fallback with a 1 MB/s floor); installs deps, runs `server/repl/Admin/init`, `gradlew build`. `CMD` is `server/repl/Admin/container_entrypoint.sh`, which **starts the server**. |
 | `docker-compose.yml` | Services `isabelle-pool-server` (builds natively for the host arch — do not pin `platform: linux/amd64`, qemu emulation makes Isabelle 5–20x slower), `prometheus`, `grafana`, `cadvisor`; `env_file: .env`; named volume `isabelle_user_data` → `/root/.isabelle`; `mem_limit: 14g` so the cgroup memory gate bites at a known ceiling. |
 | `.env.example` / `.env` | Every server knob, annotated. `.env` is **not** tracked — `./deploy/setup.sh` creates it (with a random `ISABELLE_ADMIN_TOKEN`), or `cp .env.example .env`. Value lines must not carry inline `#` comments (`int()` parsing in `core/config.py` fails on them). |
 | `deploy/setup.sh` | One-shot configure/build/start/health-check (`--verify`, `--build-heaps "..."`). |
-| `deploy/Dockerfile.rc0`, `build_rc0_image.sh`, `Dockerfile.export`, `RC0-image-instructions.md` | The pre-built turnkey image (heaps baked in) and how it was produced. Predate the multi-version Dockerfile; retire after the Isabelle 2026 final release (ISSUES.md RC2-2). |
+| `deploy/native_setup.sh` | Native (no Docker) one-shot setup: venv + deps, component init, ML heap cap, `.env` (`--verify` smoke test). |
+| `deploy/export_turnkey.sh` / `Dockerfile.export` | Turnkey image: the regular image + the heaps/settings of the running deployment baked in (`--save` for a `docker load` tarball). The RC0-era hand-assembly lives in `archive/rc0-image/`. |
 | `deploy/monitoring/` | Prometheus scrape config, Grafana datasource + dashboard provisioning. |
 | `server/repl/build.gradle` / `settings.gradle` | Scala build: depends on `isabelle.jar` (built via `isabelle scala -e`), Py4J, spliff. Root project `IsabelleREPL`. |
 | `.scalafmt.conf` | scalafmt 3.8.3, Scala 3 dialect, max column 100. |
@@ -104,8 +103,7 @@ Prerequisites: Python 3.10+, JDK 17+ (for Gradle only — see the JAVA_HOME note
 ```bash
 python -m venv .venv && source .venv/bin/activate   # or the Isabelle Pool Server conda env
 python -m pip install --upgrade pip
-python -m pip install -r requirement.txt
-python -m pip install -e . -e ./client
+python -m pip install -e ".[mcp,dev]" -e ./client   # pyproject.toml is the single dependency list
 export PYTHONPATH="$PWD:${PYTHONPATH:-}"
 
 (cd server/repl && chmod +x gradlew && ./gradlew build)   # Scala backend, once
@@ -137,7 +135,7 @@ repo_root/
 │   ├── lsp/                        # file-sync (LSP-style) MCP: tools keyed by file path, scratch pool, heap tools;
 │   │   app.py / pool.py / config.py / README.md     #   env prefix ISABELLE_MCP_LSP_, HTTP port 8849
 │   ├── common/                     # env helpers, GymClientMixin (shared client factory), is_not_found, dump_json
-│   └── requirements.txt            # mcp>=1.2,<2
+│   └── (deps: the `mcp` extra in pyproject.toml)
 ├── server/
 │   ├── repl/                       # Scala/ML Isabelle REPL backend (an Isabelle component; launched only by the server)
 │   │   ├── src/main/scala/repl/    # 17 files
@@ -152,7 +150,8 @@ repo_root/
 │   │   ├── src/python/             # repl_backend_gateway.py (spawns the JVM, Py4J bridge, JVM logs), thy_init.py,
 │   │   │                           #   isabelle_client.py, isabelle_repl.py, operation.py
 │   │   ├── thys/                   # IsabelleREPL.thy + generated wrapper theories
-│   │   ├── Admin/                  # init (component registration), container_entrypoint.sh, container_init.sh
+│   │   ├── Admin/                  # init (component registration, fast no-op when done), ensure_settings.sh
+│   │   │                           #   (ML heap cap + GC logs), container_entrypoint.sh (init -> settings -> exec server)
 │   │   └── build.gradle / settings.gradle / gradlew
 │   └── app/                        # FastAPI HTTP service
 │       ├── main.py                 # app, lifespan, middleware (request id), exception handlers, /admin page
@@ -319,18 +318,18 @@ python -m evaluation.scripts.eval_bigstep_server_client_ver \
 
 Preprocessing helpers: `evaluation/scripts/process.py` (normalise Analysis imports) and `evaluation/scripts/clean_example_dir.py` (strip document keywords). Consolidated results: `evaluation/results/benchmark_runs.json` (+ README), analysed by `evaluation/runs_analysis.ipynb`.
 
-For the cross-MCP comparison harness, see `evaluation/MCP-comparison/README.md` (needs `pip install -r mcp_servers/requirements.txt openai pyyaml` and a model API key); the experiment write-ups are `docs/experiments/*.md`, indexed by `docs/devnote.md`.
+For the cross-MCP comparison harness, see `evaluation/MCP-comparison/README.md` (needs `pip install -e ".[mcp,eval]"` and a model API key); the experiment write-ups are `docs/experiments/*.md`, indexed by `docs/devnote.md`.
 
 ## Deployment notes
 
-- The image is large because it bundles Isabelle and the JDK. Keep it lean: no heavy ML frameworks in `requirement.txt` unless required.
+- The image is large because it bundles Isabelle and the JDK. Keep it lean: no heavy ML frameworks in the runtime deps of `pyproject.toml` unless required (the image installs only those plus the `mcp` extra).
 - The Dockerfile downloads the Isabelle tarball for the build architecture (x86-64 or ARM) and falls back across mirrors, abandoning any mirror under 1 MB/s. Do not pin `platform: linux/amd64` in compose.
 - The container entrypoint **starts the server** (`exec python -m server.app.main`) after re-registering components and writing the ML heap cap; `docker compose logs -f isabelle-pool-server` is the live log.
 - `mem_limit: 14g` must stay below the Docker VM's own memory or the cgroup gate goes blind; on smaller machines lower it **and** `ISABELLE_POOL_SIZE`.
 - Logs rotate by size (`ISABELLE_SERVER_MAX_LOG_SIZE_BYTES`, default 10 MB, 5 backups) in `logs/server.log`.
 - **JVM observability (Bug 11):** `ISABELLE_SCALA_JAVA_OPTIONS` in `.env` is **dead config** — nothing in the Isabelle toolchain consumes it, and neither `JAVA_TOOL_OPTIONS` (filtered) nor env-set `ISABELLE_TOOL_JAVA_OPTIONS` (clobbered by settings evaluation) reaches the JVM. The only reliable channel for JVM/ML options is the Isabelle user settings file (`$ISABELLE_HOME_USER/etc/settings`), which the entrypoint manages: it writes the `ML_OPTIONS` heap cap and an `-Xlog:gc*` line producing per-PID rotated GC logs at `logs/isabelle-jvm-gc-<pid>.log`; JVM stdout/stderr land in `logs/gateway-jvm.log`. The gateway JVM runs ZGC with `-Xmx4g` (launcher defaults).
 - **ML heap cap:** the entrypoint writes `ML_OPTIONS="--minheap 500 --enablegcsharing --maxheap $ISABELLE_ML_MAXHEAP_MB"` (default 9216) into `/root/.isabelle/etc/settings`, so every poly process (sessions and `isabelle build` children) fails cleanly instead of OOM-killing the cgroup. It must live in the user settings file (the polyml component's `etc/settings` forces `ML_OPTIONS=""`), and it is a full replacement of the platform default, so the defaults are restated. Builds pick it up immediately; running gateway JVMs only after a restart.
-- **Turnkey image:** `deploy/RC0-image-instructions.md` is the recipient runbook for the pre-built image (heaps baked in); `build_rc0_image.sh` + `Dockerfile.export` produced it. Tracker item RC2-2 retires them after the Isabelle 2026 final release.
+- **Turnkey image:** `./deploy/export_turnkey.sh [tag] [--save]` builds it from the running container (README A7); `archive/rc0-image/` holds the RC0-era recipe and runbook.
 
 ## Security considerations
 

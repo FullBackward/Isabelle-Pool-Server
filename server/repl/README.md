@@ -16,7 +16,7 @@ server/app (Python)  ──Py4J──▶  one shared gateway JVM (repl_backend_g
 | `src/ml/REPL.ML` | ML-side `Query_Operation` registrations (`isabelle_pool_server_goals` / `in_proof` / `local_facts` / `global_facts` / `state` / `sledgehammer`) that run as PIDE overlays on the document's last command — no document edits, no ML→Scala channels. Registrations are at the top level, outside the `Repl` struct, on purpose. |
 | `src/python/` | `repl_backend_gateway.py` spawns the JVM (`isabelle scala`), owns the Py4J bridge, redirects JVM output to `logs/gateway-jvm.log`; `thy_init.py` generates wrapper theories for import sets; `isabelle_client.py` / `isabelle_repl.py` / `operation.py` are the lower-level wrappers. |
 | `thys/` | `IsabelleREPL.thy` (base theory for default sessions) and generated wrapper `.thy` files. |
-| `Admin/` | `init` (component registration — the fix for ISSUES.md Bug 7), `container_entrypoint.sh` (registers, writes the ML heap cap into the user settings, `exec`s the API server), `container_init.sh`, `etc/`, admin Scala tools. |
+| `Admin/` | `init` (component registration — the fix for ISSUES.md Bug 7; a fast no-op once done), `ensure_settings.sh` (ML heap cap + JVM GC logging in the user settings; shared with `deploy/native_setup.sh`), `container_entrypoint.sh` (init → settings → `exec`s the API server), `etc/`, admin Scala tools. |
 | `etc/` | Isabelle component settings/options for this directory. |
 | `build.gradle` / `settings.gradle` / `gradlew` | Gradle build (Scala 3 / 2.13, Py4J, spliff). Depends on `isabelle.jar`, built first via `isabelle scala -e`. |
 

@@ -16,6 +16,15 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 PORT="${ISABELLE_SERVER_PORT:-8000}"
+
+# JSON helper: host python3, else python, else the container's own interpreter
+# (Windows/Git Bash hosts often have neither on PATH).
+py() {
+  if command -v python3 >/dev/null 2>&1; then python3 "$@"
+  elif command -v python >/dev/null 2>&1; then python "$@"
+  else docker compose exec -T isabelle-pool-server python "$@"
+  fi
+}
 DO_BUILD=1
 DO_VERIFY=0
 HEAPS=""
@@ -72,7 +81,7 @@ for i in $(seq 1 90); do
   sleep 5
 done
 echo "    healthy: $(curl -fsS -m 5 "http://localhost:${PORT}/healthz")"
-curl -fsS -m 5 "http://localhost:${PORT}/" | python3 -m json.tool 2>/dev/null || true
+curl -fsS -m 5 "http://localhost:${PORT}/" | py -m json.tool 2>/dev/null || true
 
 if [[ -n "$HEAPS" ]]; then
   for heap in $HEAPS; do
@@ -80,19 +89,22 @@ if [[ -n "$HEAPS" ]]; then
     docker compose exec isabelle-pool-server isabelle build -b "$heap"
   done
   echo "==> heaps now available:"
-  curl -fsS -m 5 "http://localhost:${PORT}/api/v1/heaps/available" | python3 -m json.tool 2>/dev/null || true
+  curl -fsS -m 5 "http://localhost:${PORT}/api/v1/heaps/available" | py -m json.tool 2>/dev/null || true
 fi
 
 if [[ "$DO_VERIFY" -eq 1 ]]; then
-  echo "==> smoke test: acquire + verify 'lemma True by simp'"
+  echo "==> smoke test: acquire + enter theory + verify 'lemma True by simp'"
   RESP="$(curl -fsS -m 300 -X POST "http://localhost:${PORT}/api/v1/sessions/acquire" \
     -H 'Content-Type: application/json' -d '{"theories": ["Main"], "field": "HOL"}')"
-  SID="$(echo "$RESP" | python3 -c 'import json,sys; print(json.load(sys.stdin)["session_id"])')"
-  LEASE="$(echo "$RESP" | python3 -c 'import json,sys; print(json.load(sys.stdin)["lease_id"])')"
+  SID="$(echo "$RESP" | py -c 'import json,sys; print(json.load(sys.stdin)["session_id"])')"
+  LEASE="$(echo "$RESP" | py -c 'import json,sys; print(json.load(sys.stdin)["lease_id"])')"
   echo "    session: $SID"
+  # a fresh session has no theory begun — enter one (header generated server-side)
+  curl -fsS -m 300 -X POST "http://localhost:${PORT}/api/v1/sessions/$SID/enter_theory/Scratch" \
+    -H 'Content-Type: application/json' -H "X-Lease-Id: $LEASE" -d '{"imports": ["Main"]}' >/dev/null
   curl -fsS -m 120 -X POST "http://localhost:${PORT}/api/v1/sessions/$SID/verify_chunk" \
     -H 'Content-Type: application/json' -H "X-Lease-Id: $LEASE" \
-    -d '{"chunk": "lemma True by simp", "timeout": 60}' | python3 -m json.tool
+    -d '{"chunk": "lemma True by simp", "timeout": 60}' | py -m json.tool
   curl -fsS -m 30 -X POST "http://localhost:${PORT}/api/v1/sessions/$SID/release" \
     -H "X-Lease-Id: $LEASE" >/dev/null || true
   echo "    smoke test done (session released)"

@@ -45,8 +45,7 @@ MCP-comparison/
 From the repo root:
 
 ```bash
-pip install -r mcp_servers/requirements.txt   # mcp + httpx
-pip install openai pyyaml
+pip install -e ".[mcp,eval]" -e ./client   # mcp + httpx + openai + pyyaml (pyproject.toml extras)
 ```
 
 ### Environment variables

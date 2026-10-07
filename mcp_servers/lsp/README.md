@@ -86,7 +86,7 @@ parser (client wrapper: `async_client.parse_theory_header`).
 ## Run
 
 ```bash
-pip install mcp httpx        # plus the repo's requirement.txt deps
+pip install -e ".[mcp]" -e ./client   # from the repo root: MCP SDK (mcp<2) + the async client
 PYTHONPATH=. python -m mcp_servers.lsp.app                                   # stdio
 ISABELLE_MCP_LSP_TRANSPORT=streamable-http PYTHONPATH=. python -m mcp_servers.lsp.app   # HTTP on :8849
 ```

@@ -1,18 +1,26 @@
-# Turnkey export image — see EXPORT.md.
-# Clean RC0 image + prebuilt session heaps + Isabelle user settings (incl. the
-# ML heap cap). Fully self-contained: no volume, no build steps, API auto-starts.
+# Turnkey export image — the regular image plus the session heaps and Isabelle
+# user settings of a running deployment baked in. Fully self-contained: no
+# volume, no build steps, no .env — `docker run -p 8000:8000 --memory 14g <tag>`
+# serves the API. Produced by deploy/export_turnkey.sh (which also prints the
+# recipient runbook; see README "A7. Turnkey image").
 #
-# Build context is the staging dir (~/isabelle2026-build), which holds
-# export_isabelle_home/ (heaps/ + etc/ extracted from the live volume, pruned —
-# contribs are already in the base image layer, verified byte-identical):
+# Build context is a staging dir holding export_isabelle_home/ — the
+# <identifier>/{heaps,etc} (+ heap_pool/) subtree copied out of the live
+# isabelle_user_data volume. The contribs and the REPL jar are already in the
+# base image layer, so they are not copied again.
 #
-#   docker build -f deploy/Dockerfile.export -t isabelle-pool-server:2026rc0-turnkey <staging>
+#   docker build -f deploy/Dockerfile.export \
+#     --build-arg BASE_IMAGE=isabelle-pool-server:local \
+#     --build-arg GIT_REVISION=$(git rev-parse HEAD) -t isabelle-pool-server:turnkey <staging>
 
-FROM isabelle-pool-server:2026rc0-clean
+ARG BASE_IMAGE=isabelle-pool-server:local
+FROM ${BASE_IMAGE}
 
+ARG GIT_REVISION=unknown
+LABEL org.opencontainers.image.revision="${GIT_REVISION}"
+
+# Merged over the image's own /root/.isabelle (contribs + component registration).
 COPY export_isabelle_home /root/.isabelle
-
-LABEL org.opencontainers.image.revision="__REVISION__"
 
 # Server defaults suited to a 14g container (all overridable with -e at run).
 ENV ISABELLE_POOL_SIZE=3 \
@@ -25,6 +33,5 @@ ENV ISABELLE_POOL_SIZE=3 \
 
 EXPOSE 8000
 
-# Invoke via bash: robust even if the executable bit was lost on a Windows
-# checkout. Entrypoint: component registration -> ML heap cap -> foreground API.
+# Entrypoint: component registration (no-op here) -> settings -> foreground API.
 CMD ["bash", "./server/repl/Admin/container_entrypoint.sh"]

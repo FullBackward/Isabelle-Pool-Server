@@ -317,7 +317,7 @@ Each `sledgehammer` is itself a multi-prover parallel job (balloons its `poly` h
 
 **Files:** `Dockerfile`, `docker-compose.yml`, `repl/Admin/init`, `repl/Admin/container_init.sh`
 **Severity:** Medium (operational — server cannot start after an image rebuild when the old volume exists)
-**Status:** ✅ Fixed permanently 2026-08-08 — the container entrypoint `repl/Admin/container_init.sh` re-runs the idempotent `./repl/Admin/init` on every container start (wired via `command:` in `docker-compose.yml`), so a stale volume can no longer shadow build-time registration. (Previously worked around 2026-06-10 by manually re-running `./repl/Admin/init` inside the container.)
+**Status:** ✅ Fixed permanently 2026-08-08 — the container entrypoint `repl/Admin/container_init.sh` re-runs the idempotent `./repl/Admin/init` on every container start (wired via `command:` in `docker-compose.yml`), so a stale volume can no longer shadow build-time registration. (Previously worked around 2026-06-10 by manually re-running `./repl/Admin/init` inside the container.) 2026-10-07: the gate in `container_init.sh` moved into `server/repl/Admin/init` itself (fast path when the volume is registered); the entrypoint calls `init` directly and `container_init.sh` is gone.
 
 #### Symptom
 

@@ -1,0 +1,12 @@
+# Scripts executed inside the Linux container come straight from the host
+# checkout (docker-compose bind-mounts the repo at /app), so a Windows checkout
+# with core.autocrlf=true would hand bash CRLF files ("$'\r': command not
+# found" from the entrypoint). Pin LF for everything that runs as a shell
+# script or is parsed by Docker/Isabelle, regardless of the host setting.
+*.sh            text eol=lf
+server/repl/Admin/init  text eol=lf
+server/repl/gradlew     text eol=lf
+Dockerfile*     text eol=lf
+*.props         text eol=lf
+**/etc/settings text eol=lf
+**/etc/options  text eol=lf

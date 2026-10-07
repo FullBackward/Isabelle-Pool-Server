@@ -1,20 +1,25 @@
 #!/usr/bin/env bash
 #
-# DESCRIPTION: register the Isabelle Pool Server REPL component (server/repl) and its
-# py4j/spliff contribs with Isabelle. Idempotent; safe to re-run on a warm
-# isabelle_user_data volume (container_init.sh does exactly that).
+# DESCRIPTION: register the Isabelle Pool Server REPL component (server/repl)
+# and its py4j/spliff contribs with Isabelle. Idempotent and cheap when already
+# done: the container entrypoint runs it on EVERY start, because a pre-existing
+# isabelle_user_data volume shadows whatever registration the image build did
+# (docs/ISSUES.md Bug 7); deploy/native_setup.sh runs it once on a host.
 #
-# Layout assumption (the container): this file is /app/server/repl/Admin/init,
-# Isabelle is /opt/isabelle. The REPL component used to live at /app/repl
-# (before 2026-09-27); stale registrations of that path are removed here so
-# volumes created by older images migrate automatically.
+# Layout assumption: this file is <repo>/server/repl/Admin/init; Isabelle is
+# $ISABELLE_HOME (default /opt/isabelle, else `isabelle` on PATH). The REPL
+# component used to live at <repo>/repl (before 2026-09-27); stale
+# registrations of that path are removed here so older volumes migrate.
 
 set -euo pipefail
 
 SCRIPT_DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
-REPL_ROOT="$( cd -- "${SCRIPT_DIR}/.." &> /dev/null && pwd )"          # /app/server/repl
-REPO_ROOT="$( cd -- "${REPL_ROOT}/../.." &> /dev/null && pwd )"        # /app
+REPL_ROOT="$( cd -- "${SCRIPT_DIR}/.." &> /dev/null && pwd )"          # <repo>/server/repl
+REPO_ROOT="$( cd -- "${REPL_ROOT}/../.." &> /dev/null && pwd )"        # <repo>
+
 ISABELLE="${ISABELLE_HOME:-/opt/isabelle}/bin/isabelle"
+[[ -x "$ISABELLE" ]] || ISABELLE="$(command -v isabelle || true)"
+[[ -n "$ISABELLE" ]] || { echo "init: isabelle not found (set ISABELLE_HOME or put it on PATH)" >&2; exit 1; }
 
 fix_settings_tree() {
   local dir="$1"
@@ -22,17 +27,31 @@ fix_settings_tree() {
   find "$dir" -path '*/etc/settings' -type f -exec sed -i 's/\r$//' {} \;
 }
 
-ISABELLE_IDENTIFIER="$(ISABELLE_COMPONENTS='' "$ISABELLE" getenv -b ISABELLE_IDENTIFIER 2>/dev/null || echo Isabelle2025-2)"
+# ISABELLE_COMPONENTS='' so a stale "Bad component" registration cannot break
+# the very query that tells us where the registrations live.
+ISABELLE_IDENTIFIER="$(ISABELLE_COMPONENTS='' "$ISABELLE" getenv -b ISABELLE_IDENTIFIER)" \
+  || { echo "init: '$ISABELLE getenv ISABELLE_IDENTIFIER' failed — is this a working Isabelle installation?" >&2; exit 1; }
 CONTRIB_DIR="${HOME}/.isabelle/${ISABELLE_IDENTIFIER}/contrib"
 COMPONENTS_FILE="${HOME}/.isabelle/${ISABELLE_IDENTIFIER}/etc/components"
 
-# Fix any repo-side settings
-fix_settings_tree "$REPO_ROOT"
+# Fast path (container start on a warm volume): everything registered at the
+# CURRENT location and no stale pre-move entry -> nothing to do.
+if [[ -f "$COMPONENTS_FILE" ]] \
+    && grep -qx "$REPL_ROOT" "$COMPONENTS_FILE" \
+    && grep -qx "$REPL_ROOT/Admin" "$COMPONENTS_FILE" \
+    && ! grep -qx "$REPO_ROOT/repl" "$COMPONENTS_FILE" \
+    && ! grep -qx "$REPO_ROOT/repl/Admin" "$COMPONENTS_FILE" \
+    && grep -q "contrib/py4j" "$COMPONENTS_FILE" \
+    && grep -q "contrib/spliff" "$COMPONENTS_FILE"; then
+  echo "init: components already registered (${ISABELLE_IDENTIFIER}), nothing to do"
+  exit 0
+fi
 
-# Fix stale user contrib settings before using components
+# Fix any repo-side settings, then stale user contrib settings, before use.
+fix_settings_tree "$REPO_ROOT"
 fix_settings_tree "$CONTRIB_DIR"
 
-# Drop registrations of the PRE-MOVE component location (/app/repl). A
+# Drop registrations of the PRE-MOVE component location (<repo>/repl). A
 # registered-but-missing component makes Isabelle fail with "Bad component".
 for legacy in "${REPO_ROOT}/repl" "${REPO_ROOT}/repl/Admin"; do
   if [[ -f "$COMPONENTS_FILE" ]] && grep -qx "$legacy" "$COMPONENTS_FILE"; then
@@ -44,18 +63,17 @@ done
 "$ISABELLE" components -u "$REPL_ROOT/Admin"
 # component_py4j/component_spliff fail if the contrib directory already exists,
 # so when present we skip the download but still ensure the component is
-# REGISTERED (components -u is idempotent) — keeps this script safe to re-run
-# on a warm isabelle_user_data volume, e.g. from container_init.sh.
+# REGISTERED (components -u is idempotent).
 py4j_dir="$(ls -d "${CONTRIB_DIR}"/py4j* 2>/dev/null | head -1 || true)"
 if [[ -n "$py4j_dir" ]]; then
-  echo "py4j contrib already present, ensuring registration"
+  echo "init: py4j contrib already present, ensuring registration"
   "$ISABELLE" components -u "$py4j_dir"
 else
   "$ISABELLE" component_py4j
 fi
 spliff_dir="$(ls -d "${CONTRIB_DIR}"/spliff* 2>/dev/null | head -1 || true)"
 if [[ -n "$spliff_dir" ]]; then
-  echo "spliff contrib already present, ensuring registration"
+  echo "init: spliff contrib already present, ensuring registration"
   "$ISABELLE" components -u "$spliff_dir"
 else
   "$ISABELLE" component_spliff
@@ -66,4 +84,4 @@ fix_settings_tree "$CONTRIB_DIR"
 
 "$ISABELLE" components -u "$REPL_ROOT"
 
-echo "Init done. REPL_ROOT=$REPL_ROOT  ISABELLE=$ISABELLE  ID=$ISABELLE_IDENTIFIER"
+echo "init: done. REPL_ROOT=$REPL_ROOT  ISABELLE=$ISABELLE  ID=$ISABELLE_IDENTIFIER"
