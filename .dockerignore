@@ -47,3 +47,10 @@ evaluation/MCP-comparison/runs/
 docs/
 *.pdf
 *(temp)/
+
+# Backend build artifacts: the image compiles them itself (isabelle scala_build);
+# host copies would mask a broken build and carry stale Gradle output.
+server/repl/lib/
+server/repl/Admin/lib/
+server/repl/build/
+server/repl/.gradle/

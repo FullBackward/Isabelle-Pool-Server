@@ -1,0 +1,31 @@
+# systemd unit template for a native install. deploy/native_setup.sh --systemd
+# fills the @PLACEHOLDERS@ and installs it as
+# /etc/systemd/system/isabelle-pool-server.service. To install by hand:
+#
+#   sed -e "s|@USER@|$USER|" -e "s|@REPO@|$PWD|" -e "s|@ISABELLE_HOME@|$ISABELLE_HOME|" \
+#       -e "s|@PYTHON_DIR@|$PWD/.venv/bin|" -e "s|@PYTHON@|$PWD/.venv/bin/python|" \
+#       deploy/isabelle-pool-server.service \
+#     | sudo tee /etc/systemd/system/isabelle-pool-server.service > /dev/null
+#   sudo systemctl daemon-reload && sudo systemctl enable --now isabelle-pool-server
+#
+# KillMode=control-group matters: a stop must take the gateway JVM and every
+# poly process with it. TimeoutStopSec=120 lets the server close sessions cleanly.
+
+[Unit]
+Description=Isabelle Pool Server
+After=network.target
+
+[Service]
+User=@USER@
+WorkingDirectory=@REPO@
+EnvironmentFile=@REPO@/.env
+Environment=ISABELLE_HOME=@ISABELLE_HOME@
+Environment=PATH=@ISABELLE_HOME@/bin:@PYTHON_DIR@:/usr/local/bin:/usr/bin:/bin
+ExecStart=@PYTHON@ -m server.app.main
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=120
+KillMode=control-group
+
+[Install]
+WantedBy=multi-user.target

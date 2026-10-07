@@ -225,10 +225,17 @@ def test_project_path_roots(tmp_path, monkeypatch):
         validate_project_path("")
 
 
-def test_default_allowed_roots_are_app_and_isabelle_home():
-    assert Heap.ALLOWED_ROOTS == ["/app", "/root/.isabelle"] or \
-        Heap.ALLOWED_ROOTS == [r for r in __import__("os").getenv(
-            "ISABELLE_HEAP_POOL_ALLOWED_ROOTS", "/app:/root/.isabelle").split(":") if r]
+def test_default_allowed_roots_are_repo_and_isabelle_user_dir():
+    """Host-aware defaults: this checkout + ~/.isabelle, which inside the container
+    are exactly /app and /root/.isabelle (no .env override needed either way)."""
+    import os
+    env = os.getenv("ISABELLE_HEAP_POOL_ALLOWED_ROOTS") or os.getenv("ISABELLE_HEAP_ALLOWED_ROOTS")
+    if env:
+        assert Heap.ALLOWED_ROOTS == [r for r in env.split(":") if r]
+    else:
+        repo = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+        assert Heap.ALLOWED_ROOTS == [repo, os.path.join(os.path.expanduser("~"), ".isabelle")]
+        assert Heap.STATE_DIR == os.path.join(os.path.expanduser("~"), ".isabelle", "heap_pool")
 
 
 def test_heap_build_request_validates_everything(tmp_path, monkeypatch):

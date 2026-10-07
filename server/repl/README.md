@@ -18,17 +18,17 @@ server/app (Python)  ──Py4J──▶  one shared gateway JVM (repl_backend_g
 | `thys/` | `IsabelleREPL.thy` (base theory for default sessions) and generated wrapper `.thy` files. |
 | `Admin/` | `init` (component registration — the fix for ISSUES.md Bug 7; a fast no-op once done), `ensure_settings.sh` (ML heap cap + JVM GC logging in the user settings; shared with `deploy/native_setup.sh`), `container_entrypoint.sh` (init → settings → `exec`s the API server), `etc/`, admin Scala tools. |
 | `etc/` | Isabelle component settings/options for this directory. |
-| `build.gradle` / `settings.gradle` / `gradlew` | Gradle build (Scala 3 / 2.13, Py4J, spliff). Depends on `isabelle.jar`, built first via `isabelle scala -e`. |
+| `etc/build.props` | Isabelle component build description: `isabelle scala_build` compiles `src/main/scala/repl/` into `lib/repl.jar` (Py4J/spliff come from the registered contribs). `build.gradle` / `gradlew` are kept for IDE import (Metals/IntelliJ) only. |
 
 ## Build
 
 ```bash
-cd server/repl
-./gradlew build          # needs `isabelle` on PATH and a JDK for Gradle (scope JAVA_HOME to this step on Isabelle 2026)
+isabelle scala_build     # compiles lib/repl.jar with Isabelle's bundled JDK; no Gradle, no system JDK
 ```
 
-Inside the container the image already contains the built JAR; rebuild after Scala changes
-and restart the server (the gateway JVM loads the JAR at spawn).
+`isabelle scala` runs `scala_build` implicitly, so the gateway start rebuilds a stale jar on
+its own; running it by hand just surfaces compile errors earlier. Restart the server after
+Scala changes (the gateway JVM loads the jar at spawn).
 
 ## Where the behaviour is documented
 

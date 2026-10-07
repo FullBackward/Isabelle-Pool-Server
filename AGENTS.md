@@ -48,7 +48,7 @@ Design rationale for the architecture lives in `docs/DESIGN_CHOICES.md`; the liv
 
 - **Theorem prover**: Isabelle 2026 — the `ISABELLE_VERSION` build arg in `deploy/Dockerfile` (currently `Isabelle2026-RC2`; `Isabelle2025-2` still builds from the same file). Heaps are version-locked: never share a user-data volume across versions.
 - **Python**: 3.12 in Docker; 3.10+ acceptable for local dev. On the maintainer's host Python lives in the conda env `Isabelle Pool Server` (`conda run -n Isabelle Pool Server ...`); in the container it is `/usr/local/bin/python`.
-- **Scala**: Scala 3.3.4 / Scala 2.13.14, built with Gradle (`server/repl/gradlew`). Scala 3 dialect, scalafmt 3.8.3.
+- **Scala**: Scala 3, compiled by Isabelle itself (`isabelle scala_build` from `server/repl/etc/build.props`; no Gradle/JDK in the install — `build.gradle` is IDE-only). scalafmt 3.8.3.
 - **Interop**: Py4J (`server/repl/src/python/repl_backend_gateway.py` ↔ one shared gateway JVM).
 - **Web framework**: FastAPI + Uvicorn. **HTTP client**: `httpx`.
 - **Metrics**: `prometheus-client`, `prometheus-fastapi-instrumentator`; Prometheus + Grafana + cAdvisor in compose.
@@ -62,14 +62,16 @@ Design rationale for the architecture lives in `docs/DESIGN_CHOICES.md`; the liv
 |------|---------|
 | `pyproject.toml` | setuptools package `isabelle-pool-server` (packages: `server*` only); the **single dependency list** — runtime deps (`fastapi[standard]`, `py4j`, prometheus) + extras `mcp`, `eval`, `dev`; tool config for black/isort/mypy/pylint/pytest/coverage. `[tool.pytest.ini_options] addopts = ""` — pytest adds no coverage flags by itself. |
 | `client/pyproject.toml` | The async client is its own distribution (`pip install -e ./client`), httpx only. |
-| `deploy/Dockerfile` | `python:3.12-slim` + fontconfig + system JDK (Gradle only) + Isabelle tarball for the build arch (x86-64 or ARM, mirror fallback with a 1 MB/s floor); installs deps, runs `server/repl/Admin/init`, `gradlew build`. `CMD` is `server/repl/Admin/container_entrypoint.sh`, which **starts the server**. |
+| `deploy/Dockerfile` | `python:3.12-slim` + fontconfig (no JDK — Isabelle's bundled one compiles the backend via `isabelle scala_build`) + Isabelle tarball for the build arch (x86-64 or ARM, mirror fallback with a 1 MB/s floor); installs deps, runs `server/repl/Admin/init`, `gradlew build`. `CMD` is `server/repl/Admin/container_entrypoint.sh`, which **starts the server**. |
 | `docker-compose.yml` | Services `isabelle-pool-server` (builds natively for the host arch — do not pin `platform: linux/amd64`, qemu emulation makes Isabelle 5–20x slower), `prometheus`, `grafana`, `cadvisor`; `env_file: .env`; named volume `isabelle_user_data` → `/root/.isabelle`; `mem_limit: 14g` so the cgroup memory gate bites at a known ceiling. |
 | `.env.example` / `.env` | Every server knob, annotated. `.env` is **not** tracked — `./deploy/setup.sh` creates it (with a random `ISABELLE_ADMIN_TOKEN`), or `cp .env.example .env`. Value lines must not carry inline `#` comments (`int()` parsing in `core/config.py` fails on them). |
-| `deploy/setup.sh` | One-shot configure/build/start/health-check (`--verify`, `--build-heaps "..."`). |
-| `deploy/native_setup.sh` | Native (no Docker) one-shot setup: venv + deps, component init, ML heap cap, `.env` (`--verify` smoke test). |
+| `deploy/setup.sh` | Docker path in one command (`--install-docker`, `--verify`, `--build-heaps "..."`, `--no-build`); noisy output to `logs/setup.log`. Shares `deploy/lib.sh` (status lines, `run_logged`, `wait_healthz`, `smoke_test`) with `native_setup.sh`. |
+| `deploy/native_setup.sh` | Native path in one command (`--system` apt + Isabelle, `--systemd`, `--verify`, `--no-venv`, `--isabelle-version`); output to `logs/native_setup.log`. By-hand steps: `docs/INSTALL_MANUAL.md`. |
 | `deploy/export_turnkey.sh` / `Dockerfile.export` | Turnkey image: the regular image + the heaps/settings of the running deployment baked in (`--save` for a `docker load` tarball). The RC0-era hand-assembly lives in `archive/rc0-image/`. |
+| `deploy/apt_packages.txt`, `deploy/isabelle_mirrors.txt` | The ONE apt package list and Isabelle mirror order, read by both the Dockerfile and `native_setup.sh --system`. `ISABELLE_VERSION` lives in `.env`/`.env.example` for both paths. |
+| `deploy/isabelle-pool-server.service` | systemd unit template (`@USER@`, `@REPO@`, `@ISABELLE_HOME@`, `@PYTHON@`, `@PYTHON_DIR@`), filled by `native_setup.sh --systemd`. |
 | `deploy/monitoring/` | Prometheus scrape config, Grafana datasource + dashboard provisioning. |
-| `server/repl/build.gradle` / `settings.gradle` | Scala build: depends on `isabelle.jar` (built via `isabelle scala -e`), Py4J, spliff. Root project `IsabelleREPL`. |
+| `server/repl/etc/build.props` | Isabelle component build description (`isabelle scala_build` -> `lib/repl.jar`). `build.gradle`/`gradlew` remain for IDE import only. |
 | `.scalafmt.conf` | scalafmt 3.8.3, Scala 3 dialect, max column 100. |
 
 ## Build and run commands
@@ -98,7 +100,7 @@ Changing `.env` needs `docker compose up -d --force-recreate isabelle-pool-serve
 
 ### Local (non-Docker)
 
-Prerequisites: Python 3.10+, JDK 17+ (for Gradle only — see the JAVA_HOME note below), Isabelle installed and on `PATH` as `isabelle`.
+Prerequisites: Python 3.10+, Isabelle installed and on `PATH` as `isabelle` (no JDK — Isabelle bundles its own). One command: `./deploy/native_setup.sh` (`--system` also installs Isabelle; see docs/INSTALL_MANUAL.md).
 
 ```bash
 python -m venv .venv && source .venv/bin/activate   # or the Isabelle Pool Server conda env
@@ -106,8 +108,8 @@ python -m pip install --upgrade pip
 python -m pip install -e ".[mcp,dev]" -e ./client   # pyproject.toml is the single dependency list
 export PYTHONPATH="$PWD:${PYTHONPATH:-}"
 
-(cd server/repl && chmod +x gradlew && ./gradlew build)   # Scala backend, once
 ./server/repl/Admin/init                                   # register the Isabelle component
+isabelle scala_build                                       # compile the Scala backend (also implicit at gateway start)
 python -m server.app.main                                  # or: uvicorn server.app.main:app --host 0.0.0.0 --port 8000
 ```
 
@@ -115,7 +117,7 @@ python -m server.app.main                                  # or: uvicorn server.
 
 ### Isabelle 2026 environment gotchas (cost real time; still apply)
 
-1. **Never export a system `JAVA_HOME` for Isabelle 2026** — it resolves its own bundled JDK and a foreign `JAVA_HOME` fails with `Unknown JAVA_HOME`. The system JDK is only for Gradle; the Dockerfile scopes `JAVA_HOME` to that one `RUN` step.
+1. **Never export a system `JAVA_HOME` for Isabelle 2026** — it resolves its own bundled JDK and a foreign `JAVA_HOME` fails with `Unknown JAVA_HOME`. There is no system JDK any more (Gradle left the install path 2026-10-07; `isabelle scala_build` compiles the backend).
 2. **Pin `HOME=/root` in container builds** — Docker Desktop's BuildKit may run steps with the host user's `HOME`, which makes Isabelle resolve an empty `ISABELLE_HOME_USER`.
 3. **Build heavy heaps (e.g. HOL-Analysis) in a dedicated idle container** (`docker run -v isabelle_user_data:/root/.isabelle ... isabelle build -b -j 2 HOL-Analysis`), not inside the serving container — the 14 GB cgroup cap is shared with the running sessions. `./deploy/setup.sh --build-heaps "..."` wraps the common case.
 4. **fontconfig + one font family are required** in the image even though the JVM is headless (RC2 image, `claude-work/rc2-fontconfig/`).
@@ -152,7 +154,7 @@ repo_root/
 │   │   ├── thys/                   # IsabelleREPL.thy + generated wrapper theories
 │   │   ├── Admin/                  # init (component registration, fast no-op when done), ensure_settings.sh
 │   │   │                           #   (ML heap cap + GC logs), container_entrypoint.sh (init -> settings -> exec server)
-│   │   └── build.gradle / settings.gradle / gradlew
+│   │   └── etc/build.props         # isabelle scala_build description (build.gradle: IDE-only)
 │   └── app/                        # FastAPI HTTP service
 │       ├── main.py                 # app, lifespan, middleware (request id), exception handlers, /admin page
 │       ├── api/v1/router.py        # aggregate APIRouter + compat re-exports
@@ -280,7 +282,7 @@ What the modules guard:
 | `test_client_paths.py` | The async client hits the server's real routes (httpx MockTransport). |
 | `test_phase2_phase3_fixes.py`, `test_mcp_comparison_fixes.py`, `test_lsp_runner.py` | Earlier audit fixes; MCP-comparison harness and its LSP runner. |
 
-Live smoke scripts against a running server live under `claude-work/<task>/` (gitignored) and are not collected. For Scala changes, `cd server/repl && ./gradlew build` is the compile check; behavioural verification needs the container.
+Live smoke scripts against a running server live under `claude-work/<task>/` (gitignored) and are not collected. For Scala changes, `isabelle scala_build` is the compile check (it is also what the gateway start runs implicitly).
 
 Static checks:
 
@@ -322,7 +324,7 @@ For the cross-MCP comparison harness, see `evaluation/MCP-comparison/README.md` 
 
 ## Deployment notes
 
-- The image is large because it bundles Isabelle and the JDK. Keep it lean: no heavy ML frameworks in the runtime deps of `pyproject.toml` unless required (the image installs only those plus the `mcp` extra).
+- The image is large because it bundles Isabelle (which bundles its own JDK). Keep it lean: no heavy ML frameworks in the runtime deps of `pyproject.toml` unless required (the image installs only those plus the `mcp` extra).
 - The Dockerfile downloads the Isabelle tarball for the build architecture (x86-64 or ARM) and falls back across mirrors, abandoning any mirror under 1 MB/s. Do not pin `platform: linux/amd64` in compose.
 - The container entrypoint **starts the server** (`exec python -m server.app.main`) after re-registering components and writing the ML heap cap; `docker compose logs -f isabelle-pool-server` is the live log.
 - `mem_limit: 14g` must stay below the Docker VM's own memory or the cgroup gate goes blind; on smaller machines lower it **and** `ISABELLE_POOL_SIZE`.

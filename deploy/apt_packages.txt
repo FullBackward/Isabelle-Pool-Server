@@ -1,0 +1,16 @@
+# Debian/Ubuntu packages the Isabelle Pool Server needs on the machine that
+# runs Isabelle — installed by deploy/Dockerfile (image) and by
+# deploy/native_setup.sh --system (host). One per line; # comments ignored.
+# No JDK: Isabelle bundles its own and compiles the Scala backend with it.
+bash
+curl
+git
+tar
+gzip
+ca-certificates
+procps
+# fontconfig + one font family are REQUIRED even though nothing is displayed:
+# Isabelle 2026 initialises the JVM font subsystem on every session start and
+# dies with "Fontconfig head is null" without them.
+fontconfig
+fonts-dejavu-core

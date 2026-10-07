@@ -1,0 +1,14 @@
+# Isabelle distribution mirrors, tried in order by deploy/Dockerfile and
+# deploy/native_setup.sh --system. One base URL per line; "<base>/<tarball>"
+# is fetched, where the tarball is <ISABELLE_VERSION>_linux.tar.gz or
+# <ISABELLE_VERSION>_linux_arm.tar.gz. VERSION is replaced by the Isabelle
+# version (release candidates live in a per-RC website directory, final
+# releases in dist/). Any mirror under 1 MB/s for 30 s is abandoned — a merely
+# SLOW mirror never "fails", so a plain fallback chain would sit on it for
+# hours (2026-09-27: dist.isabelle.cit.tum.de trickled at 150 KB/s).
+https://isabelle.in.tum.de/website-VERSION/dist
+https://isabelle.sketis.net/website-VERSION/dist
+https://www.cl.cam.ac.uk/research/hvg/Isabelle/dist
+https://proofcraft.systems/isabelle/dist
+https://isabelle.in.tum.de/dist
+https://mirror.clarkson.edu/isabelle/dist

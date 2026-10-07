@@ -77,12 +77,21 @@ def _heap_env(name: str, default: str) -> str:
     return default
 
 
+# Host-aware defaults for the heap pool: the user's Isabelle data dir and this
+# checkout. In the container (HOME=/root, repo at /app) they evaluate to
+# /root/.isabelle and /app — the isabelle_user_data volume and the repo mount —
+# and on a native host to ~/.isabelle and the clone, so no .env overrides are
+# needed for either deployment (deploy/native_setup.sh relies on this).
+_ISABELLE_USER_DIR: Final = os.path.join(os.path.expanduser("~"), ".isabelle")
+_REPO_ROOT: Final = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+
+
 class Heap:
     # Heap pool (Stage 3): verified per-project heaps built with
     # `isabelle build -b`, shareable by every session of the owning task group.
-    # State dir lives in the isabelle_user_data volume (/root/.isabelle) so
-    # manifests survive container restarts.
-    STATE_DIR: Final = os.getenv("ISABELLE_HEAP_POOL_DIR", "/root/.isabelle/heap_pool")
+    # State dir lives under the Isabelle user dir (the isabelle_user_data
+    # volume in the container) so manifests survive container restarts.
+    STATE_DIR: Final = os.getenv("ISABELLE_HEAP_POOL_DIR", os.path.join(_ISABELLE_USER_DIR, "heap_pool"))
     MAX_CONCURRENT_BUILDS: Final = int(os.getenv("ISABELLE_MAX_CONCURRENT_BUILDS", "1"))
     BUILD_TIMEOUT_S: Final = float(_heap_env("BUILD_TIMEOUT_S", "3600"))
     DEFAULT_TASK_GROUP: Final = "default"
@@ -91,11 +100,12 @@ class Heap:
     GC_IMAGES: Final = _heap_env("GC_IMAGES", "true").lower() == "true"
     # Directories under which heap `project` dirs may live (colon-separated).
     # `isabelle build -d <project>` executes whatever theories/ROOT are there,
-    # so the set is operator-chosen; anything else is 422. Default: the repo
-    # mount and the Isabelle user-data volume.
-    ALLOWED_ROOTS: Final = [
-        r for r in _heap_env("ALLOWED_ROOTS", "/app:/root/.isabelle").split(":") if r
-    ]
+    # so the set is operator-chosen; anything else is 422. Default: this
+    # checkout and the Isabelle user dir (/app and /root/.isabelle in the container).
+    _roots_env = _heap_env("ALLOWED_ROOTS", "")
+    ALLOWED_ROOTS: Final = (
+        [r for r in _roots_env.split(":") if r] if _roots_env else [_REPO_ROOT, _ISABELLE_USER_DIR]
+    )
 
 class Repl:
     SUBGOALS_TIMEOUT_S: Final       = int(os.getenv("ISABELLE_REPL_SUBGOALS_TIMEOUT", "20"))

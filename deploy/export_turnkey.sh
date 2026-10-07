@@ -18,8 +18,15 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-TAG="${1:-isabelle-pool-server:turnkey}"
-SAVE=0; [[ "${2:-}" == "--save" ]] && SAVE=1
+TAG="isabelle-pool-server:turnkey"; SAVE=0
+for arg in "$@"; do
+  case "$arg" in
+    --save) SAVE=1 ;;
+    -h|--help) sed -n '3,16p' "$0"; exit 0 ;;
+    -*) echo "unknown flag: $arg" >&2; exit 2 ;;
+    *) TAG="$arg" ;;
+  esac
+done
 CONTAINER="${ISABELLE_CONTAINER:-isabelle-pool-server}"
 BASE_IMAGE="${BASE_IMAGE:-isabelle-pool-server:local}"
 

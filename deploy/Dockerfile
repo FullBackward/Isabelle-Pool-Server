@@ -9,25 +9,18 @@
 # official host and on mirrors. Build context is the repo root.
 #
 # Isabelle 2026 notes (from the RC0 migration, docs/ISSUES.md / AGENTS.md):
-#  - NEVER export a system JAVA_HOME globally — Isabelle 2026 resolves its own
-#    bundled JDK and a foreign JAVA_HOME fails with "Unknown JAVA_HOME". The
-#    system JDK is only needed by Gradle and is scoped to that one RUN step.
+#  - No system JDK and NEVER a JAVA_HOME: Isabelle 2026 resolves its own
+#    bundled JDK (a foreign JAVA_HOME fails with "Unknown JAVA_HOME") and
+#    compiles the Scala backend itself (`isabelle scala_build`, from
+#    server/repl/etc/build.props). server/repl/build.gradle is IDE-only.
 #  - Pin HOME=/root: Docker Desktop's BuildKit may run steps with the host
 #    user's HOME, which makes Isabelle resolve an empty ISABELLE_HOME_USER.
 
 FROM python:3.12-slim
 
+# Default version = ISABELLE_VERSION in .env.example; docker-compose passes the
+# value from .env as this build arg, deploy/native_setup.sh reads the same key.
 ARG ISABELLE_VERSION=Isabelle2026-RC2
-# Space-separated base URLs; "<base>/<tarball>" is tried in order. Any mirror
-# under 1 MB/s for 30 s is abandoned (curl --speed-limit/--speed-time) — a
-# merely SLOW mirror never "fails", so a plain fallback chain would sit on it
-# for hours (2026-09-27: dist.isabelle.cit.tum.de trickled at 150 KB/s).
-ARG ISABELLE_DIST_URLS="https://isabelle.in.tum.de/website-${ISABELLE_VERSION}/dist \
-    https://isabelle.sketis.net/website-${ISABELLE_VERSION}/dist \
-    https://www.cl.cam.ac.uk/research/hvg/Isabelle/dist \
-    https://proofcraft.systems/isabelle/dist \
-    https://isabelle.in.tum.de/dist \
-    https://mirror.clarkson.edu/isabelle/dist"
 ARG GIT_REVISION=unknown
 
 LABEL org.opencontainers.image.title="Isabelle Pool Server" \
@@ -37,29 +30,29 @@ LABEL org.opencontainers.image.title="Isabelle Pool Server" \
 ENV HOME=/root
 WORKDIR /app
 
-# fontconfig + one font family are REQUIRED even though the JVM runs headless:
-# Isabelle 2026's Build.build_store (Pure/Build/build.scala) calls
-# Isabelle_Fonts.init() -> GraphicsEnvironment.getLocalGraphicsEnvironment()
-# on every `isabelle build`, i.e. on every session start. Without them the JVM
-# dies with "Fontconfig head is null" and no session can be created.
-# (--no-install-recommends drops them; the old Dockerfile got them implicitly
-# as recommends of openjdk-21-jdk-headless.)
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    bash openjdk-21-jdk-headless curl git tar gzip ca-certificates procps \
-    fontconfig fonts-dejavu-core \
- && rm -rf /var/lib/apt/lists/*
+# System packages: ONE list shared with the native install
+# (deploy/apt_packages.txt — fontconfig + a font are required even headless:
+# Isabelle 2026's Build.build_store calls Isabelle_Fonts.init() on every
+# session start and the JVM dies with "Fontconfig head is null" without them;
+# --no-install-recommends would drop them, hence the explicit list).
+COPY deploy/apt_packages.txt /tmp/apt_packages.txt
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends $(sed -e 's/#.*//' /tmp/apt_packages.txt) \
+ && rm -rf /var/lib/apt/lists/* /tmp/apt_packages.txt
 
 # Download Isabelle BEFORE copying the source tree so this heavy, network-bound
-# layer stays cached across code changes. Pick the tarball matching the BUILD
-# architecture — running the x86-64 bundle under qemu on Apple Silicon made
-# Isabelle 5-20x slower.
+# layer stays cached across code changes. Mirrors (and the speed-floor rule)
+# come from deploy/isabelle_mirrors.txt, shared with the native install. Pick
+# the tarball matching the BUILD architecture — running the x86-64 bundle under
+# qemu on Apple Silicon made Isabelle 5-20x slower.
+COPY deploy/isabelle_mirrors.txt /tmp/isabelle_mirrors.txt
 RUN mkdir -p /opt \
  && cd /opt \
  && case "$(uname -m)" in \
       aarch64|arm64) TARBALL="${ISABELLE_VERSION}_linux_arm.tar.gz" ;; \
       *)             TARBALL="${ISABELLE_VERSION}_linux.tar.gz" ;; \
     esac \
- && for base in ${ISABELLE_DIST_URLS}; do \
+ && for base in $(sed -e 's/#.*//' -e "s/VERSION/${ISABELLE_VERSION}/g" /tmp/isabelle_mirrors.txt); do \
       url="${base}/${TARBALL}"; \
       rm -f "$TARBALL"; \
       echo "==> trying $url"; \
@@ -69,7 +62,7 @@ RUN mkdir -p /opt \
  && test -s "$TARBALL" \
  && tar -xf "$TARBALL" \
  && mv "${ISABELLE_VERSION}" isabelle \
- && rm -f "$TARBALL"
+ && rm -f "$TARBALL" /tmp/isabelle_mirrors.txt
 
 ENV ISABELLE_HOME=/opt/isabelle
 ENV PATH=$ISABELLE_HOME/bin:$PATH
@@ -86,15 +79,14 @@ RUN python -m pip install --upgrade pip \
 COPY . /app/
 
 # Normalise line endings for scripts that may come from a Windows checkout,
-# register the REPL component (+ py4j/spliff contribs) with Isabelle, and
-# build the Scala backend. Gradle gets the system JDK via a JAVA_HOME scoped
-# to its own step; Isabelle's own `isabelle scala` uses the bundled JDK.
-RUN find server/repl -type f \( -name "*.sh" -o -name "init" -o -name "gradlew" \) -exec sed -i 's/\r$//' {} \; \
- && chmod +x server/repl/Admin/init server/repl/Admin/*.sh server/repl/gradlew \
- && ./server/repl/Admin/init
-
-RUN cd server/repl \
- && JAVA_HOME="$(ls -d /usr/lib/jvm/java-21-openjdk-* | head -1)" ./gradlew build --no-daemon
+# register the REPL component (+ py4j/spliff contribs) with Isabelle, then let
+# Isabelle compile the Scala backend (server/repl/lib/repl.jar) with its own
+# bundled JDK — the same build `isabelle scala` would otherwise run lazily at
+# the first gateway start, done here so compile errors fail the image build.
+RUN find server/repl -type f \( -name "*.sh" -o -name "init" \) -exec sed -i 's/\r$//' {} \; \
+ && chmod +x server/repl/Admin/init server/repl/Admin/*.sh \
+ && ./server/repl/Admin/init \
+ && isabelle scala_build
 
 EXPOSE 8000
 

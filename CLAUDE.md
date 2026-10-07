@@ -90,13 +90,11 @@ The REPL backend bridges Python ↔ Scala ↔ Isabelle/ML. It uses **Py4J** for 
 - server/repl/src/ml/REPL.ML - ML-side Query_Operation registrations (isabelle_pool_server_goals / in_proof / local_facts / global_facts / state / sledgehammer) plus the extraction functions they call (NOTE: path is src/ml/, not src/main/ml/)
 - server/repl/src/main/scala/repl/thy_*.scala - Theory parsing, status tracking, and checkpoint utilities
 - server/repl/src/python/repl_backend_gateway.py - Python wrapper (ReplBackendGatewayProcess) that spawns the Scala gateway as a subprocess and manages the Py4J bridge
-- server/repl/build.gradle - Gradle build config; depends on Isabelle JAR (auto-built via isabelle scala -e)
+- server/repl/etc/build.props - Isabelle component build description: `isabelle scala_build` compiles the backend into server/repl/lib/repl.jar (run automatically by `isabelle scala` at gateway start; the Dockerfile and native_setup.sh run it eagerly). server/repl/build.gradle is IDE-only.
 
-**Build process:**
+**Build process:** Isabelle builds the component itself:
 ```bash
-cd server/repl
-chmod +x gradlew
-./gradlew build  # Compiles Scala, packages into JAR
+isabelle scala_build   # compiles server/repl -> lib/repl.jar; also runs implicitly at every gateway start
 ```
 
 ### Server Layer: server/ (FastAPI)
@@ -170,16 +168,15 @@ export PYTHONPATH="$PWD:${PYTHONPATH:-}"
 
 **Requirements:**
 - Python 3.12+ (3.10+ for local dev, Docker uses 3.12)
-- JDK 17+ (Docker uses OpenJDK 21)
+- No JDK: Isabelle bundles its own (a foreign `JAVA_HOME` breaks it)
 - Isabelle 2026 (the version the Dockerfile builds; 2025-2 also works) installed and on PATH as `isabelle`
-- Scala 2.13 or 3.3 (managed by Gradle)
+- Scala 3 (compiled by Isabelle's bundled toolchain)
 
 ### Building & Testing
 
 **Scala/REPL build:**
 ```bash
-cd server/repl
-./gradlew build
+isabelle scala_build        # after changes under server/repl/src/, then restart the server
 ```
 
 **Python linting & formatting (dev dependencies):**
@@ -269,8 +266,8 @@ ISABELLE_MEMORY_FALLBACK_SYSTEM_MB=4096 # Limit used when cgroup + MemTotal unre
 
 # Isabelle location (gateway + heap pool resolve $ISABELLE_HOME/bin/isabelle; container default)
 ISABELLE_HOME=/opt/isabelle
-ISABELLE_HEAP_POOL_DIR=/root/.isabelle/heap_pool      # native installs: $HOME/.isabelle/heap_pool
-ISABELLE_HEAP_POOL_ALLOWED_ROOTS=/app:/root/.isabelle      # native installs: <repo>:$HOME/.isabelle
+ISABELLE_HEAP_POOL_DIR=/root/.isabelle/heap_pool      # default is host-aware: ~/.isabelle/heap_pool (= this in the container)
+ISABELLE_HEAP_POOL_ALLOWED_ROOTS=/app:/root/.isabelle      # default is host-aware: <repo>:~/.isabelle (= this in the container)
 
 # Proof state and field
 ISABELLE_SHOW_STATES=true          # Include raw proof states in responses (default true)
@@ -405,7 +402,7 @@ Session caching can be enabled to reuse initialized sessions for the same import
 **Server starts but commands fail immediately**
 - Inside container: verify which isabelle, java -version, python --version are correct.
 - Run ./server/repl/Admin/init to ensure Isabelle components are initialized.
-- Run ./server/repl/gradlew build to rebuild Scala components.
+- Run `isabelle scala_build` to rebuild the Scala backend (compile errors show there).
 
 **pip install -r requirements.txt fails**
 - There is no requirements file: every dependency lives in pyproject.toml. Use `pip install -e ".[mcp,dev]"` (extras `mcp`, `eval`, `dev`).
@@ -429,7 +426,7 @@ repo_root/
 │   ├── thys/                      # Cached wrapper .thy files
 │   ├── Admin/                     # init (component registration), ensure_settings.sh (ML heap cap + GC logs),
 │   │                              #   container_entrypoint.sh (init -> settings -> exec server)
-│   ├── gradlew / build.gradle     # Gradle Scala build
+│   ├── etc/build.props            # Isabelle component build (isabelle scala_build); build.gradle is IDE-only
 │   └── README.md
 ├── server/                        # FastAPI server
 │   └── app/
@@ -459,8 +456,11 @@ repo_root/
 │   ├── async_client.py            #   never imports server code (tests/test_dependency_rules.py)
 │   └── __init__.py
 ├── mcp_servers/                   # stepwise/ (chunk-centric MCP), lsp/ (file-sync MCP), common/; imports client only
-├── deploy/                        # Dockerfile (multi-version via ISABELLE_VERSION), setup.sh (Docker), native_setup.sh,
-│                                  #   export_turnkey.sh + Dockerfile.export (turnkey image), monitoring/ configs
+├── deploy/                        # Dockerfile (ISABELLE_VERSION from .env), setup.sh (Docker, --install-docker),
+│                                  #   native_setup.sh (--system/--systemd), lib.sh (shared status/smoke helpers),
+│                                  #   apt_packages.txt + isabelle_mirrors.txt (shared by image and host install),
+│                                  #   isabelle-pool-server.service (systemd template), export_turnkey.sh +
+│                                  #   Dockerfile.export (turnkey image), monitoring/ configs
 ├── docker-compose.yml             # root; build context . with dockerfile deploy/Dockerfile
 ├── evaluation/                    # Benchmarking and analysis (imports client only)
 │   ├── scripts/                   # eval_smallstep_server_client_*, eval_bigstep_*, consolidate_runs, preprocess
@@ -469,7 +469,7 @@ repo_root/
 │   ├── HOL_corpus/Examples/processed  # Small example corpus (safest for testing)
 │   └── runs_analysis.ipynb        # reads results/benchmark_runs.json
 ├── examples/                      # demo.ipynb (API walkthrough incl. sledgehammer), figs, heap_demo_project
-├── docs/                          # DESIGN_CHOICES.md, ISSUES.md, devnote.md
+├── docs/                          # DESIGN_CHOICES.md, ISSUES.md, devnote.md, INSTALL_MANUAL.md (by-hand install steps)
 ├── archive/                       # read-only history: previous-works/ (1.0 sources, thesis PDFs),
 │                                  #   isabelle-pool-server2/ (2.0 in-process gym + baseline scripts), install.sh
 ├── tests/                         # unit tests; dependency-direction and 600-line size gates live here

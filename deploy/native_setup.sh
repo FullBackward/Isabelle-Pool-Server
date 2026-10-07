@@ -1,121 +1,188 @@
 #!/usr/bin/env bash
 #
-# Native (no Docker) one-shot setup for the Isabelle Pool Server: Python env,
-# Isabelle component registration, ML heap cap, .env. Run from the repo root
-# AFTER Isabelle is installed and `isabelle` is on PATH (or ISABELLE_HOME is
-# set) — README "B. Native Linux server setup", steps B1-B2.
+# Isabelle Pool Server — native (no Docker) setup in one command. Run from the
+# repo root on Linux:
 #
-#   ./deploy/native_setup.sh              # venv + deps + component init + settings + .env
-#   ./deploy/native_setup.sh --no-venv    # skip the venv/pip step (use the active interpreter)
-#   ./deploy/native_setup.sh --verify     # ...then start the server, wait for /healthz,
-#                                         #    prove `lemma True by simp`, stop it again
+#   ./deploy/native_setup.sh --system --systemd --verify   # bare Ubuntu/Debian box -> running service
 #
-# Idempotent: re-run after moving the repo or upgrading Isabelle. Does NOT run
-# the Gradle build (server/repl, README B5) — do that step separately.
+#   --system             apt packages (deploy/apt_packages.txt) + Isabelle download to
+#                        /opt/isabelle (mirrors: deploy/isabelle_mirrors.txt) + profile line (sudo)
+#   --isabelle-version V Isabelle distribution for --system (default: ISABELLE_VERSION in .env /
+#                        .env.example, currently Isabelle2026-RC2)
+#   --no-venv            use the active Python instead of creating .venv
+#   --systemd            install and enable the systemd unit (deploy/isabelle-pool-server.service) (sudo)
+#   --verify             start the server (or use the systemd one), prove `lemma True by simp`, stop it
+#
+# Without flags it does the user-level part only: .venv + deps, Isabelle
+# component registration, Scala backend build, ML heap cap, .env. Idempotent:
+# re-run after moving the repo or upgrading Isabelle. Noisy output goes to
+# logs/native_setup.log; the terminal shows one line per step.
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
 REPO="$PWD"
 
-DO_VENV=1
-DO_VERIFY=0
+LOG_FILE="logs/native_setup.log"
+# shellcheck source=deploy/lib.sh
+. "$(dirname "$0")/lib.sh"
+
+DO_SYSTEM=0 DO_VENV=1 DO_SYSTEMD=0 DO_VERIFY=0
+# Isabelle version: flag > environment > .env > .env.example (same key the
+# docker-compose build arg reads, so both paths track one setting).
+env_version() { grep -hE '^ISABELLE_VERSION=' "$@" 2>/dev/null | tail -1 | cut -d= -f2; }
+ISABELLE_VERSION="${ISABELLE_VERSION:-$(env_version .env .env.example)}"
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --system) DO_SYSTEM=1; shift ;;
+    --isabelle-version) ISABELLE_VERSION="${2:?--isabelle-version needs a value}"; shift 2 ;;
     --no-venv) DO_VENV=0; shift ;;
+    --systemd) DO_SYSTEMD=1; shift ;;
     --verify) DO_VERIFY=1; shift ;;
-    -h|--help) sed -n '2,14p' "$0"; exit 0 ;;
-    *) echo "unknown flag: $1" >&2; exit 2 ;;
+    -h|--help) sed -n '3,20p' "$0"; exit 0 ;;
+    *) echo "unknown flag: $1 (see --help)" >&2; exit 2 ;;
   esac
 done
+log_init "$@"
+[[ -n "$ISABELLE_VERSION" ]] || die "ISABELLE_VERSION not set (expected in .env.example)"
 
-echo "==> checking prerequisites"
+# strip comments/blank lines from a list file
+list_file() { sed -e 's/#.*//' -e '/^[[:space:]]*$/d' "$1"; }
+
+# ---------------------------------------------------------------- --system
+if [[ "$DO_SYSTEM" -eq 1 ]]; then
+  step "system packages (apt, sudo)"
+  command -v apt-get >/dev/null || die "--system supports apt-based systems only; install deploy/apt_packages.txt + python3 by hand (docs/INSTALL_MANUAL.md)"
+  run_logged "apt-get update" sudo apt-get update
+  # shellcheck disable=SC2046
+  run_logged "apt-get install (deploy/apt_packages.txt + python3)" sudo apt-get install -y \
+    $(list_file deploy/apt_packages.txt) python3 python3-venv python3-pip
+
+  step "Isabelle $ISABELLE_VERSION -> /opt/isabelle"
+  if [[ -x /opt/isabelle/bin/isabelle ]]; then
+    ok "already installed: $(ISABELLE_COMPONENTS='' /opt/isabelle/bin/isabelle getenv -b ISABELLE_IDENTIFIER 2>/dev/null || echo /opt/isabelle)"
+  else
+    case "$(uname -m)" in
+      aarch64|arm64) TARBALL="${ISABELLE_VERSION}_linux_arm.tar.gz" ;;
+      *)             TARBALL="${ISABELLE_VERSION}_linux.tar.gz" ;;
+    esac
+    TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
+    got=0
+    for base in $(list_file deploy/isabelle_mirrors.txt | sed "s/VERSION/$ISABELLE_VERSION/g"); do
+      printf '    %s ... ' "$base"
+      if curl -fL --retry 2 --retry-connrefused --connect-timeout 20 --speed-limit 1000000 --speed-time 30 \
+           -o "$TMP/$TARBALL" "$base/$TARBALL" >> "$LOG_FILE" 2>&1 && [[ -s "$TMP/$TARBALL" ]]; then
+        printf 'OK\n'; got=1; break
+      fi
+      printf 'no\n'
+    done
+    [[ "$got" -eq 1 ]] || die "could not download $TARBALL from any mirror in deploy/isabelle_mirrors.txt"
+    run_logged "extract" sudo tar -xf "$TMP/$TARBALL" -C /opt
+    run_logged "install as /opt/isabelle" sudo mv "/opt/$ISABELLE_VERSION" /opt/isabelle
+    run_logged "chown to $USER" sudo chown -R "$USER" /opt/isabelle
+  fi
+  if ! grep -qs 'ISABELLE_HOME=/opt/isabelle' ~/.profile; then
+    printf '\nexport ISABELLE_HOME=/opt/isabelle\nexport PATH="$ISABELLE_HOME/bin:$PATH"\n' >> ~/.profile
+    ok "added ISABELLE_HOME + PATH to ~/.profile (takes effect in new shells)"
+  fi
+  export ISABELLE_HOME=/opt/isabelle
+fi
+
+# ---------------------------------------------------------------- prerequisites
+step "checking prerequisites"
 if [[ -z "${ISABELLE_HOME:-}" ]]; then
-  command -v isabelle >/dev/null || { echo "isabelle not on PATH and ISABELLE_HOME unset — install Isabelle first (README B2)" >&2; exit 1; }
-  ISABELLE_HOME="$(isabelle getenv -b ISABELLE_HOME)"
-  export ISABELLE_HOME
+  command -v isabelle >/dev/null || die "isabelle not on PATH and ISABELLE_HOME unset — run with --system, or install Isabelle (docs/INSTALL_MANUAL.md)"
+  ISABELLE_HOME="$(isabelle getenv -b ISABELLE_HOME)"; export ISABELLE_HOME
 fi
-[[ -x "$ISABELLE_HOME/bin/isabelle" ]] || { echo "no isabelle launcher under ISABELLE_HOME=$ISABELLE_HOME" >&2; exit 1; }
+[[ -x "$ISABELLE_HOME/bin/isabelle" ]] || die "no isabelle launcher under ISABELLE_HOME=$ISABELLE_HOME"
 export PATH="$ISABELLE_HOME/bin:$PATH"
-echo "    isabelle: $ISABELLE_HOME ($(isabelle getenv -b ISABELLE_IDENTIFIER))"
+ok "isabelle: $ISABELLE_HOME ($(ISABELLE_COMPONENTS='' isabelle getenv -b ISABELLE_IDENTIFIER))"
 if [[ -n "${JAVA_HOME:-}" ]]; then
-  echo "    WARNING: JAVA_HOME is exported ($JAVA_HOME). Isabelle 2026 resolves its own JDK and"
-  echo "             fails with 'Unknown JAVA_HOME' under a foreign one — unset it for the server."
+  note "WARNING: JAVA_HOME is exported ($JAVA_HOME). Isabelle resolves its own JDK and fails with"
+  note "         'Unknown JAVA_HOME' under a foreign one — unset it in the server's environment."
 fi
-command -v fc-match >/dev/null || echo "    WARNING: fontconfig missing — Isabelle's JVM needs it (README B1: fontconfig fonts-dejavu-core)"
+command -v fc-match >/dev/null || note "WARNING: fontconfig missing — Isabelle's JVM needs it (see deploy/apt_packages.txt)"
 PYTHON="$(command -v python3 || command -v python || true)"
-[[ -n "$PYTHON" ]] || { echo "python3 not found" >&2; exit 1; }
+[[ -n "$PYTHON" ]] || die "python3 not found"
+ok "python: $("$PYTHON" --version 2>&1)"
 
+# ---------------------------------------------------------------- python env
 if [[ "$DO_VENV" -eq 1 ]]; then
-  echo "==> python env (.venv): server + mcp extra + client"
-  [[ -d .venv ]] || "$PYTHON" -m venv .venv
+  step "python environment (.venv)"
+  [[ -d .venv ]] || run_logged "create .venv" "$PYTHON" -m venv .venv
   PYTHON="$REPO/.venv/bin/python"
-  "$PYTHON" -m pip install --quiet --upgrade pip
-  "$PYTHON" -m pip install --quiet -e ".[mcp]" -e ./client
+  run_logged "upgrade pip" "$PYTHON" -m pip install --upgrade pip
+  run_logged "pip install server[mcp] + client" "$PYTHON" -m pip install -e ".[mcp]" -e ./client
 fi
 
-echo "==> registering the REPL component with Isabelle (py4j/spliff contribs)"
-./server/repl/Admin/init
+# ---------------------------------------------------------------- isabelle side
+step "Isabelle component + backend"
+run_logged "register REPL component (py4j/spliff contribs)" ./server/repl/Admin/init
+run_logged "compile the Scala backend (isabelle scala_build)" isabelle scala_build
+run_logged "ML heap cap + JVM GC logging (user settings)" ./server/repl/Admin/ensure_settings.sh
 
-echo "==> ML heap cap + JVM GC logging in the Isabelle user settings"
-./server/repl/Admin/ensure_settings.sh
-
-echo "==> configuring .env"
+# ---------------------------------------------------------------- .env
+step "configuring .env"
 if [[ ! -f .env ]]; then
   cp .env.example .env
   TOKEN="$("$PYTHON" -c 'import secrets; print(secrets.token_hex(16))')"
   sed -i "s/^ISABELLE_ADMIN_TOKEN=.*/ISABELLE_ADMIN_TOKEN=$TOKEN/" .env
-  cat >> .env <<EOT
-
-# --- native-host overrides (deploy/native_setup.sh; the defaults above are the
-# --- container's /app and /root paths). Later lines win.
-ISABELLE_HEAP_POOL_DIR=$HOME/.isabelle/heap_pool
-ISABELLE_HEAP_POOL_ALLOWED_ROOTS=$REPO:$HOME/.isabelle
-ISABELLE_SERVER_LOG_DIR=$REPO/logs
-EOT
-  echo "    created .env from .env.example (admin token generated, native path overrides appended)"
+  ok "created .env from .env.example (admin token generated)"
 else
-  echo "    .env already exists, keeping it"
+  ok ".env exists, keeping it"
 fi
 mkdir -p logs
+PORT="$(grep -E '^ISABELLE_SERVER_PORT=' .env | tail -1 | cut -d= -f2)"; PORT="${PORT:-8000}"
+BASE="http://localhost:${PORT}"
 
-run_server() {  # foreground: env from .env, venv python if present
-  set -a; source .env; set +a
-  exec "$PYTHON" -m server.app.main
-}
-
-if [[ "$DO_VERIFY" -eq 1 ]]; then
-  PORT="$(grep -E '^ISABELLE_SERVER_PORT=' .env | tail -1 | cut -d= -f2)"; PORT="${PORT:-8000}"
-  echo "==> smoke test: starting the server on :$PORT (log: logs/native_setup_verify.log)"
-  ( run_server ) > logs/native_setup_verify.log 2>&1 &
-  SRV=$!
-  trap 'kill "$SRV" 2>/dev/null || true' EXIT
-  for i in $(seq 1 60); do
-    curl -fsS -m 3 "http://localhost:${PORT}/healthz" >/dev/null 2>&1 && break
-    kill -0 "$SRV" 2>/dev/null || { echo "server exited early — see logs/native_setup_verify.log" >&2; exit 1; }
-    [[ "$i" -eq 60 ]] && { echo "server not healthy after 5 min — see logs/native_setup_verify.log" >&2; exit 1; }
-    sleep 5
-  done
-  RESP="$(curl -fsS -m 600 -X POST "http://localhost:${PORT}/api/v1/sessions/acquire" \
-    -H 'Content-Type: application/json' -d '{"theories": ["Main"], "field": "HOL"}')"
-  SID="$(echo "$RESP" | "$PYTHON" -c 'import json,sys; print(json.load(sys.stdin)["session_id"])')"
-  LEASE="$(echo "$RESP" | "$PYTHON" -c 'import json,sys; print(json.load(sys.stdin)["lease_id"])')"
-  # a fresh session has no theory begun — enter one (header generated server-side)
-  curl -fsS -m 300 -X POST "http://localhost:${PORT}/api/v1/sessions/$SID/enter_theory/Scratch" \
-    -H 'Content-Type: application/json' -H "X-Lease-Id: $LEASE" -d '{"imports": ["Main"]}' >/dev/null
-  curl -fsS -m 120 -X POST "http://localhost:${PORT}/api/v1/sessions/$SID/verify_chunk" \
-    -H 'Content-Type: application/json' -H "X-Lease-Id: $LEASE" \
-    -d '{"chunk": "lemma True by simp", "timeout": 60}' | "$PYTHON" -m json.tool
-  curl -fsS -m 30 -X POST "http://localhost:${PORT}/api/v1/sessions/$SID/release" -H "X-Lease-Id: $LEASE" >/dev/null || true
-  kill "$SRV" 2>/dev/null || true; wait "$SRV" 2>/dev/null || true
-  trap - EXIT
-  echo "    smoke test done (server stopped)"
+# ---------------------------------------------------------------- --systemd
+if [[ "$DO_SYSTEMD" -eq 1 ]]; then
+  step "systemd service isabelle-pool-server (sudo)"
+  UNIT="$(mktemp)"
+  sed -e "s|@USER@|$USER|g" -e "s|@REPO@|$REPO|g" -e "s|@ISABELLE_HOME@|$ISABELLE_HOME|g" \
+      -e "s|@PYTHON_DIR@|$(dirname "$PYTHON")|g" -e "s|@PYTHON@|$PYTHON|g" \
+      deploy/isabelle-pool-server.service > "$UNIT"
+  run_logged "install unit from deploy/isabelle-pool-server.service" sudo install -m 0644 "$UNIT" /etc/systemd/system/isabelle-pool-server.service
+  rm -f "$UNIT"
+  run_logged "systemctl daemon-reload" sudo systemctl daemon-reload
+  run_logged "systemctl enable" sudo systemctl enable isabelle-pool-server
+  run_logged "systemctl restart" sudo systemctl restart isabelle-pool-server
 fi
 
-cat <<EOT
+# ---------------------------------------------------------------- --verify
+if [[ "$DO_VERIFY" -eq 1 ]]; then
+  step "smoke test"
+  SRV=""
+  if [[ "$DO_SYSTEMD" -eq 0 ]]; then
+    note "starting the server in the background (log: logs/native_setup_verify.log)"
+    ( set -a; . ./.env; set +a; exec "$PYTHON" -m server.app.main ) > logs/native_setup_verify.log 2>&1 &
+    SRV=$!
+    trap 'kill "$SRV" 2>/dev/null || true' EXIT
+  fi
+  wait_healthz "$BASE" 450 || die "server did not become healthy — see logs/native_setup_verify.log / journalctl -u isabelle-pool-server"
+  smoke_test "$BASE" || die "smoke test failed"
+  if [[ -n "$SRV" ]]; then
+    kill "$SRV" 2>/dev/null || true; wait "$SRV" 2>/dev/null || true; trap - EXIT
+    note "server stopped again"
+  fi
+fi
 
-Native setup done. Run the server (foreground):
-  set -a; source .env; set +a
-  ${PYTHON} -m server.app.main
-  curl http://localhost:8000/healthz        # 1-2 min for the gateway JVM
-Run on boot: systemd unit in README B7. Prebuild heaps: isabelle build -b HOL-Library
+# ---------------------------------------------------------------- summary
+echo
+if [[ "$DO_SYSTEMD" -eq 1 ]]; then
+  cat <<EOT
+Isabelle Pool Server is installed as a service.
+  API:           $BASE/         (health: /healthz, docs: /docs)
+  Admin console: $BASE/admin    (token: ISABELLE_ADMIN_TOKEN in .env)
+  Service:       systemctl status isabelle-pool-server   |   journalctl -u isabelle-pool-server -f
+  Setup log:     $LOG_FILE
 EOT
+else
+  cat <<EOT
+Native setup done. Run the server in the foreground:
+  set -a; source .env; set +a
+  $PYTHON -m server.app.main        # then: curl $BASE/healthz   (1-2 min for the gateway JVM)
+As a service: ./deploy/native_setup.sh --systemd        Prebuild heaps: isabelle build -b HOL-Library
+Setup log:    $LOG_FILE
+EOT
+fi

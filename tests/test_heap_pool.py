@@ -297,9 +297,13 @@ def test_schema_defaults_and_validation():
     assert req.task_group is None and req.heap_session is None and req.project is None
     acq = SessionAcquireRequest()
     assert acq.task_group is None and acq.heap_session is None
+    # a project under the first allowed root (this checkout by default; /app in the container)
+    import os
+    from server.app.core.config import Heap
+    project = os.path.join(Heap.ALLOWED_ROOTS[0], "x")
     with pytest.raises(ValidationError):
-        HeapBuildRequest(project="/app/x")  # task_group is required
-    ok = HeapBuildRequest(task_group="alpha", project="/app/x")
+        HeapBuildRequest(project=project)  # task_group is required
+    ok = HeapBuildRequest(task_group="alpha", project=project)
     assert ok.session_name is None
 
 
