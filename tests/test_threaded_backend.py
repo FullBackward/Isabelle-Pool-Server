@@ -3,7 +3,7 @@
 Guards against the e6c3869 regression where close() set _shutting_down and then
 called self.submit(self._backend.exit) — which the guard itself rejected, so the
 exit job never reached the JVM and every closed session leaked its poly process
-and in-JVM Isabelle server (see claude-work/2026-7-15(1)-research-session-memory-release/).
+and in-JVM Isabelle server (session memory-release research, internal working notes).
 """
 from __future__ import annotations
 

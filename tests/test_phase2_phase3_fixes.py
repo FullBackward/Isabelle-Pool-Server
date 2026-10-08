@@ -1,4 +1,4 @@
-"""Tests for the Phase 2/3 audit fixes (claude-work/2026-7-15(2)-research-server-code-audit).
+"""Tests for the Phase 2/3 audit fixes (server code audit, internal working notes).
 
 Covers the pieces testable without a running Isabelle backend:
 - A3: base SessionError handler preserves the error detail (HTTP 500 + message)

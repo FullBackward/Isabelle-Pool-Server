@@ -261,7 +261,7 @@ Reply DONE when the theorem is proved.
 ## Results & analysis — rewritten 2026-07-16 (post harness-fix audit)
 
 The previous attempt tables and observations were REMOVED: the audit
-(`claude-work/2026-7-15(3)-research-mcp-comparison-audit/FINDINGS.md`) showed they largely measured
+(internal working notes) showed they largely measured
 harness artifacts, not systems. Specifically:
 
 - Every "⚠ EMPTY / content filter" row was `max_tokens: 4096` truncation of a reasoning
@@ -275,8 +275,8 @@ harness artifacts, not systems. Specifically:
   general/run1 was **0.3** (not 0.7) and segment/run3 was **0.2** (not 0.3). JSONL
   metadata is authoritative.
 
-All of those failure modes are fixed (`claude-work/2026-7-15(6)-fix-mcp-comparison/`,
-`claude-work/2026-7-16(1)-fix-arm-native-and-eventloop/`). What follows uses only **useful** attempts:
+All of those failure modes are fixed (internal working notes,
+internal working notes). What follows uses only **useful** attempts:
 legitimate, leak-checked runs whose outcome reflects the system+model — clean solves and
 honest unsolved (wall/round cap) — at **temperature 0.3, deepseek-v4-pro, single problem
 `mathd_algebra_276`** (restrictive prompt excluded by decision).
@@ -419,8 +419,8 @@ Session teardown fix (Bug 8), memory-gate correction, DeepSeek `max_tokens` 4096
 truncation labelling + nudges, DONE-only termination, I/Q buffer reset done properly +
 sorry-count guard + token file, `reuse_dirty=False`, ARM-native image (heap build 15+ min →
 2m56s), heap-based session start (`field=derive_session`), event-loop offload of Py4J calls.
-Details + edit-by-edit reasons in `claude-work/` (`fix-p1-p2-bugs`, `fix-mcp-comparison`,
-`fix-arm-native-and-eventloop`, `run-0.3-batches/RESULTS.md`).
+Details + edit-by-edit reasons are in the internal working notes (the P1/P2 bug fixes, the
+harness fixes, the ARM-native/event-loop fixes and the 0.3 batch results).
 
 ### Open items
 

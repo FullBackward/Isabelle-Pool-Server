@@ -207,7 +207,7 @@ object Edit_Utils {
           // parent context comes from the wrapper alone. Therefore the wrapper must
           // state every import whose facts/ML environment the document needs.
           // Do NOT merge the two Deps edits — the design relies on the overwrite
-          // (claude-work/2026-8-12(2)-research-heap-pool/FINDINGS.md, spike 3).
+          // (heap-pool research, internal working notes, spike 3).
           true_deps_edit :: emulated_imports_edits
         }
     }

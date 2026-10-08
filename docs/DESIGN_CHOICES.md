@@ -4,7 +4,7 @@ Design rationale for Isabelle Pool Server (IsabelleGym 3.0 until its renaming on
 roads not taken — survive the people who made them. Format per choice: what we chose, what
 the old/alternative option was, pros and cons of each, why the chosen option won, and what
 possibilities the choice deliberately gave up. Bug numbers refer to ISSUES.md; deeper
-histories live in `claude-work/`.
+histories live in the internal working notes (not tracked).
 
 ---
 
@@ -283,7 +283,7 @@ session's own document. Full
 evidence was in the 2026-08 research notes (`research-use-theories-spike`,
 `research-heap-pool`, `research-style4-feasibility`, `research-lsp-readonly-mode/
 IMPORT_SYNC_PLAN.md`) — NOTE (2026-09-30 review): those folders are no longer under this
-tree's `claude-work/`; the surviving record is this section and ISSUES.md's work log. The
+tree's internal working notes; the surviving record is this section and ISSUES.md's work log. The
 overlay path's sledgehammer parity became `sledgehammer_at`, and since 2026-09-30 the same
 machinery backs every state query (1.14); the generic one-registration diagnostic
 dispatcher proven in that spike remains a possible upgrade for `diagnostic`.
@@ -335,7 +335,7 @@ retried probe is discarded first — the minimal fix for the leak (audit REPL-1)
 removes the whole class of restoration bugs instead of fixing one instance, deletes more
 code than it adds, and unifies the two MCPs on one mechanism that had already been validated
 in production by `sledgehammer_at`. Verified live on the Isabelle2026-RC2 image
-(`claude-work/2026-9-30-impl-overlay-probes/`): all probes in proof / after `qed` / after
+(internal working notes): all probes in proof / after `qed` / after
 `end`, `verify_chunk`'s internal probes, no `ML_val` in the source at any point, and a query
 against a still-running 45 s command failing cleanly at its 20 s budget with no residue.
 **Given up:** the forked, non-blocking ML sledgehammer thread (the overlay's print task is
@@ -453,7 +453,7 @@ per-command status report. No `step` tool.
 - *verify_chunk pros:* matches how models naturally emit proofs (blocks); per-line feedback
   (`failed` with messages, `running` with `stuck_line`) tells the agent *where* to intervene
   — the design goal distilled from the Lean ecosystem survey (`lean-lsp-mcp`'s
-  multi-attempt/diagnostics tools) in `claude-work/`'s MCP research notes.
+  multi-attempt/diagnostics tools) in the internal MCP research notes.
 - *Renderer choice:* terse summary by default, `detail=True` for the full table — token
   economy with an escape hatch. Failure messages are truncated; `proof_open`/`used_sorry`
   warnings are spelled out in the OUTPUT (not only in docs) because agents act on what they

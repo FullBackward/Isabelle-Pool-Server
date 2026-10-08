@@ -42,7 +42,7 @@ def test_source_file_size(path: Path):
     ceiling = ALLOWED_OVER.get(rel, MAX_LINES)
     assert n <= ceiling, (
         f"{rel} is {n} lines (limit {ceiling}). Split it along its section "
-        f"markers (see claude-work/2026-9-27-refactor-router-package/NOTES.md) "
+        f"markers (see the router-package refactor notes, internal working notes) "
         f"instead of raising the limit."
     )
 

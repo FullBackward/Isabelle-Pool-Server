@@ -1,7 +1,7 @@
 """Heap pool (Stage 3): verified per-project Isabelle heaps built with
 ``isabelle build -b``, shareable by every REPL session of the owning task group.
 
-Design (claude-work/2026-8-8-research-lsp-readonly-mode/IMPORT_SYNC_PLAN.md):
+Design (import-sync plan, internal working notes):
 - Registry keyed by ``(task_group, project_dir)``; entries carry session_name,
   root_dir, fingerprint (sha256 over the ROOT text + sorted theory-file
   contents), status (building/ready/stale/failed), build_log_tail, built_at,

@@ -4,7 +4,7 @@ IsabelleGym 对 2 个新问题（imo_2019_p1、numbertheory_x5neqy2p4）的 gene
 已完成并合并：`runs/isabellegym/general_prompt/`（mathd 10 + imo 10 + numbertheory 10，
 30 rows / 30 artifacts / 30 logs，路径已修正指向子目录）。I/Q 侧同构（合并历史见
 2026-07-30 节尾：imo rep6–9 为 jEdit 挂起+token 失效的 0 轮坏尝试，已用重跑的
-rep1–4 替换并备份于 claude-work/trash-imo-rep6-9/）。
+rep1–4 替换并备份于内部工作笔记，未纳入版本库）。
 
 ### 结果总表（general_prompt，各 10 reps，DeepSeek-v4-pro @0.3）
 

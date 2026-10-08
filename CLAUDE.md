@@ -25,7 +25,7 @@ End every response with the exact string:
 
 ## Claude Work Artifacts (read first)
 
-The **testing and demonstration** artifacts Claude produces to show a task is done — ad-hoc test scripts, notebook runners, and the markdown write-up of what was verified — go under `claude-work/`, in a subfolder named for the task (one per feature or bug fix, e.g. `claude-work/impl-sledgehammer/`). Use `impl-<feature>` for features and a short descriptive kebab-case name for bug fixes; include a brief `NOTES.md` summarizing the change and how it was verified. Keep these for reference rather than deleting them.
+The **testing and demonstration** artifacts Claude produces to show a task is done — ad-hoc test scripts, notebook runners, and the markdown write-up of what was verified — go under `claude-work/`, in a subfolder named for the task (one per feature or bug fix, date-prefixed, e.g. `claude-work/<date>-impl-<feature>/`). Use `impl-<feature>` for features and a short descriptive kebab-case name for bug fixes; include a brief `NOTES.md` summarizing the change and how it was verified. Keep these for reference rather than deleting them.
 
 This is only for the demonstration/test artifacts — not every file touched during the task. Real source changes (e.g. `server/repl/src/ml/REPL.ML`, `examples/demo.ipynb`, files under `server/`, `client/`) stay in their normal locations.
 
@@ -241,7 +241,7 @@ ISABELLE_SESSION_THREADS=4         # Isabelle `threads` per session (default 4).
                                    # no-op -- the poly prover farm is sized from hardware at process
                                    # launch, not from this session option (farm stays ~cores). To
                                    # actually cap per-session threads it must be set at the gateway/
-                                   # prover launch layer. See claude-work/impl-parallel-sessions/.
+                                   # prover launch layer (details in the internal working notes).
 
 # Prover wait budgets (Scala side; every wait on the prover is wall-bounded — ISSUES.md Bug 15)
 ISABELLE_REPL_SETTLE_TIMEOUT=60    # Settle budget (s) for waits with no request timeout (rollback, vector_step)

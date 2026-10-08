@@ -120,7 +120,7 @@ python -m server.app.main                                  # or: uvicorn server.
 1. **Never export a system `JAVA_HOME` for Isabelle 2026** — it resolves its own bundled JDK and a foreign `JAVA_HOME` fails with `Unknown JAVA_HOME`. There is no system JDK any more (Gradle left the install path 2026-10-07; `isabelle scala_build` compiles the backend).
 2. **Pin `HOME=/root` in container builds** — Docker Desktop's BuildKit may run steps with the host user's `HOME`, which makes Isabelle resolve an empty `ISABELLE_HOME_USER`.
 3. **Build heavy heaps (e.g. HOL-Analysis) in a dedicated idle container** (`docker run -v isabelle_user_data:/root/.isabelle ... isabelle build -b -j 2 HOL-Analysis`), not inside the serving container — the 14 GB cgroup cap is shared with the running sessions. `./deploy/setup.sh --build-heaps "..."` wraps the common case.
-4. **fontconfig + one font family are required** in the image even though the JVM is headless (RC2 image, `claude-work/rc2-fontconfig/`).
+4. **fontconfig + one font family are required** in the image even though the JVM is headless (RC2 image, 2026-09-30; internal working notes).
 
 ## Code organisation
 

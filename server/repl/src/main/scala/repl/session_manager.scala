@@ -197,7 +197,7 @@ class Session_Manager(show_states: Boolean, enable_cache: Boolean = false, max_c
   }
 
   // Per-session parallelism (configurable; conservative defaults to bound peak heap
-  // under concurrent sessions — see claude-work/research-parallel-proof + impl-parallel-sessions).
+  // under concurrent sessions — see the parallel-proof research and parallel-sessions notes, internal working notes).
   //   parallel_proofs=2 forks nested `have`/`show` proof bodies (independent haves run
   //     concurrently); 1 = top-level proofs only; 0 = sequential.
   //   threads is CAPPED (default 4, not 0=auto) so M concurrent sessions do not each

@@ -1,5 +1,5 @@
 """Tests for the read-only-mode server preparation
-(claude-work/2026-8-8-research-lsp-readonly-mode, plan: server prep for dual MCP support).
+(LSP read-only mode research, internal working notes; plan: server prep for dual MCP support).
 
 Covers the pieces testable without a running Isabelle backend:
 - DocumentLoadRequest schema validation (empty text, imports without thy_name)

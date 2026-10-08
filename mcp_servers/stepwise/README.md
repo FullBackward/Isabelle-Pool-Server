@@ -61,41 +61,19 @@ ISABELLE_MCP_TRANSPORT=streamable-http ISABELLE_MCP_PORT=8848 python -m mcp_serv
 
 ## Run an agent proof (Claude in the loop)
 
-`claude-work/impl-mcp-server/bench_mcp_agent.py` drives Claude through these MCP tools to
-prove theorems end-to-end and records **success rate, token usage, and latency** per theorem.
-It spawns the MCP server itself over stdio, lists its tools, and runs an agentic loop against
-the Anthropic API (Claude calls the tools; the harness executes them via MCP and feeds the
-results back). Token usage is the only metric that requires the model in the loop.
+During development an agent benchmark harness drove Claude through these MCP tools to prove
+theorems end-to-end and recorded **success rate, token usage, and latency** per theorem: it
+spawned the MCP server over stdio, listed its tools, and ran an agentic loop against the
+Anthropic API (Claude calls the tools; the harness executes them via MCP and feeds the results
+back), with options for single inline statements, repeats, model choice and miniF2F problem
+sets. That harness lives in the internal working notes and is not part of the repository; the
+tracked equivalent for comparing MCP servers with a model in the loop is the cross-MCP
+harness in `evaluation/MCP-comparison/`.
 
-**Prerequisites**
+**Prerequisites for any such driver**
 - A running Isabelle Pool Server (default `http://localhost:8000`) — the MCP layer wraps it.
-- `ANTHROPIC_API_KEY` exported in the environment (the model must be in the loop).
-- Host deps: `anthropic`, `mcp`, plus the repo's client deps (`httpx`).
-- `PYTHONPATH` set to the repo root so `mcp_servers` / `client` import (the harness forwards it
-  to the spawned MCP server as the subprocess's `PYTHONPATH`).
+- The model API key exported in the environment (the model must be in the loop).
+- Host deps: the model SDK, `mcp`, plus the repo's client deps (`httpx`).
+- `PYTHONPATH` set to the repo root so `mcp_servers` / `client` import (forward it to the spawned
+  MCP server as the subprocess's `PYTHONPATH`).
 
-**Commands**
-```bash
-# the two default theorems (rev_rev, gauss_sum), one pass:
-ANTHROPIC_API_KEY=... PYTHONPATH=. python claude-work/impl-mcp-server/bench_mcp_agent.py
-
-# stream Claude's reasoning + each tool call/result:
-... python claude-work/impl-mcp-server/bench_mcp_agent.py --verbose
-
-# prove one inline statement directly:
-... python claude-work/impl-mcp-server/bench_mcp_agent.py \
-    --theorem 'theorem foo: "rev (rev xs) = xs"' --name foo --imports Main
-
-# repeat 3x for averages, with Opus:
-... python claude-work/impl-mcp-server/bench_mcp_agent.py --repeats 3 --model claude-opus-4-8
-
-# over a miniF2F problem set (and save each proof as a .thy):
-... python claude-work/impl-mcp-server/bench_mcp_agent.py \
-    --minif2f-glob "evaluation/miniF2F/test/*.json" --limit 5 --save-proofs proofs/
-```
-
-Key flags: `--model` (default `claude-sonnet-4-6`), `--max-rounds` (12), `--repeats`,
-`--gym-url`, `--problems <json>` / `--minif2f-glob` / `--theorem`, `--select <substr>`,
-`--list`, `--limit`, `--output <json>` (default `mcp_bench_results.json`), `--save-proofs <dir>`.
-A run counts as proved only when `verify_chunk` reports `success=True` **and** `proof_open=False`
-with no `sorry`/`oops` and the chunk contains the target goal.
