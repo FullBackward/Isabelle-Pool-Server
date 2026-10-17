@@ -152,6 +152,7 @@ def test_others_summary_excludes_own_sessions():
     assert o == {
         "sessions": 2,
         "rss_mb": 5.0,
+        "unmeasured": 0,
         "task_groups": ["b"],
         "builds_in_flight": 3,
         "external_pressure": False,
@@ -327,3 +328,19 @@ def test_pool_full_carries_the_server_detail():
         tools=TOOLS,
     )
     assert out["error"] == "pool_full" and out["detail"] == "Session pool is full (6)"
+
+
+def test_unmeasured_holders_are_not_reported_as_zero_mb():
+    facts = _facts(leased=[{"session_id": "t1", "rss_mb": None, "task_group": "teamB"}])
+    o = others_summary(facts, set())
+    assert o["sessions"] == 1 and o["unmeasured"] == 1 and o["rss_mb"] == 0.0
+    text = " ".join(advise(facts, [], tools=TOOLS))
+    assert "hold memory not yet measured" in text and "0.0 MB" not in text
+    facts = _facts(
+        leased=[
+            {"session_id": "t1", "rss_mb": None, "task_group": "teamB"},
+            {"session_id": "t2", "rss_mb": 400.0, "task_group": "teamB"},
+        ]
+    )
+    text = " ".join(advise(facts, [], tools=TOOLS))
+    assert ">= 400.0 MB measured, 1 not yet measured" in text

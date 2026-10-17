@@ -593,6 +593,9 @@ use (scratch always, bindings/batch items idle for `ADVICE_IDLE_S`; never the st
 idle there means the model was thinking), retry after `retry_after_s` when the server can reclaim
 others' idle sessions, and — on repeated failure, running builds, other task groups holding the
 memory, or external pressure — stop and tell the user: the agent cannot free that memory.
+Advice is computed from the registry at the moment of the refusal: when sibling creates of one
+fan-out are still in flight, the first refused item may see nothing releasable yet and get the
+retry line instead of rule 1 — correct at that instant, and the next refusal names the scratch.
 **Alternative:** advice text in the server's 503 (one source of truth for every client).
 **Why:** the server is hidden from the agent; only the MCP knows its own tool names and what the
 agent is doing with each session. The LSP server also frees its own warm scratch sessions first

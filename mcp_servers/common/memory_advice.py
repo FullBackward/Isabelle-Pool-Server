@@ -68,13 +68,17 @@ def parse_http_error(exc: BaseException) -> Dict[str, Any]:
 
 def others_summary(facts: Dict[str, Any], owned_ids: set[str]) -> Dict[str, Any]:
     """What the agent does NOT own, aggregated (per task group, builds,
-    external pressure) — the material for the "tell the user" message."""
+    external pressure) — the material for the "tell the user" message.
+    Rows without an attributed size yet (``rss_mb`` None: no sweep has
+    sampled them) are counted as ``unmeasured``, never as 0 MB."""
     rows = list(facts.get("evictable") or []) + list(facts.get("leased") or [])
     others = [r for r in rows if str(r.get("session_id")) not in owned_ids]
     builds = facts.get("builds_in_flight") or {}
+    measured = [r for r in others if r.get("rss_mb") is not None]
     return {
         "sessions": len(others),
-        "rss_mb": round(sum(float(r.get("rss_mb") or 0.0) for r in others), 1),
+        "rss_mb": round(sum(float(r.get("rss_mb") or 0.0) for r in measured), 1),
+        "unmeasured": len(others) - len(measured),
         "task_groups": sorted(
             {str(r["task_group"]) for r in others if r.get("task_group")}
         ),
@@ -112,8 +116,15 @@ def _others_text(others: Dict[str, Any]) -> str:
             if others["task_groups"]
             else ""
         )
+        unmeasured = int(others.get("unmeasured") or 0)
+        if unmeasured and not others["rss_mb"]:
+            amount = "memory not yet measured"
+        elif unmeasured:
+            amount = f">= {others['rss_mb']} MB measured, {unmeasured} not yet measured"
+        else:
+            amount = f"~{others['rss_mb']} MB"
         parts.append(
-            f"{others['sessions']} session(s) of other clients{groups} hold ~{others['rss_mb']} MB"
+            f"{others['sessions']} session(s) of other clients{groups} hold {amount}"
         )
     if others["builds_in_flight"]:
         parts.append(f"{others['builds_in_flight']} theory build(s) are running")
