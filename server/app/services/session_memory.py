@@ -27,8 +27,8 @@ from typing import Any, Callable, Dict, Mapping, Optional
 
 from server.app.core.config import Memory, Repl, Timeouts
 from server.app.core.logging import get_logger
-from server.app.services.memory_monitor import proc_matches, read_starttime
 from server.app.services.internal_models import SessionStatus
+from server.app.services.memory_monitor import proc_matches, read_starttime
 from server.app.services.session import _Isabelle_Session
 
 logger = get_logger(__name__)
@@ -157,6 +157,23 @@ class SessionMemoryMixin:  # pylint: disable=too-many-instance-attributes
             return None
         return proc_matches(self.ml_pid, self.ml_starttime)
 
+    def check_prover_dead(self, timeout: float = 5.0) -> bool:
+        """Request-path death check (plan-review f1fb31a B1): ``/proc`` + start
+        time when the pid is known; otherwise Isabelle's ``Session.phase`` via
+        the backend (a Scala-only read, instant on a corpse — `Terminated(...)`
+        after a kill). False when nothing can be told."""
+        alive = self.prover_alive()
+        if alive is not None:
+            return not alive
+        try:
+            phase = str(
+                self._call_backend(self.backend.raw.session_phase, timeout=timeout)
+            )
+        except Exception:  # pylint: disable=broad-exception-caught
+            return False
+        self.ml_phase = phase
+        return phase.startswith("Terminated")
+
     def memory_fields(self) -> Dict[str, Any]:
         """Listing / facts fields (never the pid: it is an internal handle)."""
         return {
@@ -183,8 +200,13 @@ def probe_memory(session: Any, now: Optional[float] = None) -> bool:
 
 
 def prover_dead(session: Any) -> bool:
-    """True only when the pid is known AND its process is gone."""
+    """Sweep-side signal: True only when the pid is known AND its process is gone."""
     return isinstance(session, SessionMemoryMixin) and session.prover_alive() is False
+
+
+def check_prover_dead(session: Any) -> bool:
+    """Request-path signal (may ask the backend for the session phase)."""
+    return isinstance(session, SessionMemoryMixin) and session.check_prover_dead()
 
 
 def expiry_fields(
@@ -192,13 +214,15 @@ def expiry_fields(
 ) -> Dict[str, Any]:
     """When the server will reap the session if nothing touches it: idle
     sessions after ``idle_timeout``, leased ones after ``max_lease_age``
-    (the abandoned-lease rule). Absolute epoch seconds + seconds remaining."""
+    (the abandoned-lease rule; the idle timeout does not apply to a leased
+    session, so ``idle_expires_at`` is None then). ``expires_in_s`` is the
+    authoritative figure. Absolute epoch seconds + seconds remaining."""
     last = float(session.last_activity)
     leased = bool(session.leased)
-    idle_expires_at = last + idle_timeout
+    idle_expires_at: Optional[float] = None if leased else last + idle_timeout
     lease_expires_at: Optional[float] = last + max_lease_age if leased else None
     applies: float = (
-        lease_expires_at if lease_expires_at is not None else idle_expires_at
+        lease_expires_at if lease_expires_at is not None else last + idle_timeout
     )
     return {
         "idle_s": round(max(0.0, now - last), 1),

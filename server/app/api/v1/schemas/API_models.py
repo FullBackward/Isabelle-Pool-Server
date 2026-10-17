@@ -176,6 +176,10 @@ class DocumentLoadResponse(BaseModel):
     theory: str
     output: str | None = None
     error: str | None = None
+    error_kind: str | None = Field(
+        default=None,
+        description="'memory' | 'prover_died' | None (see CommandResponse).",
+    )
     execution_time: float
     report: Optional[Dict[str, Any]] = None
 
@@ -184,6 +188,12 @@ class CommandResponse(BaseModel):
     success: bool
     output: str | None = None
     error: str | None = None
+    error_kind: str | None = Field(
+        default=None,
+        description="Why the command failed when it was not a proof error: 'memory' (the ML "
+        "runtime ran out of memory) or 'prover_died' (the session's ML process is "
+        "gone; the session was discarded — open a new one). None otherwise.",
+    )
     subgoal_error: str | None = None
     subgoals: List[str]
     execution_time: float
@@ -456,6 +466,12 @@ class ChunkVerifyResponse(BaseModel):
         default=None,
         description="Backend-level error when nothing could be checked (e.g. "
                     "'theory not begun'). None when commands were processed.",
+    )
+    error_kind: str | None = Field(
+        default=None,
+        description="'memory' when a command failed because the ML runtime ran out of "
+        "memory, 'prover_died' when the session's ML process is gone (session "
+        "discarded), None for ordinary proof errors / success.",
     )
 
 # ---------------------------------------------------------------------------

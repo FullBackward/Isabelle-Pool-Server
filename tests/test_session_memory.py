@@ -193,6 +193,43 @@ def test_expiry_fields():
     _S.leased = True
     f = expiry_fields(_S(), now=1100.0, idle_timeout=1800, max_lease_age=7200)
     assert f["lease_expires_at"] == 8200.0 and f["expires_in_s"] == 7100.0
+    assert f["idle_expires_at"] is None  # the idle timeout does not apply while leased
+
+
+def _full_stat(pid: int, starttime: int) -> str:
+    """A 52-field /proc/<pid>/stat line (start time is field 22)."""
+    fields = [str(pid), "(poly)", "S", "1", "1", "1", "0", "-1", "4194560"] + ["0"] * 12
+    fields.append(str(starttime))  # field 22
+    fields += ["0"] * 30
+    return " ".join(fields) + "\n"
+
+
+def test_start_time_guard_detects_pid_reuse(tmp_path, monkeypatch):
+    root = tmp_path / "proc"
+    d = root / "4242"
+    d.mkdir(parents=True)
+    (d / "stat").write_text(_full_stat(4242, 1000))
+    (d / "status").write_text("Name:\tpoly\nVmRSS:\t100 kB\n")
+    monkeypatch.setattr(mm, "_PROC_ROOT", str(root))
+    s = _session()
+    s.record_mem_stats(STATS)  # pid 4242, start time 1000 recorded
+    assert s.ml_starttime == 1000 and s.prover_alive() is True
+    (d / "stat").write_text(_full_stat(4242, 5000))  # same pid, a NEW process
+    assert s.prover_alive() is False and prover_dead(s) is True
+    sm = _manager_with([s])
+    assert sm.sample_sessions_rss(now=1.0) == {"sampled": 0, "dead": 1}
+    assert s.session_id not in sm._lru
+
+
+def test_check_prover_dead_uses_phase_when_pid_unknown():
+    s = _session()
+    assert (
+        s.check_prover_dead() is False
+    )  # fake backend has no session_phase -> can't tell
+    s.backend.raw.session_phase = lambda: "Terminated(Process_Result(137))"
+    assert s.check_prover_dead() is True and s.ml_phase.startswith("Terminated")
+    s.backend.raw.session_phase = lambda: "Ready"
+    assert s.check_prover_dead() is False
 
 
 def test_memory_fields_never_expose_pid():

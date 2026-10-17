@@ -9,6 +9,7 @@ from server.app.core import metrics
 from server.app.core.logging import get_logger
 
 from ..deps import LeasedSession, SessionManagerDep, sledgehammer_slot
+from ..memory_hooks import PROVER_DIED_TEXT, run_with_memory_hooks
 from ..schemas.API_models import SledgehammerRequest, SledgehammerResponse
 from ..serializers import to_ascii
 
@@ -26,13 +27,20 @@ async def sledgehammer(
     start = time.time()
     try:
         async with sledgehammer_slot(session_manager):
-            suggestions: list = await asyncio.to_thread(session.sledgehammer, request.timeout_s)
+            suggestions, override = await asyncio.to_thread(
+                run_with_memory_hooks,
+                lambda: list(session.sledgehammer(request.timeout_s)),
+                session,
+                session_manager,
+            )
     except Exception:
         metrics.sledgehammer_total.labels("failure").inc()
         raise
     finally:
         metrics.sledgehammer_seconds.observe(time.time() - start)
     elapsed = time.time() - start
+    if override:  # dead prover: no suggestion is trustworthy; session discarded
+        suggestions = []
     found = len(suggestions) > 0
     metrics.sledgehammer_total.labels("success" if found else "failure").inc()
     logger.info(
@@ -42,6 +50,10 @@ async def sledgehammer(
     return SledgehammerResponse(
         success=found,
         suggestions=[to_ascii(str(s)) for s in suggestions],
-        raw_output="\n".join(to_ascii(str(s)) for s in suggestions),
+        raw_output=(
+            PROVER_DIED_TEXT
+            if override
+            else "\n".join(to_ascii(str(s)) for s in suggestions)
+        ),
         execution_time=elapsed,
     )

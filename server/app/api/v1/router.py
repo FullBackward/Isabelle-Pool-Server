@@ -15,12 +15,23 @@ from .routes import (
     health,
     heaps,
     inspection,
+    memory,
     positional,
     sessions,
 )
 
 router = APIRouter()
-for _module in (health, sessions, execution, inspection, positional, automation, checkpoints, heaps):
+for _module in (
+    health,
+    sessions,
+    execution,
+    inspection,
+    positional,
+    automation,
+    checkpoints,
+    heaps,
+    memory,
+):
     router.include_router(_module.router)
 
 # --- compatibility re-exports (deprecated import paths) ----------------------

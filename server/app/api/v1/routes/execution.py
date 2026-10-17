@@ -11,6 +11,12 @@ from server.app.core.logging import get_logger, logging_context
 from server.app.services.theory_parsing import parse_theory_header, suggested_field
 
 from ..deps import LeasedSession, SessionManagerDep
+from ..memory_hooks import (
+    PROVER_DIED_TEXT,
+    first_error_text,
+    kind_for,
+    run_with_memory_hooks,
+)
 from ..schemas.API_models import (
     BigStepTheoryRequest,
     ChunkVerifyRequest,
@@ -32,22 +38,35 @@ logger = get_logger(__name__)
 
 
 @router.post("/api/v1/sessions/{session_id}/commands", response_model=CommandResponse)
-async def execute_command(request: CommandRequest, session: LeasedSession):
+async def execute_command(
+    request: CommandRequest, session: LeasedSession, session_manager: SessionManagerDep
+):
     logger.info(
         "executing command timeout=%s preview=%s",
         request.timeout,
         preview(request.command, Logging.COMMAND_PREVIEW_CHARS),
     )
-    result = await asyncio.to_thread(session.execute_command, request.command, request.timeout)
+    # Dead-prover check + memory probe in the same worker thread (plan §2.B):
+    # a dead prover can answer a step with stale output, so its result is
+    # overridden to a failure and the session discarded.
+    result, override = await asyncio.to_thread(
+        run_with_memory_hooks,
+        lambda: session.execute_command(request.command, request.timeout),
+        session,
+        session_manager,
+    )
     logger.info(
         "command finished success=%s execution_time=%s",
         getattr(result, "success", False),
         float(getattr(result, "execution_time", 0.0) or 0.0),
     )
+    success = bool(getattr(result, "success", False)) and override is None
+    error = PROVER_DIED_TEXT if override else getattr(result, "error", None)
     return CommandResponse(
-        success=getattr(result, "success", False),
+        success=success,
         output=getattr(result, "output", None),
-        error=getattr(result, "error", None),
+        error=error,
+        error_kind=kind_for(error, session_manager, override=override),
         subgoal_error=getattr(result, "subgoal_error", None),
         subgoals=getattr(result, "subgoals", []) or [],
         execution_time=float(getattr(result, "execution_time", 0.0) or 0.0),
@@ -55,13 +74,22 @@ async def execute_command(request: CommandRequest, session: LeasedSession):
 
 
 @router.post("/api/v1/sessions/{session_id}/verify_chunk", response_model=ChunkVerifyResponse)
-async def verify_chunk(request: ChunkVerifyRequest, session: LeasedSession):
+async def verify_chunk(
+    request: ChunkVerifyRequest,
+    session: LeasedSession,
+    session_manager: SessionManagerDep,
+):
     logger.info(
         "verify_chunk timeout=%s preview=%s",
         request.timeout,
         preview(request.chunk, Logging.COMMAND_PREVIEW_CHARS),
     )
-    result = await asyncio.to_thread(session.verify_chunk, request.chunk, request.timeout)
+    result, override = await asyncio.to_thread(
+        run_with_memory_hooks,
+        lambda: session.verify_chunk(request.chunk, request.timeout),
+        session,
+        session_manager,
+    )
     report = result.get("report", {}) or {}
     commands = [
         CommandStatus(
@@ -82,6 +110,12 @@ async def verify_chunk(request: ChunkVerifyRequest, session: LeasedSession):
     used_sorry = bool(report.get("used_sorry", False))
     stuck_line = next((c.line for c in commands if c.status == "running"), None)
     success = (not timed_out) and len(commands) > 0 and all(c.status == "ok" for c in commands)
+    error_text = report.get("error") or first_error_text(report.get("commands"))
+    if override:
+        success, error_text = False, PROVER_DIED_TEXT
+    error_kind = kind_for(
+        error_text, session_manager, timed_out=timed_out, override=override
+    )
     logger.info(
         "verify_chunk done success=%s proof_open=%s pending_qed=%s used_sorry=%s timed_out=%s commands=%s stuck_line=%s",
         success, proof_open, pending_qed, used_sorry, timed_out, len(commands), stuck_line,
@@ -95,12 +129,17 @@ async def verify_chunk(request: ChunkVerifyRequest, session: LeasedSession):
         stuck_line=stuck_line,
         commands=commands,
         execution_time=float(result.get("execution_time", 0.0) or 0.0),
-        error=report.get("error"),
+        error=PROVER_DIED_TEXT if override else report.get("error"),
+        error_kind=error_kind,
     )
 
 
 @router.put("/api/v1/sessions/{session_id}/document", response_model=DocumentLoadResponse)
-async def load_document(request: DocumentLoadRequest, session: LeasedSession):
+async def load_document(
+    request: DocumentLoadRequest,
+    session: LeasedSession,
+    session_manager: SessionManagerDep,
+):
     """Replace the session's whole document with ``text`` (the file-sync primitive
     for read-only, file-mirroring clients). Resets the backend document and all
     session bookkeeping, then re-enters the theory and issues the text as one
@@ -112,21 +151,35 @@ async def load_document(request: DocumentLoadRequest, session: LeasedSession):
         request.report,
         preview(request.text, Logging.COMMAND_PREVIEW_CHARS),
     )
-    result = await asyncio.to_thread(
-        session.load_document, request.text, request.thy_name, request.imports, request.timeout, request.report
+    result, override = await asyncio.to_thread(
+        run_with_memory_hooks,
+        lambda: session.load_document(
+            request.text,
+            request.thy_name,
+            request.imports,
+            request.timeout,
+            request.report,
+        ),
+        session,
+        session_manager,
     )
     logger.info(
         "load_document finished success=%s execution_time=%s",
         getattr(result, "success", False),
         float(getattr(result, "execution_time", 0.0) or 0.0),
     )
+    success = bool(getattr(result, "success", False)) and override is None
+    error = PROVER_DIED_TEXT if override else getattr(result, "error", None)
     return DocumentLoadResponse(
-        success=getattr(result, "success", False),
+        success=success,
         theory=session.entered_thy,
         output=getattr(result, "output", None),
-        error=getattr(result, "error", None),
+        error=error,
+        error_kind=kind_for(error, session_manager, override=override),
         execution_time=float(getattr(result, "execution_time", 0.0) or 0.0),
-        report=(session.last_chunk_report or {}).get("report") if request.report else None,
+        report=(
+            (session.last_chunk_report or {}).get("report") if request.report else None
+        ),
     )
 
 
@@ -145,6 +198,7 @@ async def get_last_report(session: LeasedSession):
 async def enter_theory(
     theory_name: str,
     session: LeasedSession,
+    session_manager: SessionManagerDep,
     request: Optional[EnterTheoryRequest] = None,
 ):
     # The name is spliced into a generated `theory <name> imports … begin` header
@@ -157,7 +211,21 @@ async def enter_theory(
         raise HTTPException(status_code=422, detail=str(e))
     imports = request.imports if request else None
     logger.info("entering theory theory_name=%s imports=%s", theory_name, imports)
-    await asyncio.to_thread(lambda: session.enter_thy(theory_name, imports=imports))
+    _, override = (
+        await asyncio.to_thread(  # the hook is the first chance to learn the ML pid
+            run_with_memory_hooks,
+            lambda: session.enter_thy(theory_name, imports=imports),
+            session,
+            session_manager,
+        )
+    )
+    if override:
+        return {
+            "success": False,
+            "message": PROVER_DIED_TEXT,
+            "imports": imports,
+            "error_kind": override,
+        }
     return {"success": True, "message": f"Entered theory {theory_name}", "imports": imports}
 
 

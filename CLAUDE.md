@@ -267,6 +267,9 @@ ISABELLE_ENABLE_MEMORY_MANAGEMENT=true  # Enable Python/cgroup memory management
 ISABELLE_MEMORY_PRESSURE_THRESHOLD=85.0 # Block new sessions above this used% (default 85.0)
 ISABELLE_MEMORY_MIN_AVAILABLE_MB=512    # Also block if available memory below this (default 512)
 ISABELLE_MEMORY_WARNING_THRESHOLD=70.0  # X-Memory-State header: warning from this used% (critical = refusing)
+ISABELLE_MEMORY_PROBE_MIN_INTERVAL_S=15 # Per-session ML memory probe at most once per interval (request path)
+ISABELLE_MEMORY_FACTS_LIST_CAP=50       # Max evictable/leased rows in memory 503 bodies and GET /api/v1/memory
+ISABELLE_MEMORY_ERROR_PATTERNS="Out of memory|Run out of store|exception Size raised"  # error_kind="memory" matches
 ISABELLE_MEMORY_FALLBACK_SYSTEM_MB=4096 # Limit used when cgroup + MemTotal unreadable (default 4096)
 
 # Isabelle location (gateway + heap pool resolve $ISABELLE_HOME/bin/isabelle; container default)
@@ -307,6 +310,15 @@ The server exposes Prometheus metrics and k8s-style health probes (no extra flag
   and current-state gauges `isabelle_pool_server_sessions_{active,busy,leased}`,
   `isabelle_pool_server_memory_{used,limit}_bytes`, `isabelle_pool_server_memory_pressure_pct`,
   `isabelle_pool_server_gateway_up` (from `SessionManager.get_lru_info()`).
+- `GET /api/v1/memory` — memory facts for clients: `state` (ok/warning/critical), the snapshot
+  (`used_mb`, `limit_mb`, `available_mb`, `pressure_pct`, `source`), `builds_in_flight`,
+  `evictable`/`leased` session rows (capped, by RSS) and every session's expiry
+  (`idle_expires_at`, `lease_expires_at`, `expires_in_s`) and attributed memory (`rss_mb` of its
+  ML process + children, `heap_mb` = Poly/ML `size_heap`). Never lease ids, never advice: the MCP
+  words the advice. Every response also carries the `X-Memory-State` header (cached tier, no I/O),
+  every 503 body carries `error` (`memory_pressure` with the same facts, `pool_full`,
+  `gateway_unavailable`) plus `Retry-After`, and step/chunk/document results carry `error_kind`
+  (`memory` | `prover_died` | null). Leased sessions are never evicted (owner decision).
 - `GET /healthz` — liveness (always 200 if the process serves).
 - `GET /readyz` — readiness: 200 when the gateway is alive, else 503.
 - `GET /` — human-readable health summary (sessions, memory, `gateway_alive`).

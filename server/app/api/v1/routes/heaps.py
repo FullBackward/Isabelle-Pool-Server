@@ -18,7 +18,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query
 
 from server.app.core.logging import get_logger, logging_context
 from server.app.dependencies import get_heap_pool, get_session_manager
-from server.app.services.heap_pool import HeapNotFound
+from server.app.services.heap_pool import HeapBuildInProgress, HeapNotFound
 from server.app.services.session_manager import SessionManager
 
 from ..deps import HeapPoolDep, require_admin_token, safe_segment
@@ -49,6 +49,14 @@ async def build_heap(
     503 (Retry-After) while the memory gate has no room for a build process."""
     with logging_context():
         logger.info("heap build requested group=%s project=%s", request.task_group, request.project)
+        # Order: schema validation (done) -> already building (409) -> memory
+        # gate (503) -> build, so an invalid or duplicate request keeps its
+        # real answer under pressure (review eb85b86 S5).
+        existing = heap_pool.get(request.task_group, request.project)
+        if existing and existing.get("status") == "building":
+            raise HeapBuildInProgress(
+                f"build already in progress for {request.task_group}:{request.project}"
+            )
         await asyncio.to_thread(session_manager.require_memory_for_build, "heap")
         entry = await heap_pool.build(
             request.task_group, request.project, request.session_name,

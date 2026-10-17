@@ -24,6 +24,10 @@ class ClientBase:
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self.client = httpx.AsyncClient(base_url=self.base_url, timeout=self.timeout)
+        # Memory tier the server reported on the LAST response (``X-Memory-State``:
+        # ok / warning / critical; "unknown" before any call). MCP servers read
+        # it after each call to remind their agent — no polling needed.
+        self.last_memory_state: str = "unknown"
 
     async def __aenter__(self) -> "ClientBase":
         return self
@@ -50,6 +54,9 @@ class ClientBase:
             headers=headers,
             timeout=timeout if timeout is not None else self.timeout,
         )
+        state = response.headers.get("X-Memory-State")
+        if state:
+            self.last_memory_state = state
         return response
 
     @staticmethod
@@ -66,3 +73,8 @@ class ClientBase:
 
     async def health(self) -> dict[str, Any]:
         return await self._get_json("/")
+
+    async def memory_status(self) -> dict[str, Any]:
+        """Memory facts (``GET /api/v1/memory``): state, memory numbers, builds
+        in flight, evictable / leased rows and every session's expiry + rss."""
+        return await self._get_json("/api/v1/memory")

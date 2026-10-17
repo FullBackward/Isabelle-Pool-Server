@@ -133,6 +133,9 @@ def pressured_client():
     sm = _manager(admit=False)
 
     class _StubHeapPool:
+        def get(self, task_group, project):  # the route checks "already building" first
+            return None
+
         def __getattr__(self, name):
             raise AssertionError(f"heap build must not start: heap_pool.{name} called")
 
