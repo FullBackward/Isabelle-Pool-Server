@@ -34,6 +34,7 @@ sig
   val global_facts: Toplevel.state -> int -> string list
   val proof_state: Toplevel.state -> string list
   val sledgehammer_results: int -> int -> Toplevel.state -> string list
+  val mem_stats: unit -> string list
 end;
 
 structure Repl : REPL =
@@ -143,6 +144,29 @@ fun sledgehammer_results timeout_s i state =
         val extra = if message = "" then [] else [clean_string message];
       in ! collected @ extra end);
 
+(* === Memory facts of THIS ML process, one "key=value" line each: its OS pid
+   and the Poly/ML runtime statistics (size_heap, size_heap_free_last_GC,
+   size_heap_free_last_full_GC, ...; the same source Isabelle's own
+   ML_Statistics monitor reads). The server maps the pid to the process's
+   resident size in /proc; the heap figures come straight from the runtime.
+   The pid is read from /proc/self: PolyML.ml_pid and Posix are hidden from
+   user-level ML by the sanitized name space (only Pure's bootstrap sees
+   them), while readLink on /proc/self is not. Where /proc is absent (a
+   non-Linux host) the pid line is simply omitted. === *)
+
+fun mem_stats () =
+  let
+    fun proc_stat_pid () =
+      hd (String.tokens Char.isSpace (File.read (Path.explode "/proc/self/stat")));
+    val pid_lines =
+      (case try OS.FileSys.readLink "/proc/self" of
+        SOME pid => ["pid=" ^ pid]
+      | NONE =>
+          (case try proc_stat_pid () of
+            SOME pid => ["pid=" ^ pid]
+          | NONE => []));
+  in pid_lines @ map (fn (k, v) => k ^ "=" ^ v) (ML_Statistics.get ()) end;
+
 end;
 
 (* === Query_Operation registrations ===
@@ -192,3 +216,7 @@ val _ =
         val timeout_s = the_default 30 (Int.fromString (nth args 0));
         val i = the_default 1 (Int.fromString (nth args 1));
       in List.app writeln_result (Repl.sledgehammer_results timeout_s i st) end);
+
+val _ =
+  Query_Operation.register {name = "isabelle_pool_server_mem", pri = 0}
+    (fn {writeln_result, ...} => List.app writeln_result (Repl.mem_stats ()));

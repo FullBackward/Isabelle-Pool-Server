@@ -49,6 +49,11 @@ object Backend_Probes {
   /** Grace added to the Isabelle-level sledgehammer timeout (the ATP budget)
    *  before the overlay is abandoned: prover start-up and result relay. */
   val SLEDGEHAMMER_GRACE_MS: Long = 30000L
+  /** Budget for the memory probe (`mem_stats`): it runs in the request path
+   *  after ordinary commands, so a distressed prover must cost at most this
+   *  much extra, not the 20 s subgoal budget. */
+  val MEM_BUDGET_MS: Long =
+    sys.env.get("ISABELLE_REPL_MEM_TIMEOUT").flatMap(_.toLongOption).getOrElse(5L) * 1000L
 }
 
 trait Backend_Probes { this: ReplBackend =>
@@ -74,6 +79,33 @@ trait Backend_Probes { this: ReplBackend =>
         else if (errors.nonEmpty) error(s"$print_fn failed: ${errors.head}")
         else content
     }
+
+  /** The ML process pid seen by the memory probe, kept once known so later
+   *  answers (and answers given while the overlay cannot run) still carry it. */
+  @volatile private var cached_ml_pid: Option[String] = None
+
+  /** Memory facts of this session's ML process (REPL.ML `Repl.mem_stats`):
+   *  `pid` (from /proc/self; absent on non-Linux hosts) and the Poly/ML
+   *  runtime statistics (`size_heap`, `size_heap_free_last_GC`, ...), as a
+   *  key -> value map. Empty before the first theory command — the overlay
+   *  needs a host command — except for a previously seen pid. Hosted before a
+   *  trailing `end` like the fact queries. Raises on budget expiry
+   *  (`MEM_BUDGET_MS`), which the Python side counts as a failed sample. */
+  def mem_stats(): java.util.Map[String, String] = {
+    val lines =
+      if (!repl_session.current_thy_begun) List()
+      else state_query("isabelle_pool_server_mem_query", Nil, MEM_BUDGET_MS,
+             skip_end = repl_session.current_thy_ended)
+    val facts = new java.util.LinkedHashMap[String, String]()
+    for (line <- lines) {
+      val i = line.indexOf('=')
+      if (i > 0) facts.put(line.substring(0, i), line.substring(i + 1))
+    }
+    val seen_pid: String | Null = facts.get("pid")
+    if (seen_pid != null) cached_ml_pid = Some(seen_pid)
+    else cached_ml_pid.foreach(pid => facts.put("pid", pid))
+    facts
+  }
 
   /** Pretty-printed open subgoals of the current proof state ([] when not in a
    *  proof — including after a trailing theory `end`, which closes the theory
