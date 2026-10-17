@@ -270,6 +270,9 @@ ISABELLE_MEMORY_WARNING_THRESHOLD=70.0  # X-Memory-State header: warning from th
 ISABELLE_MEMORY_PROBE_MIN_INTERVAL_S=15 # Per-session ML memory probe at most once per interval (request path)
 ISABELLE_MEMORY_FACTS_LIST_CAP=50       # Max evictable/leased rows in memory 503 bodies and GET /api/v1/memory
 ISABELLE_MEMORY_ERROR_PATTERNS="Out of memory|Run out of store|exception Size raised"  # error_kind="memory" matches
+ISABELLE_MEMORY_SESSION_ESTIMATES="HOL=2048,HOL-Library=3072,HOL-Analysis=4096"  # budget admission: new-session size by field
+ISABELLE_MEMORY_BUILD_ESTIMATE_MB=4096  # budget admission: one `isabelle build` process
+ISABELLE_MEMORY_WARNING_SWEEP_INTERVAL_S=10  # sweep interval while warning/critical (normal: ISABELLE_CLEANUP_INTERVAL)
 ISABELLE_MEMORY_FALLBACK_SYSTEM_MB=4096 # Limit used when cgroup + MemTotal unreadable (default 4096)
 
 # Isabelle location (gateway + heap pool resolve $ISABELLE_HOME/bin/isabelle; container default)

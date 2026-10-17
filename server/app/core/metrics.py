@@ -35,7 +35,9 @@ sessions_evicted = Counter(
 pool_exhausted = Counter(
     "isabelle_pool_server_pool_exhausted_total",
     "Session creations refused with 503",
-    ["reason"],  # memory | all_busy | memory_build (bigstep/heap build refused)
+    [
+        "reason"
+    ],  # memory | all_busy | memory_build (build refused) | memory_heavy (sledgehammer at critical)
 )
 sessions_force_closed = Counter(
     "isabelle_pool_server_sessions_force_closed_total",

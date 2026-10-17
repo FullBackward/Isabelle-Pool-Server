@@ -35,6 +35,8 @@ class SessionManagerHelpersMixin:
     max_lease_age: float
     rss_totals: Callable[..., Dict[str, float]]
     sample_sessions_rss: Callable[..., Dict[str, int]]
+    pick_evictable_locked: Callable[..., Any]
+    cleanup_interval: float
 
     # ----- gateway lifecycle / recovery -----------------------------------
     def _where(self, func_name: str) -> str:
@@ -154,12 +156,13 @@ class SessionManagerHelpersMixin:
 
     # ----- memory-pressure relief -----------------------------------------
     def _pop_oldest_idle_locked(self) -> Optional[Tuple[uuid.UUID, _Isabelle_Session]]:
-        """Pop the oldest idle (not in_use, not leased) session. Caller holds _lock."""
-        for sid in self._lru:
-            s = self._lru[sid]
-            if not s.in_use and not s.leased:
-                return sid, self._lru.pop(sid)
-        return None
+        """Pop the eviction candidate under memory pressure: the LARGEST idle
+        unleased session when RSS is known (batch 3), else the oldest. Leased
+        sessions are never touched (D3). Caller holds _lock."""
+        sid = self.pick_evictable_locked()
+        if sid is None:
+            return None
+        return sid, self._lru.pop(sid)
 
     def _relieve_memory_pressure(self, where: str):
         """Evict idle LRU sessions oldest-first while under memory pressure.
@@ -237,9 +240,18 @@ class SessionManagerHelpersMixin:
                 entries.append(entry)
         return entries
 
+    def sweep_interval(self) -> float:
+        """Tiered (batch 3): the normal interval at ok/unknown, the short
+        WARNING_SWEEP_INTERVAL_S while warning/critical so attribution,
+        dead-prover discard and relief react faster."""
+        state = getattr(self.memory, "last_state", "unknown")
+        if state in ("warning", "critical"):
+            return min(self.cleanup_interval, Memory.WARNING_SWEEP_INTERVAL_S)
+        return self.cleanup_interval
+
     async def cleanup_idle_sessions(self) -> None:
         while True:
-            await asyncio.sleep(self.cleanup_interval)
+            await asyncio.sleep(self.sweep_interval())
             try:
                 await self.cleanup_once()
             except Exception:  # the sweep must never die

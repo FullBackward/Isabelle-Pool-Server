@@ -9,6 +9,7 @@ gets the resolved, lease-checked session with the log context already set.
 Admin gating and path-segment validation live here too so the three
 destructive heap endpoints and the admin listing share one implementation.
 """
+import asyncio
 from contextlib import asynccontextmanager
 from typing import Annotated, AsyncIterator, Optional
 
@@ -82,6 +83,11 @@ async def sledgehammer_slot(session_manager: SessionManager) -> AsyncIterator[No
     """Bound concurrent sledgehammers so a burst cannot OOM-kill the gateway
     (ISSUES Bug 6). Extra requests queue here (backpressure) rather than
     oversubscribing; the in-flight gauge covers queue time as well."""
+    # Batch 3: at the critical tier heavy work is refused (503 with the facts);
+    # light calls still proceed. Never at warning (plan-review answer 4).
+    refuse = getattr(session_manager, "refuse_heavy_if_critical", None)
+    if refuse is not None:
+        await asyncio.to_thread(refuse, "sledgehammer")
     sem = getattr(session_manager, "sledgehammer_sem", None)
     metrics.sledgehammer_inflight.inc()
     try:

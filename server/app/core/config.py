@@ -163,6 +163,23 @@ class Memory:
     )
     # Cap on the evictable / leased session lists in 503 bodies and /memory.
     FACTS_LIST_CAP: Final = int(os.getenv("ISABELLE_MEMORY_FACTS_LIST_CAP", "50"))
+    # Budget admission (batch 3): expected resident size of a NEW session by
+    # Isabelle session/field ("HOL=2048,HOL-Analysis=4096"; unknown fields use
+    # SESSION_ESTIMATE_MB), and of one `isabelle build` process. A create or
+    # build is admitted only if used + reserved (in-flight creates and builds)
+    # + estimate stays under the pressure threshold and the available floor.
+    SESSION_ESTIMATES: Final = os.getenv(
+        "ISABELLE_MEMORY_SESSION_ESTIMATES",
+        "HOL=2048,HOL-Library=3072,HOL-Analysis=4096",
+    )
+    BUILD_ESTIMATE_MB: Final = int(
+        os.getenv("ISABELLE_MEMORY_BUILD_ESTIMATE_MB", "4096")
+    )
+    # Sweep interval while the tier is warning/critical (the normal interval is
+    # ISABELLE_CLEANUP_INTERVAL).
+    WARNING_SWEEP_INTERVAL_S: Final = float(
+        os.getenv("ISABELLE_MEMORY_WARNING_SWEEP_INTERVAL_S", "10")
+    )
     # Substrings ("|"-separated, case-insensitive) of an error message that mean
     # the ML runtime ran out of memory (success_checker.classify_error_kind).
     ERROR_PATTERNS: Final = tuple(

@@ -49,6 +49,32 @@ def session_facts_row(session: Any, now: float) -> Dict[str, Any]:
     }
 
 
+def _parse_estimates(spec: str) -> Dict[str, int]:
+    """``"HOL=2048,HOL-Analysis=4096"`` -> {field: MB}; bad entries are skipped."""
+    out: Dict[str, int] = {}
+    for item in spec.split(","):
+        name, _, value = item.partition("=")
+        name, value = name.strip(), value.strip()
+        if not name or not value:
+            continue
+        try:
+            out[name] = int(value)
+        except ValueError:
+            continue
+    return out
+
+
+SESSION_ESTIMATES_MB: Dict[str, int] = _parse_estimates(Memory.SESSION_ESTIMATES)
+
+
+def estimate_session_mb(field: Optional[str]) -> int:
+    """Expected resident size of a new session on ``field`` (static table,
+    plan-review answer 5; SESSION_ESTIMATE_MB for unknown fields)."""
+    if field and field in SESSION_ESTIMATES_MB:
+        return SESSION_ESTIMATES_MB[field]
+    return Memory.SESSION_ESTIMATE_MB
+
+
 def _capped(rows: List[Dict[str, Any]], cap: int) -> Tuple[List[Dict[str, Any]], bool]:
     rows = sorted(rows, key=lambda r: r.get("rss_mb") or 0.0, reverse=True)
     return rows[:cap], len(rows) > cap
@@ -65,6 +91,69 @@ class MemoryPolicyMixin:
     _lock: threading.Lock
     build_verifier: Any
     heap_pool: Any = None  # set by the app lifespan (builds-in-flight facts)
+    creates_in_flight: int = 0  # backends being created right now (budget reservation)
+
+    # ----- budget admission (batch 3) ---------------------------------------
+    def reserved_bytes(self) -> int:
+        """Memory the work already admitted but not yet resident will take:
+        in-flight session creates (by field estimate... one generic estimate,
+        the field is not tracked per create) and running builds."""
+        builds = self.builds_in_flight()
+        creates = max(0, int(getattr(self, "creates_in_flight", 0)))
+        mb = (
+            creates * Memory.SESSION_ESTIMATE_MB
+            + sum(builds.values()) * Memory.BUILD_ESTIMATE_MB
+        )
+        return mb * 1024 * 1024
+
+    def admits_session(self, snapshot: MemorySnapshot, field: Optional[str]) -> bool:
+        """Budget rule for a new session: used + reserved + estimate(field)
+        under the threshold and the floor (plus the plain rule)."""
+        if not self.memory.can_admit(snapshot):
+            return False
+        extra = self.reserved_bytes() + estimate_session_mb(field) * 1024 * 1024
+        return self.memory.can_admit(snapshot, extra_bytes=extra)
+
+    def admits_build(self, snapshot: MemorySnapshot) -> bool:
+        """Budget rule for one more `isabelle build` process."""
+        if not self.memory.can_admit(snapshot):
+            return False
+        extra = self.reserved_bytes() + Memory.BUILD_ESTIMATE_MB * 1024 * 1024
+        return self.memory.can_admit(snapshot, extra_bytes=extra)
+
+    def refuse_heavy_if_critical(self, kind: str) -> None:
+        """Refuse heavy work (sledgehammer) while the tier is critical
+        (plan-review answer 4: critical only, never warning). Light calls
+        proceed. Raises MemoryPressure -> 503 with the facts."""
+        if not self.memory_management_enabled:
+            return
+        snap = self.memory.read()
+        if self.memory.state_for(snap) != "critical":
+            return
+        metrics.pool_exhausted.labels("memory_heavy").inc()
+        facts = self.memory_facts(snap)
+        raise MemoryPressure(
+            f"cannot start {kind}: memory is critical "
+            f"({snap.pressure_pct:.0f}%, {snap.available_mb:.0f}MB available). "
+            f"Release idle sessions or try again later.",
+            facts=facts,
+            retry_after_s=int(facts["retry_after_s"]),
+        )
+
+    # ----- size-aware eviction (batch 3) -------------------------------------
+    def pick_evictable_locked(self) -> Optional[Any]:
+        """Session id to evict under pressure: among idle UNLEASED sessions,
+        the largest by attributed RSS when any is known, else the oldest
+        (LRU). Leased sessions are never candidates (D3). Caller holds _lock."""
+        candidates = [
+            (sid, s) for sid, s in self._lru.items() if not s.in_use and not s.leased
+        ]
+        if not candidates:
+            return None
+        sized = [(sid, s) for sid, s in candidates if getattr(s, "rss_bytes", None)]
+        if sized:
+            return max(sized, key=lambda p: p[1].rss_bytes or 0)[0]
+        return candidates[0][0]
 
     def discard_dead(self, session_id: Any, reason: str = "prover_died") -> bool:
         """Remove a session whose ML process is gone (plan-review B2).
@@ -130,6 +219,7 @@ class MemoryPolicyMixin:
         }
 
     def builds_in_flight(self) -> Dict[str, int]:
+        """Running big-step builds and heap builds (facts + reservations)."""
         heap = 0
         pool = getattr(self, "heap_pool", None)
         if pool is not None:
@@ -167,7 +257,13 @@ class MemoryPolicyMixin:
             "retry_after_s": 5,
             "builds_in_flight": self.builds_in_flight(),
             "sledgehammer_inflight": int(metrics.sledgehammer_inflight_value()),
-            "external_pressure": None,  # batch 3
+            "external_pressure": snap.external_pressure,
+            "host_available_mb": (
+                None
+                if snap.host_available_bytes is None
+                else round(snap.host_available_bytes / (1024.0 * 1024.0), 1)
+            ),
+            "reserved_mb": round(self.reserved_bytes() / (1024.0 * 1024.0), 1),
         }
         if include_sessions:
             with self._lock:
@@ -260,7 +356,7 @@ class MemoryPolicyMixin:
         if not self.memory_management_enabled:
             return
         snap = self.memory.read()
-        if self.memory.can_admit(snap):
+        if self.admits_build(snap):
             return
         metrics.pool_exhausted.labels("memory_build").inc()
         facts = self.memory_facts(snap)

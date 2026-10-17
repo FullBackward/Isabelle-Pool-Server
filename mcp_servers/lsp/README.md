@@ -107,6 +107,13 @@ ISABELLE_MCP_LSP_TRANSPORT=streamable-http PYTHONPATH=. python -m mcp_servers.ls
   server's abandoned-lease reaper if the MCP dies.
 - No completions / code actions / widgets yet.
 
+## Module layout
+
+`server.py` is the import point for the shared objects (`mcp`, `pool`, `TOOLS`, the `tool` /
+`synced_tool` decorators); `app.py` holds the file/scratch/heap tools and `main()`,
+`memory_tools.py` the memory tools. New code imports from `server.py`, not through `app.py`
+(which only re-exports for compatibility).
+
 ## Memory protocol
 
 The server never evicts a leased session (bindings and scratch sessions are leased — they are

@@ -356,6 +356,8 @@ async def isabelle_multi_attempt(
             except httpx.HTTPStatusError as e:
                 # A memory 503 (the scratch create is the gated call) becomes the
                 # structured candidate: error=memory_pressure + advice (review d2bc679 B1).
+                # owner=None: this server is single-agent, so "owned" means every entry;
+                # revisit here if per-connection ownership (the stepwise model) arrives.
                 return {
                     "candidate": candidate,
                     **translate_http_error(
@@ -410,7 +412,9 @@ async def isabelle_run_code(
             "used_sorry": rep.get("used_sorry"),
             "failed": bad,
         })
-    except httpx.HTTPStatusError as e:
+    except (
+        httpx.HTTPStatusError
+    ) as e:  # owner=None: single-agent server (see multi_attempt)
         return _j(
             {
                 "success": False,

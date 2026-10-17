@@ -206,11 +206,13 @@ class SessionManager(SessionManagerHelpersMixin, MemoryPolicyMixin):
                 # retry briefly before refusing, so a close immediately followed
                 # by a create does not 503 on a stale snapshot.
                 retries = Memory.ADMISSION_RETRIES
-                while not self.memory.can_admit(snap) and retries > 0:
+                while not self.admits_session(snap, normalized_field) and retries > 0:
                     retries -= 1
                     await asyncio.sleep(Memory.ADMISSION_RETRY_DELAY_S)
                     snap = await asyncio.to_thread(self._relieve_memory_pressure, where)
-                if not self.memory.can_admit(snap):
+                # Budget rule (batch 3): used + reserved in-flight work + the
+                # field's estimated size must stay under the threshold.
+                if not self.admits_session(snap, normalized_field):
                     raise self.create_refused(
                         where, snap
                     )  # MemoryPressure: 503 + facts
@@ -240,10 +242,14 @@ class SessionManager(SessionManagerHelpersMixin, MemoryPolicyMixin):
                             session_dirs=java_dirs,
                         )
 
-                raw_backend = await asyncio.wait_for(
-                    asyncio.to_thread(_create_backend),
-                    timeout=Timeouts.SESSION_CREATE,
-                )
+                self.creates_in_flight += 1  # budget reservation until resident
+                try:
+                    raw_backend = await asyncio.wait_for(
+                        asyncio.to_thread(_create_backend),
+                        timeout=Timeouts.SESSION_CREATE,
+                    )
+                finally:
+                    self.creates_in_flight -= 1
             except TimeoutError:
                 # asyncio.TimeoutError alias (3.11+): the request must not
                 # outlive a wedged gateway — fail fast with a clean error.

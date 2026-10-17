@@ -62,6 +62,13 @@ class MemorySnapshot:
     used_bytes: int
     limit_bytes: int
     source: str = SOURCE_FALLBACK
+    # Host/VM MemAvailable when the figures above come from a cgroup (the VM
+    # that hosts the container); None when unreadable or already host-based.
+    host_available_bytes: Optional[int] = None
+    # True when the container itself is below the pressure threshold but the
+    # host/VM has less than the available floor left: something OUTSIDE this
+    # server holds the memory (batch 3, gap G8). None when undecidable.
+    external_pressure: Optional[bool] = None
 
     @property
     def available_bytes(self) -> int:
@@ -311,8 +318,23 @@ class MemoryMonitor:
 
     def read(self) -> MemorySnapshot:
         used = self._read_used()  # sets last_source
+        limit = self._read_limit()
+        host_available: Optional[int] = None
+        external: Optional[bool] = None
+        if self.last_source in (SOURCE_CGROUP_V2, SOURCE_CGROUP_V1):
+            host_available = _meminfo_fields("MemAvailable").get("MemAvailable")
+            if host_available is not None and limit > 0:
+                own_pressure = used / limit * 100.0
+                external = (
+                    own_pressure < self.pressure_threshold
+                    and host_available < self.min_available_bytes
+                )
         snap = MemorySnapshot(
-            used_bytes=used, limit_bytes=self._read_limit(), source=self.last_source
+            used_bytes=used,
+            limit_bytes=limit,
+            source=self.last_source,
+            host_available_bytes=host_available,
+            external_pressure=external,
         )
         self.last_snapshot = snap
         self.last_state = self.state_for(snap)
@@ -327,12 +349,25 @@ class MemoryMonitor:
             return STATE_WARNING
         return STATE_OK
 
-    def can_admit(self, snapshot: Optional[MemorySnapshot] = None) -> bool:
-        """True if there is room for another session under current pressure."""
+    def can_admit(
+        self, snapshot: Optional[MemorySnapshot] = None, extra_bytes: int = 0
+    ) -> bool:
+        """True if there is room for another session under current pressure.
+
+        ``extra_bytes`` (batch 3 budget admission) is what the candidate and
+        the work already in flight are expected to add: admission holds only
+        if usage INCLUDING it stays under the threshold and the floor. A
+        snapshot flagged ``external_pressure`` never admits.
+        """
         snap = snapshot if snapshot is not None else self.read()
+        if snap.external_pressure:
+            return False
+        if snap.limit_bytes <= 0:
+            return True
+        projected = snap.used_bytes + max(0, extra_bytes)
         return (
-            snap.pressure_pct < self.pressure_threshold
-            and snap.available_bytes > self.min_available_bytes
+            projected / snap.limit_bytes * 100.0 < self.pressure_threshold
+            and snap.limit_bytes - projected > self.min_available_bytes
         )
 
     def status_dict(self, snapshot: Optional[MemorySnapshot] = None) -> Dict[str, Any]:
@@ -344,4 +379,10 @@ class MemoryMonitor:
             "memory_pressure_pct": round(snap.pressure_pct, 1),
             "memory_source": snap.source,
             "memory_state": self.state_for(snap),
+            "external_pressure": snap.external_pressure,
+            "host_available_mb": (
+                None
+                if snap.host_available_bytes is None
+                else round(snap.host_available_bytes / (1024.0 * 1024.0), 1)
+            ),
         }

@@ -48,7 +48,7 @@ class _Monitor:
     def read(self):
         return self._snap
 
-    def can_admit(self, snapshot=None):
+    def can_admit(self, snapshot=None, extra_bytes=0):
         return self._admit
 
     def state_for(self, snapshot):

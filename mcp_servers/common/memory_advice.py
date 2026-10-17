@@ -150,6 +150,11 @@ def advise(  # pylint: disable=too-many-arguments
     note = _theory_note(owned, tools)
     if note:
         advice.append(note)
+    if not any(a.startswith(("Release", "You hold")) for a in advice):
+        advice.append(
+            f"Retry in {retry} s; if it keeps failing, tell the user the prover server "
+            f"is out of memory ({tools.memory_status} shows the numbers)."
+        )
     escalate = (
         failures >= 2
         or bool(others["external_pressure"])
@@ -160,11 +165,6 @@ def advise(  # pylint: disable=too-many-arguments
             "If it still fails, stop and tell the user: "
             + _others_text(others)
             + " — this agent cannot free that memory."
-        )
-    if not any(a.startswith(("Release", "You hold", "Retry")) for a in advice):
-        advice.append(
-            f"Retry in {retry} s; if it keeps failing, tell the user the prover server "
-            f"is out of memory ({tools.memory_status} shows the numbers)."
         )
     return advice
 
