@@ -15,7 +15,16 @@ from server.app.api.v1.router import router as api_router
 from server.app.core import metrics
 from server.app.core.config import API, Logging, Server
 from server.app.core.logging import get_logger, reset_logging_context, set_logging_context, setup_logging
-from server.app.errors import GatewayUnavailable, PoolExhausted, SessionBusyError, SessionError, SessionLeaseError, SessionNotFound, SessionStartError
+from server.app.errors import (
+    GatewayUnavailable,
+    MemoryPressure,
+    PoolExhausted,
+    SessionBusyError,
+    SessionError,
+    SessionLeaseError,
+    SessionNotFound,
+    SessionStartError,
+)
 from server.app.services.session_manager import SessionManager
 from server.app.services.heap_pool import HeapPool, HeapPoolError
 
@@ -34,6 +43,7 @@ async def lifespan(app: FastAPI):
         app.state.session_manager = sm
         # Heap pool (Stage 3): registry rebuilt from persisted manifests.
         app.state.heap_pool = HeapPool()
+        sm.heap_pool = app.state.heap_pool  # builds-in-flight facts for memory 503s
         # Expose pool/memory/gateway gauges on /metrics (reads sm.get_lru_info()).
         metrics.register_pool_collector(sm.get_lru_info)
         metrics.register_heap_collector(app.state.heap_pool.list)
@@ -101,6 +111,9 @@ async def request_logging_middleware(request: Request, call_next):
 
     duration_ms = round((time.time() - start) * 1000, 2)
     response.headers[Logging.REQUEST_HEADER_NAME] = request_id
+    # Memory tier on EVERY response (cached by the monitor; no file reads here),
+    # so clients can remind their agents without polling — owner decision D3.
+    response.headers["X-Memory-State"] = _memory_state(request)
     logger.info(
         "request completed %s %s status=%s duration_ms=%s",
         request.method,
@@ -112,6 +125,17 @@ async def request_logging_middleware(request: Request, call_next):
     return response
 
 
+def _memory_state(request: Request) -> str:
+    """The monitor's cached tier, or "unknown" before startup / with a stub."""
+    sm = getattr(request.app.state, "session_manager", None)
+    if sm is None:
+        return "unknown"
+    try:
+        return str(sm.memory.last_state)
+    except Exception:  # pylint: disable=broad-exception-caught
+        return "unknown"
+
+
 @app.exception_handler(SessionNotFound)
 async def handle_session_not_found(request: Request, exc: SessionNotFound):
     logger.warning("session not found on %s: %s", request.url.path, exc)
@@ -121,7 +145,14 @@ async def handle_session_not_found(request: Request, exc: SessionNotFound):
 @app.exception_handler(GatewayUnavailable)
 async def handle_gateway_unavailable(request: Request, exc: GatewayUnavailable):
     logger.error("gateway unavailable on %s: %s", request.url.path, exc)
-    return JSONResponse(status_code=503, content={"detail": str(exc) or "REPL gateway unavailable"})
+    return JSONResponse(
+        status_code=503,
+        content={
+            "detail": str(exc) or "REPL gateway unavailable",
+            "error": "gateway_unavailable",
+        },
+        headers={"Retry-After": "10"},
+    )
 
 
 @app.exception_handler(SessionStartError)
@@ -142,12 +173,28 @@ async def handle_session_busy_error(request: Request, exc: SessionBusyError):
     return JSONResponse(status_code=409, content={"detail": str(exc) or "Session is busy"})
 
 
+@app.exception_handler(MemoryPressure)
+async def handle_memory_pressure(request: Request, exc: MemoryPressure) -> JSONResponse:
+    """503 with the structured facts (plan §3.1): `error` = memory_pressure,
+    the snapshot, and the evictable / leased session rows (no lease ids).
+    Registered beside the PoolExhausted handler; FastAPI picks the most
+    specific class in the exception's MRO."""
+    logger.warning("memory pressure on %s: %s", request.url.path, exc)
+    body: dict[str, object] = {"detail": str(exc) or "memory pressure", "error": "memory_pressure"}
+    body.update(exc.facts)
+    return JSONResponse(
+        status_code=503, content=body, headers={"Retry-After": str(exc.retry_after_s)}
+    )
+
+
 @app.exception_handler(PoolExhausted)
 async def handle_pool_exhausted(request: Request, exc: PoolExhausted):
+    """Every 503 body carries `error` (plan §3.1a): a plain PoolExhausted is
+    the pool-full case (all sessions busy or leased)."""
     logger.warning("pool exhausted on %s: %s", request.url.path, exc)
     return JSONResponse(
         status_code=503,
-        content={"detail": str(exc) or "Session pool exhausted"},
+        content={"detail": str(exc) or "Session pool exhausted", "error": "pool_full"},
         headers={"Retry-After": "5"},
     )
 

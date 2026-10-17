@@ -147,9 +147,10 @@ Suite of benchmarking scripts comparing server performance against local Isabell
 
 ### Environment Setup (Local, non-Docker)
 
-**Local Python lives in the conda environment named `Isabelle Pool Server`.** There is no
-bare `python` on PATH on the host — activate it first (`conda activate Isabelle Pool Server`,
-or run one-off commands with `conda run -n Isabelle Pool Server python ...`). Inside the
+**Local Python lives in the conda environment named `IsabelleGym`** (conda rejects spaces in
+environment names, so the project-name spelling cannot exist). There is no bare `python` on
+PATH on the host — activate it first (`conda activate IsabelleGym`, or run one-off commands
+with `conda run -n IsabelleGym python ...`). Inside the
 Docker container, Python is the image interpreter at `/usr/local/bin/python`
 (invoke with `docker exec isabelle-pool-server python ...`), not a conda env.
 
@@ -188,7 +189,7 @@ mypy server client mcp_servers evaluation    # Type check (strict=true, disable 
 ```
 
 **Tests** (`tests/`, ~380 unit tests, no Isabelle needed — they stub the backend/HTTP layer;
-run from the repo root, on the host with `conda run -n Isabelle Pool Server pytest` or inside the
+run from the repo root, on the host with `conda run -n IsabelleGym pytest` or inside the
 container with `docker exec isabelle-pool-server python -m pytest` — the image ships the runtime
 and `mcp` dependencies only, so run `docker exec isabelle-pool-server pip install pytest` once per
 container first):
@@ -249,6 +250,7 @@ ISABELLE_SESSION_THREADS=4         # Isabelle `threads` per session (default 4).
 ISABELLE_REPL_SETTLE_TIMEOUT=60    # Settle budget (s) for waits with no request timeout (rollback, vector_step)
 ISABELLE_REPL_SUBGOALS_TIMEOUT=20  # Overlay query budgets (s): subgoals/in_proof/state; also
 ISABELLE_REPL_LOCAL_FACTS_TIMEOUT=20        #   LOCAL_FACTS, GLOBAL_FACTS_TIMEOUT_MINUTES (5)
+ISABELLE_REPL_MEM_TIMEOUT=5        # Per-session memory probe budget (pid + Poly/ML heap stats)
 ISABELLE_TIMEOUT_BACKEND_GRACE=10  # Python-side future timeout = request timeout + this grace,
                                    # so the JVM's own timeout result (with rollback) arrives first
 
@@ -263,7 +265,8 @@ ISABELLE_ENABLE_MEMORY_MANAGEMENT=true  # Enable Python/cgroup memory management
 # evicts idle sessions before admitting new ones — refusing with 503 only if
 # nothing idle remains. See server/app/services/memory_monitor.py.
 ISABELLE_MEMORY_PRESSURE_THRESHOLD=85.0 # Block new sessions above this used% (default 85.0)
-ISABELLE_MEMORY_MIN_AVAILABLE_MB=256    # Also block if available memory below this (default 256)
+ISABELLE_MEMORY_MIN_AVAILABLE_MB=512    # Also block if available memory below this (default 512)
+ISABELLE_MEMORY_WARNING_THRESHOLD=70.0  # X-Memory-State header: warning from this used% (critical = refusing)
 ISABELLE_MEMORY_FALLBACK_SYSTEM_MB=4096 # Limit used when cgroup + MemTotal unreadable (default 4096)
 
 # Isabelle location (gateway + heap pool resolve $ISABELLE_HOME/bin/isabelle; container default)

@@ -14,8 +14,9 @@ monitor degrades to a safe fallback rather than raising into the request path.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 from server.app.core.config import Memory
 from server.app.core.logging import get_logger
@@ -44,6 +45,16 @@ SOURCE_CGROUP_V2 = "cgroup_v2"
 SOURCE_CGROUP_V1 = "cgroup_v1"
 SOURCE_HOST = "host"
 SOURCE_FALLBACK = "fallback"
+
+# Run-time memory tiers. "critical" = the admission rule refuses; "warning" =
+# above Memory.WARNING_THRESHOLD; "unknown" = no reading taken yet.
+STATE_OK = "ok"
+STATE_WARNING = "warning"
+STATE_CRITICAL = "critical"
+STATE_UNKNOWN = "unknown"
+
+# Process table root (overridden by tests with a fake tree).
+_PROC_ROOT = "/proc"
 
 
 @dataclass(frozen=True)
@@ -134,15 +145,93 @@ def _host_mem_used_bytes() -> Optional[int]:
     return max(0, fields["MemTotal"] - fields["MemAvailable"])
 
 
+def proc_alive(pid: int) -> bool:
+    """True while the process table lists ``pid`` (the ML process of a session)."""
+    return os.path.isdir(f"{_PROC_ROOT}/{pid}")
+
+
+def read_rss(pid: int) -> Optional[int]:
+    """Resident set size of one process in bytes (``VmRSS`` from
+    /proc/<pid>/status); None when the process is gone or unreadable."""
+    try:
+        with open(f"{_PROC_ROOT}/{pid}/status", "r", encoding="utf-8") as fh:
+            for line in fh:
+                if line.startswith("VmRSS:"):
+                    return int(line.split()[1]) * 1024
+    except (OSError, ValueError, IndexError):
+        return None
+    return None
+
+
+def _ppid_map() -> Dict[int, int]:
+    """pid -> parent pid for every process in the table (one scan)."""
+    result: Dict[int, int] = {}
+    try:
+        names = os.listdir(_PROC_ROOT)
+    except OSError:
+        return result
+    for name in names:
+        if not name.isdigit():
+            continue
+        try:
+            with open(f"{_PROC_ROOT}/{name}/stat", "r", encoding="utf-8") as fh:
+                stat = fh.read()
+        except OSError:
+            continue
+        # "pid (comm) state ppid ...": comm may hold spaces or parentheses, so
+        # split after the LAST ')' — then fields are [state, ppid, ...].
+        _, _, rest = stat.rpartition(")")
+        fields = rest.split()
+        if len(fields) >= 2:
+            try:
+                result[int(name)] = int(fields[1])
+            except ValueError:
+                continue
+    return result
+
+
+def rss_tree(root_pids: Iterable[int]) -> Dict[int, Optional[int]]:
+    """RSS in bytes of each root process PLUS its descendants (a session's poly
+    and, during sledgehammer, the ATP children it forks). None for a root that
+    is no longer in the process table — the "prover died" signal."""
+    roots = list(root_pids)
+    if not roots:
+        return {}
+    parents = _ppid_map()
+    children: Dict[int, List[int]] = {}
+    for pid, parent in parents.items():
+        children.setdefault(parent, []).append(pid)
+    out: Dict[int, Optional[int]] = {}
+    for root in roots:
+        if not proc_alive(root):
+            out[root] = None
+            continue
+        total, stack, seen = 0, [root], set()
+        while stack:
+            pid = stack.pop()
+            if pid in seen:
+                continue
+            seen.add(pid)
+            total += read_rss(pid) or 0
+            stack.extend(children.get(pid, []))
+        out[root] = total
+    return out
+
+
 class MemoryMonitor:
     """Reads container memory pressure and decides whether new sessions fit."""
 
     def __init__(self) -> None:
         self.pressure_threshold = Memory.PRESSURE_THRESHOLD
+        self.warning_threshold = Memory.WARNING_THRESHOLD
         self.min_available_bytes = Memory.MIN_AVAILABLE_MB * 1024 * 1024
         self.fallback_limit_bytes = Memory.FALLBACK_SYSTEM_MB * 1024 * 1024
         # Source of the most recent `used` reading (see SOURCE_* above).
         self.last_source: str = SOURCE_FALLBACK
+        # Most recent reading and its tier: what the X-Memory-State header and
+        # the cleanup sweep report without touching the files again.
+        self.last_snapshot: Optional[MemorySnapshot] = None
+        self.last_state: str = STATE_UNKNOWN
 
     @staticmethod
     def _read_inactive_file() -> int:
@@ -200,9 +289,21 @@ class MemoryMonitor:
 
     def read(self) -> MemorySnapshot:
         used = self._read_used()  # sets last_source
-        return MemorySnapshot(
+        snap = MemorySnapshot(
             used_bytes=used, limit_bytes=self._read_limit(), source=self.last_source
         )
+        self.last_snapshot = snap
+        self.last_state = self.state_for(snap)
+        return snap
+
+    def state_for(self, snapshot: MemorySnapshot) -> str:
+        """Tier of a snapshot: critical (admission refuses), warning (above
+        the warning threshold), else ok."""
+        if not self.can_admit(snapshot):
+            return STATE_CRITICAL
+        if snapshot.pressure_pct >= self.warning_threshold:
+            return STATE_WARNING
+        return STATE_OK
 
     def can_admit(self, snapshot: Optional[MemorySnapshot] = None) -> bool:
         """True if there is room for another session under current pressure."""
@@ -220,4 +321,5 @@ class MemoryMonitor:
             "memory_available_mb": round(snap.available_mb, 1),
             "memory_pressure_pct": round(snap.pressure_pct, 1),
             "memory_source": snap.source,
+            "memory_state": self.state_for(snap),
         }

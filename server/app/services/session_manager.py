@@ -210,13 +210,9 @@ class SessionManager(SessionManagerHelpersMixin, MemoryPolicyMixin):
                     await asyncio.sleep(Memory.ADMISSION_RETRY_DELAY_S)
                     snap = await asyncio.to_thread(self._relieve_memory_pressure, where)
                 if not self.memory.can_admit(snap):
-                    metrics.pool_exhausted.labels("memory").inc()
-                    raise PoolExhausted(
-                        f"{where}: cannot create session: memory pressure too high "
-                        f"({snap.pressure_pct:.0f}%, {snap.available_mb:.0f}MB available) "
-                        f"and no idle sessions to evict. Try again later or raise the "
-                        f"container memory limit / ISABELLE_MEMORY_PRESSURE_THRESHOLD."
-                    )
+                    raise self.create_refused(
+                        where, snap
+                    )  # MemoryPressure: 503 + facts
 
             session_id = uuid.uuid4()
 
@@ -359,14 +355,15 @@ class SessionManager(SessionManagerHelpersMixin, MemoryPolicyMixin):
         timeout: float,
     ):
         normalized_field = self._normalize_field(field)
-        # Off the loop: cgroup/meminfo file reads (Bug 16 rule for the request path).
-        await asyncio.to_thread(self.require_memory_for_build, "bigstep")
+        # The memory gate runs inside verify, only on a cache miss (a theory
+        # already verified is served from the cache even under pressure).
         return await self.build_verifier.verify(
             theory_name=theory_name,
             theory_text=theory,
             dependencies=dependencies,
             field=normalized_field,
             timeout=timeout,
+            admit=lambda: self.build_admit("bigstep"),
         )
 
     async def create_session(

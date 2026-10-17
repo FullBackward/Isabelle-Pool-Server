@@ -119,6 +119,10 @@ class Repl:
     SUBGOALS_TIMEOUT_S: Final       = int(os.getenv("ISABELLE_REPL_SUBGOALS_TIMEOUT", "20"))
     LOCAL_FACTS_TIMEOUT_S: Final    = int(os.getenv("ISABELLE_REPL_LOCAL_FACTS_TIMEOUT", "20"))
     GLOBAL_FACTS_TIMEOUT_MIN: Final = int(os.getenv("ISABELLE_REPL_GLOBAL_FACTS_TIMEOUT_MINUTES", "5"))
+    # Memory probe (REPL.ML isabelle_pool_server_mem) budget; the Scala side
+    # reads the same variable (Backend_Probes.MEM_BUDGET_MS). Small on purpose:
+    # the probe runs in the request path after ordinary commands.
+    MEM_TIMEOUT_S: Final = int(os.getenv("ISABELLE_REPL_MEM_TIMEOUT", "5"))
 
     GATEWAY_POLL_INTERVAL: Final    = float(os.getenv("ISABELLE_REPL_GATEWAY_POLL_INTERVAL", "0.1"))
     GATEWAY_POLL_TIMEOUT: Final     = float(os.getenv("ISABELLE_REPL_GATEWAY_POLL_TIMEOUT", "20.0"))
@@ -146,6 +150,29 @@ class Memory:
     # 512 (was 256): matches .env.example and the documented deployments.
     MIN_AVAILABLE_MB: Final = int(os.getenv("ISABELLE_MEMORY_MIN_AVAILABLE_MB", "512"))
     FALLBACK_SYSTEM_MB: Final   = int(os.getenv("ISABELLE_MEMORY_FALLBACK_SYSTEM_MB", "4096"))
+    # Run-time tiers (MemoryMonitor.state_for, reported as X-Memory-State on
+    # every response): "warning" from this used-% on, "critical" once the
+    # admission rule above refuses. Clients are REMINDED at warning/critical;
+    # leased sessions are never evicted (owner decision D3).
+    WARNING_THRESHOLD: Final = float(
+        os.getenv("ISABELLE_MEMORY_WARNING_THRESHOLD", "70.0")
+    )
+    # The per-session memory probe runs at most once per session per interval.
+    PROBE_MIN_INTERVAL_S: Final = float(
+        os.getenv("ISABELLE_MEMORY_PROBE_MIN_INTERVAL_S", "15")
+    )
+    # Cap on the evictable / leased session lists in 503 bodies and /memory.
+    FACTS_LIST_CAP: Final = int(os.getenv("ISABELLE_MEMORY_FACTS_LIST_CAP", "50"))
+    # Substrings ("|"-separated, case-insensitive) of an error message that mean
+    # the ML runtime ran out of memory (success_checker.classify_error_kind).
+    ERROR_PATTERNS: Final = tuple(
+        p
+        for p in os.getenv(
+            "ISABELLE_MEMORY_ERROR_PATTERNS",
+            "Out of memory|Run out of store|exception Size raised",
+        ).split("|")
+        if p
+    )
     # Capacity sanity check at startup (server/app/services/memory_policy.py):
     # expected resident size of one session, the hard per-process ML heap cap
     # (the same ISABELLE_ML_MAXHEAP_MB the entrypoint writes into the Isabelle

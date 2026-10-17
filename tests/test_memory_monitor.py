@@ -125,3 +125,83 @@ def test_status_dict_reports_source(tmp_path, monkeypatch):
         "memory_available_mb",
         "memory_pressure_pct",
     }
+
+
+# ------------------------------------------------- tiers + process attribution
+
+
+def _fake_proc(tmp_path, procs):
+    """procs: {pid: (ppid, rss_kb, comm)} -> a /proc look-alike directory."""
+    root = tmp_path / "proc"
+    root.mkdir()
+    for pid, (ppid, rss_kb, comm) in procs.items():
+        d = root / str(pid)
+        d.mkdir()
+        (d / "stat").write_text(
+            f"{pid} ({comm}) S {ppid} 1 1 0 -1 4194560 0 0 0 0 0 0 0 0\n"
+        )
+        (d / "status").write_text(
+            f"Name:\t{comm}\nVmRSS:\t   {rss_kb} kB\nThreads:\t1\n"
+        )
+    (root / "self").mkdir()  # non-numeric entries are ignored by the scan
+    return root
+
+
+def test_read_rss_and_proc_alive(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        mm, "_PROC_ROOT", str(_fake_proc(tmp_path, {41: (1, 2048, "poly")}))
+    )
+    assert mm.proc_alive(41) is True
+    assert mm.proc_alive(42) is False
+    assert mm.read_rss(41) == 2048 * 1024
+    assert mm.read_rss(42) is None
+
+
+def test_rss_tree_sums_descendants_and_flags_dead_roots(tmp_path, monkeypatch):
+    procs = {
+        1: (0, 100, "init"),
+        10: (1, 1000, "poly"),  # session A
+        11: (10, 300, "bash"),  # sledgehammer wrapper under A
+        12: (11, 500, "eprover (x)"),  # ATP under the wrapper; comm with space + parens
+        20: (1, 2000, "poly"),  # session B, no children
+        30: (1, 700, "java"),  # unrelated
+    }
+    monkeypatch.setattr(mm, "_PROC_ROOT", str(_fake_proc(tmp_path, procs)))
+    out = mm.rss_tree([10, 20, 99])
+    assert out[10] == (1000 + 300 + 500) * 1024
+    assert out[20] == 2000 * 1024
+    assert out[99] is None  # gone: the prover-died signal
+    assert mm.rss_tree([]) == {}
+
+
+def _snap(used_mb, limit_mb):
+    return mm.MemorySnapshot(
+        used_bytes=int(used_mb * 1024**2), limit_bytes=int(limit_mb * 1024**2)
+    )
+
+
+def test_state_tiers():
+    monitor = mm.MemoryMonitor()
+    monitor.pressure_threshold = 85.0
+    monitor.warning_threshold = 70.0
+    monitor.min_available_bytes = 512 * 1024**2
+    assert monitor.state_for(_snap(1000, 10000)) == mm.STATE_OK
+    assert monitor.state_for(_snap(7500, 10000)) == mm.STATE_WARNING
+    assert monitor.state_for(_snap(9000, 10000)) == mm.STATE_CRITICAL  # over 85 %
+    assert (
+        monitor.state_for(_snap(9600, 10000)) == mm.STATE_CRITICAL
+    )  # < 512 MB available
+
+
+def test_read_caches_snapshot_and_state(tmp_path, monkeypatch):
+    _absent_all(monkeypatch, tmp_path)
+    (tmp_path / "current").write_text(str(9 * GIB))
+    (tmp_path / "max").write_text(str(10 * GIB))
+    monkeypatch.setattr(mm, "_CG_V2_CURRENT", str(tmp_path / "current"))
+    monkeypatch.setattr(mm, "_CG_V2_MAX", str(tmp_path / "max"))
+    monitor = mm.MemoryMonitor()
+    assert monitor.last_state == mm.STATE_UNKNOWN
+    snap = monitor.read()
+    assert monitor.last_snapshot is snap
+    assert monitor.last_state == mm.STATE_CRITICAL
+    assert monitor.status_dict(snap)["memory_state"] == mm.STATE_CRITICAL

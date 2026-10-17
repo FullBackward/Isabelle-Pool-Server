@@ -6,7 +6,7 @@ import re
 import tempfile
 import time
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Awaitable, Callable, Dict, List, Optional
 
 from server.app.core.logging import get_logger
 from server.app.core.config import RegularExp
@@ -107,7 +107,10 @@ class BuildVerifier:
         self.isabelle_bin = isabelle_bin
         self.build_jobs_per_request = build_jobs_per_request
         self.temp_parent = temp_parent
+        self.max_concurrent_builds = max_concurrent_builds
         self._sem = asyncio.Semaphore(max_concurrent_builds)
+        # Builds currently running `isabelle build` (memory facts payload).
+        self.inflight = 0
         self._cache: Dict[str, BigStepExecuteResult] = {}
         self._locks: Dict[str, asyncio.Lock] = {}
 
@@ -119,7 +122,11 @@ class BuildVerifier:
         dependencies: Optional[List[str]] = None,
         field: Optional[str],
         timeout: float,
+        admit: Optional[Callable[[], Awaitable[None]]] = None,
     ) -> BigStepExecuteResult:
+        """Verify ``theory_text``; ``admit`` (the memory gate) is awaited only on
+        a cache miss, right before a build process would start — an already
+        verified theory is served from the cache even under memory pressure."""
         parent_session = (field or "HOL").strip() or "HOL"
         if dependencies:
             deps = normalize_theories(dependencies)
@@ -138,14 +145,20 @@ class BuildVerifier:
             if cached is not None:
                 return cached.model_copy(update={"execution_time": 0.0})
 
+            if admit is not None:
+                await admit()
             async with self._sem:
-                result = await self._run_build(
-                    theory_name=theory_name,
-                    theory_text=theory_text,
-                    parent_session=parent_session,
-                    dependency_key=dependency_key,
-                    timeout=timeout,
-                )
+                self.inflight += 1
+                try:
+                    result = await self._run_build(
+                        theory_name=theory_name,
+                        theory_text=theory_text,
+                        parent_session=parent_session,
+                        dependency_key=dependency_key,
+                        timeout=timeout,
+                    )
+                finally:
+                    self.inflight -= 1
 
             if result.success:
                 self._cache[theory_hash] = result

@@ -4,7 +4,32 @@ the server package 2026-09-27 so the server has no dependency outside itself).
 """
 from typing import List, Optional, Tuple
 
+from server.app.core.config import Memory
 from server.repl.src.python.repl_backend_gateway import ReplResult
+
+ERROR_KIND_MEMORY = "memory"
+ERROR_KIND_PROVER_DIED = "prover_died"
+
+
+def classify_error_kind(
+    error_text: Optional[str], *, memory_state: str = "unknown", timed_out: bool = False
+) -> Optional[str]:
+    """Label an error as ``"memory"`` when the ML runtime ran out of memory.
+
+    Matches the configured substrings (Memory.ERROR_PATTERNS, case-insensitive);
+    a bare ``Interrupt`` counts only while the server is at ``critical`` AND the
+    result is not already a timeout — a JVM wall-budget expiry (Bug 15) also
+    ends in an interrupted, rolled-back command and keeps its own
+    classification. Returns None for anything else (plain proof errors).
+    """
+    if not error_text or timed_out:
+        return None
+    lower = error_text.lower()
+    if any(p.lower() in lower for p in Memory.ERROR_PATTERNS):
+        return ERROR_KIND_MEMORY
+    if "interrupt" in lower and memory_state == "critical":
+        return ERROR_KIND_MEMORY
+    return None
 
 
 def get_raw_error_output(result: ReplResult) -> str:

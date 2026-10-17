@@ -30,7 +30,7 @@ sessions_created = Counter(
 sessions_evicted = Counter(
     "isabelle_pool_server_sessions_evicted_total",
     "Sessions evicted/closed by the manager",
-    ["reason"],  # memory | lru | idle
+    ["reason"],  # memory | lru | idle | prover_died
 )
 pool_exhausted = Counter(
     "isabelle_pool_server_pool_exhausted_total",
@@ -40,6 +40,11 @@ pool_exhausted = Counter(
 sessions_force_closed = Counter(
     "isabelle_pool_server_sessions_force_closed_total",
     "Sessions destroyed via DELETE (audit counter for the alarm path)",
+)
+memory_failures = Counter(
+    "isabelle_pool_server_memory_failures_total",
+    "Requests that failed for lack of memory, by kind",
+    ["kind"],  # memory (ML runtime out of memory) | prover_died
 )
 gateway_restarts = Counter(
     "isabelle_pool_server_gateway_restarts_total", "Dead REPL gateway recoveries"
@@ -57,6 +62,13 @@ sledgehammer_seconds = Histogram(
 sledgehammer_inflight = Gauge(
     "isabelle_pool_server_sledgehammer_inflight", "Sledgehammer calls currently executing"
 )
+
+
+def sledgehammer_inflight_value() -> float:
+    """Current value of the in-flight gauge (for the memory facts payload)."""
+    return float(sledgehammer_inflight._value.get())  # pylint: disable=protected-access
+
+
 heap_build_seconds = Histogram(
     "isabelle_pool_server_heap_build_seconds",
     "Heap build wall-clock duration",
@@ -101,6 +113,32 @@ class SessionPoolCollector(Collector):
         yield g_bytes("isabelle_pool_server_memory_used_bytes", "Container memory used (cgroup)", "memory_used_mb")
         yield g_bytes("isabelle_pool_server_memory_limit_bytes", "Container memory limit (cgroup)", "memory_limit_mb")
         yield g("isabelle_pool_server_memory_pressure_pct", "Container memory pressure %", "memory_pressure_pct")
+        state = GaugeMetricFamily(
+            "isabelle_pool_server_memory_state",
+            "Memory tier: 0 ok, 1 warning, 2 critical, -1 unknown",
+        )
+        state.add_metric(
+            [],
+            float(
+                {"ok": 0, "warning": 1, "critical": 2}.get(
+                    str(info.get("memory_state")), -1
+                )
+            ),
+        )
+        yield state
+        rss = GaugeMetricFamily(
+            "isabelle_pool_server_sessions_rss_bytes",
+            "Resident size of the sessions' ML processes (+ children), by lease state",
+            labels=["leased"],
+        )
+        rss.add_metric(
+            ["true"], float(info.get("sessions_rss_leased_mb") or 0.0) * 1024.0 * 1024.0
+        )
+        rss.add_metric(
+            ["false"],
+            float(info.get("sessions_rss_unleased_mb") or 0.0) * 1024.0 * 1024.0,
+        )
+        yield rss
 
         gw = GaugeMetricFamily("isabelle_pool_server_gateway_up", "1 if the REPL gateway is alive, else 0")
         gw.add_metric([], 1.0 if info.get("gateway_alive") else 0.0)

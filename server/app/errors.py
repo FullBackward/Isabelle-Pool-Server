@@ -34,6 +34,25 @@ class PoolExhausted(SessionError):
     pass
 
 
+class MemoryPressure(PoolExhausted):
+    """Raised when memory admission refuses new work (session create/acquire,
+    big-step or heap build). Carries the structured facts the 503 body shows:
+    numbers, state, and the sessions involved — never lease ids. The wording of
+    any advice is the client's (MCP's) job (owner decision D4)."""
+
+    def __init__(
+        self,
+        message: str | None = None,
+        *,
+        facts: dict[str, object] | None = None,
+        retry_after_s: int = 5,
+        **kwargs: object,
+    ) -> None:
+        super().__init__(message, **kwargs)  # type: ignore[arg-type]
+        self.facts: dict[str, object] = dict(facts or {})
+        self.retry_after_s = retry_after_s
+
+
 class SessionLeaseError(SessionError):
     """Raised when a caller uses an invalid or missing lease token."""
     pass
