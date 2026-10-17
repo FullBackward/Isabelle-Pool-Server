@@ -189,7 +189,9 @@ mypy server client mcp_servers evaluation    # Type check (strict=true, disable 
 
 **Tests** (`tests/`, ~380 unit tests, no Isabelle needed — they stub the backend/HTTP layer;
 run from the repo root, on the host with `conda run -n Isabelle Pool Server pytest` or inside the
-container with `docker exec isabelle-pool-server pytest`):
+container with `docker exec isabelle-pool-server python -m pytest` — the image ships the runtime
+and `mcp` dependencies only, so run `docker exec isabelle-pool-server pip install pytest` once per
+container first):
 ```bash
 pytest                       # whole suite
 pytest tests/test_mcp_lsp_server.py -q

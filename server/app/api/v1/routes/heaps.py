@@ -11,13 +11,15 @@ GET /api/v1/heaps/alpha//tmp/hp1 (note the doubled slash).
 Registration order matters: `/heaps/available` and `/heaps/images/{session}`
 are declared before the generic `/heaps/{task_group}/{project:path}` routes.
 """
+import asyncio
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 
 from server.app.core.logging import get_logger, logging_context
-from server.app.dependencies import get_heap_pool
+from server.app.dependencies import get_heap_pool, get_session_manager
 from server.app.services.heap_pool import HeapNotFound
+from server.app.services.session_manager import SessionManager
 
 from ..deps import HeapPoolDep, require_admin_token, safe_segment
 from ..schemas.API_models import (
@@ -37,11 +39,17 @@ logger = get_logger(__name__)
 
 
 @router.post("/api/v1/heaps/build", response_model=HeapEntryResponse)
-async def build_heap(request: HeapBuildRequest, heap_pool=Depends(get_heap_pool)):
+async def build_heap(
+    request: HeapBuildRequest,
+    heap_pool=Depends(get_heap_pool),
+    session_manager: SessionManager = Depends(get_session_manager),
+):
     """Build or rebuild the heap for (task_group, project). 409 while a build
-    for that key is in progress; build passing IS the verification gate."""
+    for that key is in progress; build passing IS the verification gate.
+    503 (Retry-After) while the memory gate has no room for a build process."""
     with logging_context():
         logger.info("heap build requested group=%s project=%s", request.task_group, request.project)
+        await asyncio.to_thread(session_manager.require_memory_for_build, "heap")
         entry = await heap_pool.build(
             request.task_group, request.project, request.session_name,
             built_by=request.task_group,

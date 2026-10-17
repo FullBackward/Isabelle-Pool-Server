@@ -36,10 +36,21 @@ _PROC_MEMINFO = "/proc/meminfo"
 _V1_UNLIMITED_FLOOR = 1 << 62
 
 
+# Where the `used` figure came from: "cgroup_v2" / "cgroup_v1" (container),
+# "host" (/proc/meminfo MemTotal - MemAvailable: native Linux, or a container
+# without cgroup accounting), "fallback" (nothing readable, e.g. native macOS:
+# used reads as 0 and the admission gate is inert — startup logs a warning).
+SOURCE_CGROUP_V2 = "cgroup_v2"
+SOURCE_CGROUP_V1 = "cgroup_v1"
+SOURCE_HOST = "host"
+SOURCE_FALLBACK = "fallback"
+
+
 @dataclass(frozen=True)
 class MemorySnapshot:
     used_bytes: int
     limit_bytes: int
+    source: str = SOURCE_FALLBACK
 
     @property
     def available_bytes(self) -> int:
@@ -87,18 +98,40 @@ def _read_cgroup_max(path: str) -> Optional[int]:
         return None
 
 
-def _host_mem_total_bytes() -> Optional[int]:
-    """MemTotal from /proc/meminfo (kB), as host/VM total memory."""
+def _meminfo_fields(*names: str) -> Dict[str, int]:
+    """Named fields of /proc/meminfo in BYTES (the file reports kB); missing or
+    unreadable fields are simply absent from the result."""
+    found: Dict[str, int] = {}
     try:
         with open(_PROC_MEMINFO, "r", encoding="utf-8") as fh:
             for line in fh:
-                if line.startswith("MemTotal:"):
-                    parts = line.split()
-                    if len(parts) >= 2:
-                        return int(parts[1]) * 1024
-    except (OSError, ValueError):
+                key, _, rest = line.partition(":")
+                if key in names:
+                    parts = rest.split()
+                    if parts:
+                        try:
+                            found[key] = int(parts[0]) * 1024
+                        except ValueError:
+                            continue
+    except OSError:
+        return found
+    return found
+
+
+def _host_mem_total_bytes() -> Optional[int]:
+    """MemTotal from /proc/meminfo (kB), as host/VM total memory."""
+    return _meminfo_fields("MemTotal").get("MemTotal")
+
+
+def _host_mem_used_bytes() -> Optional[int]:
+    """MemTotal - MemAvailable from /proc/meminfo: what the kernel considers
+    in use once reclaimable cache is discounted. The `used` figure when no
+    cgroup accounting is readable (native Linux installs — before this
+    fallback the gate silently read 0 there and never fired)."""
+    fields = _meminfo_fields("MemTotal", "MemAvailable")
+    if "MemTotal" not in fields or "MemAvailable" not in fields:
         return None
-    return None
+    return max(0, fields["MemTotal"] - fields["MemAvailable"])
 
 
 class MemoryMonitor:
@@ -108,6 +141,8 @@ class MemoryMonitor:
         self.pressure_threshold = Memory.PRESSURE_THRESHOLD
         self.min_available_bytes = Memory.MIN_AVAILABLE_MB * 1024 * 1024
         self.fallback_limit_bytes = Memory.FALLBACK_SYSTEM_MB * 1024 * 1024
+        # Source of the most recent `used` reading (see SOURCE_* above).
+        self.last_source: str = SOURCE_FALLBACK
 
     @staticmethod
     def _read_inactive_file() -> int:
@@ -130,12 +165,24 @@ class MemoryMonitor:
         return 0
 
     def _read_used(self) -> int:
+        """Container cgroup usage (minus reclaimable cache), else host usage
+        from /proc/meminfo, else 0. Records where the figure came from in
+        ``last_source``."""
         used = _read_int_file(_CG_V2_CURRENT)
-        if used is None:
+        if used is not None:
+            self.last_source = SOURCE_CGROUP_V2
+        else:
             used = _read_int_file(_CG_V1_USAGE)
-        if used is None:
-            return 0
-        return max(0, used - self._read_inactive_file())
+            if used is not None:
+                self.last_source = SOURCE_CGROUP_V1
+        if used is not None:
+            return max(0, used - self._read_inactive_file())
+        host_used = _host_mem_used_bytes()
+        if host_used is not None:
+            self.last_source = SOURCE_HOST
+            return host_used
+        self.last_source = SOURCE_FALLBACK
+        return 0
 
     def _read_limit(self) -> int:
         # cgroup v2 numeric limit, else v1 limit (unless sentinel "unlimited"),
@@ -152,7 +199,10 @@ class MemoryMonitor:
         return limit
 
     def read(self) -> MemorySnapshot:
-        return MemorySnapshot(used_bytes=self._read_used(), limit_bytes=self._read_limit())
+        used = self._read_used()  # sets last_source
+        return MemorySnapshot(
+            used_bytes=used, limit_bytes=self._read_limit(), source=self.last_source
+        )
 
     def can_admit(self, snapshot: Optional[MemorySnapshot] = None) -> bool:
         """True if there is room for another session under current pressure."""
@@ -169,4 +219,5 @@ class MemoryMonitor:
             "memory_limit_mb": round(snap.limit_mb, 1),
             "memory_available_mb": round(snap.available_mb, 1),
             "memory_pressure_pct": round(snap.pressure_pct, 1),
+            "memory_source": snap.source,
         }

@@ -83,6 +83,9 @@ fi
 
 if [[ "$DO_BUILD" -eq 1 ]]; then
   step "building the image"
+  # Stamp the image with the commit it was built from (compose build arg ->
+  # org.opencontainers.image.revision label), so a stale image is detectable.
+  export GIT_REVISION="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
   note "first build downloads Isabelle (~1.2 GB) and compiles the backend: 10-30 min; later builds are cached"
   run_logged "docker compose build" docker compose build isabelle-pool-server
 fi

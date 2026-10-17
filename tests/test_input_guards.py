@@ -403,5 +403,10 @@ def test_build_endpoint_stays_open_without_token(tmp_path, monkeypatch):
     pool = HeapPool(state_dir=str(tmp_path / "state"), allowed_roots=[str(tmp_path)])
     proj = _project(tmp_path)
     req = HeapBuildRequest(task_group="alpha", project=str(proj), session_name="Hp1")
-    out = asyncio.run(r.build_heap(req, pool))
+
+    class _NoPressure:  # the memory gate (batch 1) admits; tested in test_memory_policy.py
+        def require_memory_for_build(self, kind):
+            return None
+
+    out = asyncio.run(r.build_heap(req, pool, session_manager=_NoPressure()))
     assert out.status == "ready"

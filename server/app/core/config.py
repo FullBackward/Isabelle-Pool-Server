@@ -61,6 +61,14 @@ class Server:
     MAX_CONCURRENT_SLEDGEHAMMER: Final = int(
         os.getenv("ISABELLE_MAX_CONCURRENT_SLEDGEHAMMER", str(max(1, min(8, (os.cpu_count() or 4) // 8))))
     )
+    # Concurrent `isabelle build` processes for big-step verification
+    # (POST /api/v1/sessions/bigstep). Used to be derived from the session pool
+    # (pool_size // 2) with no memory consideration: with pool 6 that allowed
+    # three builds, each bounded only by the ML heap cap, inside one cgroup.
+    # Sibling knob for heap-pool builds: ISABELLE_MAX_CONCURRENT_BUILDS (Heap).
+    MAX_CONCURRENT_BIGSTEP_BUILDS: Final = int(
+        os.getenv("ISABELLE_MAX_CONCURRENT_BIGSTEP_BUILDS", "1")
+    )
 
 
 def _heap_env(name: str, default: str) -> str:
@@ -135,8 +143,19 @@ class Memory:
     # available-memory floor, and the host-memory fallback are read from the
     # container cgroup by server.app.services.memory_monitor.MemoryMonitor.
     PRESSURE_THRESHOLD: Final   = float(os.getenv("ISABELLE_MEMORY_PRESSURE_THRESHOLD", "85.0"))
-    MIN_AVAILABLE_MB: Final     = int(os.getenv("ISABELLE_MEMORY_MIN_AVAILABLE_MB", "256"))
+    # 512 (was 256): matches .env.example and the documented deployments.
+    MIN_AVAILABLE_MB: Final = int(os.getenv("ISABELLE_MEMORY_MIN_AVAILABLE_MB", "512"))
     FALLBACK_SYSTEM_MB: Final   = int(os.getenv("ISABELLE_MEMORY_FALLBACK_SYSTEM_MB", "4096"))
+    # Capacity sanity check at startup (server/app/services/memory_policy.py):
+    # expected resident size of one session, the hard per-process ML heap cap
+    # (the same ISABELLE_ML_MAXHEAP_MB the entrypoint writes into the Isabelle
+    # user settings — read here for the check only; Python never enforces it)
+    # and the gateway JVM's launcher-default heap (-Xmx4g, docs/ISSUES.md Bug 11).
+    SESSION_ESTIMATE_MB: Final = int(
+        os.getenv("ISABELLE_MEMORY_SESSION_ESTIMATE_MB", "2048")
+    )
+    ML_MAXHEAP_MB: Final = int(os.getenv("ISABELLE_ML_MAXHEAP_MB", "9216"))
+    JVM_HEAP_MB: Final = 4096
     SERVER_START_RETRIES: Final = int(os.getenv("ISABELLE_SERVER_START_RETRIES", "5"))
     # Session teardown -> cgroup accounting is not instantaneous (poly exit +
     # kernel reclaim lag). Pause after an eviction before re-reading the

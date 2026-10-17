@@ -10,6 +10,11 @@ services:
       args:
         # Isabelle distribution name (RCs: website-<name>/dist; finals: dist/).
         ISABELLE_VERSION: ${ISABELLE_VERSION:-Isabelle2026-RC2}
+        # Commit the image was built from (deploy/setup.sh exports it); shows
+        # up as the org.opencontainers.image.revision label so an image can be
+        # compared with the checkout: docker inspect --format
+        # '{{index .Config.Labels "org.opencontainers.image.revision"}}' <image>
+        GIT_REVISION: ${GIT_REVISION:-unknown}
     # Explicit image name: without it compose derives one from the checkout
     # directory (it used to be `isabellegym-isabelle-gym`).
     image: isabelle-pool-server:local

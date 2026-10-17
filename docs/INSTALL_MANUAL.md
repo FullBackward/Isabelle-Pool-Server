@@ -119,6 +119,9 @@ curl http://localhost:8000/api/v1/heaps/available
 - **ML heap cap:** the entrypoint writes `ML_OPTIONS="--minheap 500 --enablegcsharing
   --maxheap $ISABELLE_ML_MAXHEAP_MB"` into the Isabelle user settings on the volume (default
   9 GB) so a single runaway poly process fails cleanly instead of OOM-killing the container.
+- **Unit tests in the container:** the image ships the runtime and `mcp` dependencies only, so
+  `docker compose exec isabelle-pool-server pip install pytest` once per container, then
+  `docker compose exec isabelle-pool-server python -m pytest -q`.
 - **After an image rebuild**, if the server fails with `Not found: py4j`: the pre-existing
   volume shadows the component registration. The entrypoint re-registers on every start; the
   manual fix is `docker compose exec isabelle-pool-server ./server/repl/Admin/init`.

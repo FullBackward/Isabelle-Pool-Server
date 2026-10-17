@@ -13,6 +13,7 @@ from server.app.core.logging import get_logger, logging_context
 from server.app.core import metrics
 from server.app.errors import GatewayUnavailable, PoolExhausted, SessionBusyError, SessionNotFound, SessionStartError
 from server.app.services.memory_monitor import MemoryMonitor
+from server.app.services.memory_policy import MemoryPolicyMixin
 from server.app.services.session import SessionStatus, _Isabelle_Session
 from server.app.services.threaded_backend import ThreadedBackend
 
@@ -26,7 +27,7 @@ from server.app.services.session_manager_helpers import (
 logger = get_logger(__name__)
 
 
-class SessionManager(SessionManagerHelpersMixin):
+class SessionManager(SessionManagerHelpersMixin, MemoryPolicyMixin):
 
     def __init__(
         self,
@@ -61,11 +62,11 @@ class SessionManager(SessionManagerHelpersMixin):
         self.sledgehammer_sem = asyncio.Semaphore(Server.MAX_CONCURRENT_SLEDGEHAMMER)
         self.max_concurrent_sledgehammer = Server.MAX_CONCURRENT_SLEDGEHAMMER
 
-
-        # add this here
+        # Big-step builds: bounded by their own knob (default 1) and gated by
+        # memory in verify_big_step_build — not derived from the session pool.
         self.build_verifier = BuildVerifier(
             isabelle_bin="isabelle",
-            max_concurrent_builds=max(1, pool_size // 2),
+            max_concurrent_builds=Server.MAX_CONCURRENT_BIGSTEP_BUILDS,
             build_jobs_per_request=1,
             temp_parent=Path("/tmp"),
         )
@@ -79,6 +80,8 @@ class SessionManager(SessionManagerHelpersMixin):
 
         if initial_sessions == 0:
             logger.info("skipping pool pre-warming because initial_sessions=0")
+
+        self.log_capacity_warnings()
 
         try:
             self._ensure_gateway()
@@ -356,6 +359,8 @@ class SessionManager(SessionManagerHelpersMixin):
         timeout: float,
     ):
         normalized_field = self._normalize_field(field)
+        # Off the loop: cgroup/meminfo file reads (Bug 16 rule for the request path).
+        await asyncio.to_thread(self.require_memory_for_build, "bigstep")
         return await self.build_verifier.verify(
             theory_name=theory_name,
             theory_text=theory,
@@ -569,4 +574,3 @@ class SessionManager(SessionManagerHelpersMixin):
             logger.info("closing session")
             session.close()
         return True
-
