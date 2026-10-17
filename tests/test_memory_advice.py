@@ -285,8 +285,8 @@ def test_guard_attaches_reminder_and_runs_hook_only_when_tight():
     client = _Client()
     hooks = []
 
-    async def hook():
-        hooks.append(1)
+    async def hook(state):
+        hooks.append(state)
 
     @_guarded(reg, client, on_reminder=hook)
     async def tool() -> str:
@@ -300,4 +300,30 @@ def test_guard_attaches_reminder_and_runs_hook_only_when_tight():
     assert out["ok"] is True and out["memory_reminder"].startswith(
         "MEMORY REMINDER (critical"
     )
-    assert hooks == [1]
+    assert hooks == ["critical"]
+
+
+# --------------------------------------------- review d2bc679 S2 / S5
+
+
+def test_theory_session_is_never_releasable_but_is_mentioned():
+    reg = SessionRegistry()
+    th = reg.register("t", "L", KIND_THEORY, "conn", label="theory Foo")
+    now = th.last_used_at + 10_000  # idle for hours: still the live proof state
+    adv = advise(_facts(), [th], tools=TOOLS, idle_s=120, now=now)
+    assert not any(a.startswith("Release") for a in adv)
+    assert any("Your current theory session is yours to keep" in a for a in adv)
+    assert any("isabelle_close(f, destroy=true)" in a for a in adv)
+    note = reminder("warning", [th], tools=TOOLS, idle_s=120, now=now)
+    assert "none releasable" in note and "Release what you no longer need" not in note
+
+
+def test_pool_full_carries_the_server_detail():
+    reg = SessionRegistry()
+    out = translate_http_error(
+        _err(503, {"error": "pool_full", "detail": "Session pool is full (6)"}),
+        reg,
+        None,
+        tools=TOOLS,
+    )
+    assert out["error"] == "pool_full" and out["detail"] == "Session pool is full (6)"

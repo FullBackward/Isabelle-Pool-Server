@@ -13,10 +13,18 @@ import weakref
 from dataclasses import dataclass
 from typing import Any, List, MutableMapping, Optional
 
+import httpx
+
 from client.async_client import PoolAsyncClient
 
-from ..common import KIND_BATCH, KIND_THEORY, GymClientMixin, SessionRegistry
-from .config import Config
+from ..common import (
+    KIND_BATCH,
+    KIND_THEORY,
+    GymClientMixin,
+    SessionRegistry,
+    translate_http_error,
+)
+from .config import TOOLS, Config
 
 
 @dataclass
@@ -171,6 +179,19 @@ class SessionPool(GymClientMixin):
                         "execution_time": rep.get("execution_time"),
                         "n_failed": sum(1 for x in cmds if x.get("status") == "failed"),
                         "n_running": sum(1 for x in cmds if x.get("status") == "running"),
+                    }
+                except httpx.HTTPStatusError as e:
+                    # A memory 503 (the create is the gated call) becomes the
+                    # structured item: error=memory_pressure + advice (review d2bc679 B1).
+                    return {
+                        "name": name,
+                        **translate_http_error(
+                            e,
+                            self.registry,
+                            owner,
+                            tools=TOOLS,
+                            idle_s=Config.ADVICE_IDLE_S,
+                        ),
                     }
                 except Exception as e:  # noqa: BLE001
                     return {"name": name, "error": f"{type(e).__name__}: {e}"}

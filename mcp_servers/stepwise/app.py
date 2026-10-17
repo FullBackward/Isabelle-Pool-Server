@@ -14,8 +14,8 @@ from mcp.server.fastmcp import Context, FastMCP
 
 from client.async_client import PoolAsyncClient
 
-from ..common import ToolNames, advise, make_guard, others_summary
-from .config import Config
+from ..common import advise, make_guard, others_summary
+from .config import TOOLS, Config
 from .pool import SessionPool
 
 mcp = FastMCP("isabelle-pool-server", host=Config.HOST, port=Config.PORT)
@@ -26,15 +26,6 @@ pool = SessionPool()
 # this server words the advice and names its own tools. Every tool is wrapped:
 # an HTTP error becomes structured JSON with advice, and while the server is at
 # warning/critical a MEMORY REMINDER is attached to results.
-TOOLS = ToolNames(
-    release_idle="close_theory()",
-    close="close_theory()",
-    list_sessions="list_my_sessions()",
-    memory_status="memory_status()",
-    reopen="call enter_theory(name, imports) again",
-)
-
-
 _F = TypeVar("_F", bound=Callable[..., Awaitable[Any]])
 
 
@@ -291,7 +282,7 @@ async def list_my_sessions(ctx: Context) -> str:
         facts = await c.memory_status()
         pool.registry.merge(facts.get("sessions") or [])
         pool.registry.mark_missing(facts.get("sessions") or [])
-    except Exception:  # noqa: BLE001 — the local view is still useful
+    except Exception:  # pylint: disable=broad-exception-caught  # local view still useful
         pass
     return json.dumps(
         {

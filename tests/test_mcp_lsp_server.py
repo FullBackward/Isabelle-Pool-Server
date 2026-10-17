@@ -4,6 +4,7 @@ package: tests target pool.py with a fake PoolAsyncClient.
 from __future__ import annotations
 
 import asyncio
+import json
 
 import httpx
 import pytest
@@ -33,6 +34,7 @@ class FakeClient:
         self._counter = 0
         self.fail_next_load_404 = False
         self.last_memory_state = "ok"
+        self.fail_create_503 = False  # create_session raises a memory 503
 
     async def memory_status(self):
         return {
@@ -46,6 +48,25 @@ class FakeClient:
 
     async def create_session(self, theories=None, field="HOL", task_group=None,
                              heap_session=None, project=None, label=None):
+        if self.fail_create_503:
+            resp = httpx.Response(
+                503,
+                json={
+                    "error": "memory_pressure",
+                    "state": "critical",
+                    "retry_after_s": 5,
+                    "memory": {
+                        "pressure_pct": 91.0,
+                        "available_mb": 800.0,
+                        "limit_mb": 14336.0,
+                    },
+                    "evictable": [],
+                    "leased": [],
+                    "builds_in_flight": {"bigstep": 0, "heap": 1},
+                },
+                request=httpx.Request("POST", "http://test/sessions"),
+            )
+            raise httpx.HTTPStatusError("503", request=resp.request, response=resp)
         self._counter += 1
         self.created.append({
             "theories": theories, "field": field, "task_group": task_group,
@@ -542,3 +563,48 @@ def test_retire_idle_scratch_and_release_idle_bindings(tmp_path):
     assert dropped == 1 and pool._client.closed == [scratch_sid]
     assert released == [canonical_path(str(f))] and pool._client.released == [bind_sid]
     assert pool.registry.all() == []
+
+
+# ------------------------------------ review d2bc679 B1: fan-out tools translate
+
+
+def _lsp_app_with_fake():
+    pytest.importorskip("mcp")
+    from mcp_servers.lsp import app as lsp_app
+    from mcp_servers.lsp import server as lsp_server
+
+    fake = FakeClient()
+    lsp_server.pool._client = fake
+    return lsp_app, fake
+
+
+def test_multi_attempt_candidate_reports_memory_pressure(tmp_path):
+    lsp_app, fake = _lsp_app_with_fake()
+    f = tmp_path / "Fan.thy"
+    f.write_text("theory Fan imports Main begin\nlemma a: True by simp\nend\n")
+    fake.fail_create_503 = True  # every scratch create is refused
+    out = json.loads(
+        asyncio.run(
+            lsp_app.isabelle_multi_attempt(
+                file_path=str(f), line=2, candidates=["lemma b: True by simp"]
+            )
+        )
+    )
+    (cand,) = out
+    assert (
+        cand["error"] == "memory_pressure"
+        and cand["candidate"] == "lemma b: True by simp"
+    )
+    assert cand["advice"] and "HTTPStatusError" not in json.dumps(cand)
+    assert cand["others"]["builds_in_flight"] == 1
+
+
+def test_run_code_reports_memory_pressure():
+    lsp_app, fake = _lsp_app_with_fake()
+    fake.fail_create_503 = True
+    out = json.loads(
+        asyncio.run(lsp_app.isabelle_run_code(chunk="lemma c: True by simp"))
+    )
+    assert (
+        out["success"] is False and out["error"] == "memory_pressure" and out["advice"]
+    )

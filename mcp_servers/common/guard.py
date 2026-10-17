@@ -6,8 +6,9 @@
   lost — research gap G5);
 - after a successful call, while the client's last ``X-Memory-State`` is
   warning / critical, a MEMORY REMINDER is attached to the result (owner
-  decision D3) and the optional ``on_reminder`` hook runs (the LSP server
-  drops its idle warm scratch sessions there — the MCP frees its own first).
+  decision D3) and the optional ``on_reminder(state)`` hook runs (the LSP
+  server retires idle warm scratch sessions there, by tier — the MCP frees its
+  own first).
 
 ``functools.wraps`` keeps the tool's signature, docstring and ``Context``
 parameter, so FastMCP's schema is unchanged (verified on mcp 1.30).
@@ -34,7 +35,7 @@ def make_guard(  # pylint: disable=too-many-arguments
     get_client: Callable[[], Awaitable[Any]],
     owner_of: OwnerOf,
     idle_s: float = 120.0,
-    on_reminder: Optional[Callable[[], Awaitable[Any]]] = None,
+    on_reminder: Optional[Callable[[str], Awaitable[Any]]] = None,
 ) -> Callable[[Callable[..., Awaitable[Any]]], Callable[..., Awaitable[Any]]]:
     """Build the decorator for one server (its registry, tool names, client)."""
 
@@ -62,7 +63,9 @@ def make_guard(  # pylint: disable=too-many-arguments
                 return out
             if on_reminder is not None:
                 try:
-                    await on_reminder()
+                    await on_reminder(
+                        state
+                    )  # the hook may act by tier (warning / critical)
                 except Exception:  # pylint: disable=broad-exception-caught
                     pass
             return with_reminder(out, note)

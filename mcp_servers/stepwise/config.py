@@ -2,8 +2,18 @@
 from __future__ import annotations
 
 from ..common.config import env_float, env_int, env_str
+from ..common.memory_advice import ToolNames
 
 _P = "ISABELLE_MCP_"
+
+# How THIS server names the actions the memory advice refers to (plan §2.C, D4).
+TOOLS = ToolNames(
+    release_idle="close_theory()",
+    close="close_theory()",
+    list_sessions="list_my_sessions()",
+    memory_status="memory_status()",
+    reopen="call enter_theory(name, imports) again",
+)
 
 
 class Config:

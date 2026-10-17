@@ -21,7 +21,7 @@ import json
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
-from .registry import KIND_SCRATCH, Entry, SessionRegistry
+from .registry import KIND_SCRATCH, KIND_THEORY, Entry, SessionRegistry
 
 MEMORY_PRESSURE = "memory_pressure"
 
@@ -84,7 +84,24 @@ def others_summary(facts: Dict[str, Any], owned_ids: set[str]) -> Dict[str, Any]
 
 
 def _releasable(owned: List[Entry], idle_s: float, now: Optional[float]) -> List[Entry]:
-    return [e for e in owned if e.kind == KIND_SCRATCH or e.idle_s(now) >= idle_s]
+    """Sessions the agent can give up without losing work: scratch sessions
+    always, bindings/batch items idle for ``idle_s``. NEVER the stepwise
+    theory session — idle there means the model was thinking, and closing it
+    discards the live proof state (review d2bc679 S2)."""
+    return [
+        e
+        for e in owned
+        if e.kind != KIND_THEORY and (e.kind == KIND_SCRATCH or e.idle_s(now) >= idle_s)
+    ]
+
+
+def _theory_note(owned: List[Entry], tools: ToolNames) -> Optional[str]:
+    if any(e.kind == KIND_THEORY for e in owned):
+        return (
+            f"Your current theory session is yours to keep: finish it, or {tools.close} "
+            f"if you no longer need it."
+        )
+    return None
 
 
 def _others_text(others: Dict[str, Any]) -> str:
@@ -130,6 +147,9 @@ def advise(  # pylint: disable=too-many-arguments
             f"You hold nothing idle; the server will reclaim {len(facts['evictable'])} idle "
             f"session(s) of other clients itself — retry in {retry} s."
         )
+    note = _theory_note(owned, tools)
+    if note:
+        advice.append(note)
     escalate = (
         failures >= 2
         or bool(others["external_pressure"])
@@ -141,7 +161,7 @@ def advise(  # pylint: disable=too-many-arguments
             + _others_text(others)
             + " — this agent cannot free that memory."
         )
-    if not advice:
+    if not any(a.startswith(("Release", "You hold", "Retry")) for a in advice):
         advice.append(
             f"Retry in {retry} s; if it keeps failing, tell the user the prover server "
             f"is out of memory ({tools.memory_status} shows the numbers)."
@@ -194,6 +214,7 @@ def translate_http_error(  # pylint: disable=too-many-arguments
     if status == 503:
         return {
             "error": "pool_full",
+            "detail": info["detail"],
             "retry_after_s": retry,
             "advice": [
                 f"Every prover session is busy or held; release what you no longer "
@@ -246,8 +267,8 @@ def reminder(  # pylint: disable=too-many-arguments
         )
     elif owned:
         body = (
-            f"you hold {len(owned)} session(s), none idle. Finish or close work you no "
-            f"longer need ({tools.close})."
+            f"you hold {len(owned)} session(s), none releasable. Finish or close the "
+            f"work you no longer need ({tools.close})."
         )
     else:
         body = "you hold no sessions; other clients or builds are using the memory."
