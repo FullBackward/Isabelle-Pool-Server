@@ -228,11 +228,11 @@ class SessionManager(SessionManagerHelpersMixin, MemoryPolicyMixin):
                     raise self.create_refused(
                         where, snap
                     )  # MemoryPressure: 503 + facts
-            # Released once the backend exists (or creation failed).
-            self.creates_in_flight += 1
-
             session_id = uuid.uuid4()
 
+            # Reserved here, the line before the try whose finally releases it
+            # (structural: nothing can leak the reservation — review 0710afc S1).
+            self.creates_in_flight += 1
             try:
                 logger.info("creating raw backend for session_id=%s", session_id)
 
@@ -262,9 +262,8 @@ class SessionManager(SessionManagerHelpersMixin, MemoryPolicyMixin):
                         timeout=Timeouts.SESSION_CREATE,
                     )
                 finally:
-                    self.creates_in_flight -= (
-                        1  # the backend exists (or creation failed)
-                    )
+                    # the backend exists (or creation failed): release the reservation
+                    self.creates_in_flight -= 1
             except TimeoutError:
                 # asyncio.TimeoutError alias (3.11+): the request must not
                 # outlive a wedged gateway — fail fast with a clean error.

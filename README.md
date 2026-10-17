@@ -125,6 +125,12 @@ curl http://localhost:8000/            # version, gateway_alive, active/busy ses
   Destructive actions need `ISABELLE_ADMIN_TOKEN` from `.env` (without it they render
   locked). The console page itself is unauthenticated — one more reason to firewall the port.
 - Prometheus metrics: `/metrics`.
+- Memory facts: `GET /api/v1/memory` — tier (`ok` / `warning` / `critical`), the cgroup snapshot,
+  builds in flight, and every session's expiry and attributed memory (`rss_mb` of its ML process,
+  `heap_mb`). Every response also carries an `X-Memory-State` header; every 503 body has an
+  `error` key (`memory_pressure` with the same facts, `pool_full`, `gateway_unavailable`); step /
+  chunk / document results carry `error_kind` (`memory` | `prover_died` | null). Leased sessions
+  are never evicted — clients are reminded instead (see §4).
 
 ### 2. The HTTP API in four calls
 
@@ -227,6 +233,17 @@ There are two, for two agent shapes (rationale: [DESIGN_CHOICES.md](docs/DESIGN_
 Sessions and leases are managed automatically per MCP connection — the agent never sees a
 `session_id`. Each connection gets an isolated Isabelle session; a fresh `enter_theory`
 always starts from a clean document.
+
+**Memory protocol.** The server reports facts, the MCP words the advice. Each MCP server keeps a
+registration list of what it holds (theory / file / scratch sessions, idle time, expiry,
+attributed memory; `list_my_sessions` / `isabelle_list_sessions`, display-only `ref`s). A call
+refused for memory comes back as `{"error": "memory_pressure", "your_sessions": [...],
+"others": {...}, "advice": [...]}` — release what you hold but do not use
+(`close_theory()`, `isabelle_release_idle()`, `isabelle_close(file, destroy=true)`), retry
+after `retry_after_s`, and when other clients, builds or external pressure hold the memory,
+stop and tell the user. While the server is at `warning` / `critical` every result carries a
+`memory_reminder`; `memory_status` / `isabelle_memory_status` show who holds what. Rationale:
+[DESIGN_CHOICES.md](docs/DESIGN_CHOICES.md) §1.6 and §2.10.
 
 #### Prerequisites (on the machine that runs the agent / MCP client)
 

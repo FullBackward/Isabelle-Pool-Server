@@ -136,6 +136,31 @@ busy/leased ones), settle between evictions, retry admission briefly before refu
 the memory actually is. The page-cache correction and settle/retry came from the
 close-then-create race: teardown → kernel accounting lags → false "no memory" rejections.
 
+**Update 2026-10-17 (memory awareness, plan `claude-work/2026-10-17-plan-memory-mcp-awareness`):**
+the cgroup stays the truth for the total; on top of it:
+
+- *Attribution from the ML side (owner decision D2):* a Query_Operation in `REPL.ML`
+  (`isabelle_pool_server_mem`) returns the session's ML pid (read from `/proc/self` — `PolyML.ml_pid`
+  and `Posix` are hidden from user-level ML by the sanitized name space) and the Poly/ML runtime
+  statistics; the server reads the process's resident size (+ sledgehammer children) from `/proc`
+  once per sweep and keys "prover alive" on pid + start time. Isabelle itself runs an
+  `ML_Statistics.monitor` poly next to every session, so `Session.runtime_statistics` already
+  streams the same heap numbers — a possible zero-overlay source later.
+- *Facts, not advice (D4):* every 503 body carries an `error` key with the structured facts,
+  every response an `X-Memory-State` tier (cached, no I/O), `GET /api/v1/memory` the full picture;
+  results carry `error_kind` (`memory` from the ML out-of-memory text, `prover_died` from the
+  request-path death check — a dead poly otherwise answers a step with stale output). The MCP
+  servers word the advice (§2.10).
+- *Leased sessions are never evicted (D3):* the server reclaims idle *unleased* sessions
+  (largest first when sized) and reminds clients; the MCPs let their own go (scratch TTL,
+  `release_idle`).
+- *Budget admission:* a create or build is admitted only if used + reserved in-flight work + a
+  static per-field estimate stays under the threshold; the reservation is taken at the admission
+  decision (atomic on the event loop) — the live runs showed concurrent creates all passing a
+  gate that reserved later. Builds no longer bypass the gate; native hosts fall back to
+  `/proc/meminfo` (the gate used to read 0 there); `external_pressure` names memory held outside
+  the container (host short AND others over the container's promised headroom).
+
 ### 1.7 Heavy-operation gating: server-wide sledgehammer semaphore
 
 **Chosen:** a global semaphore (`MAX_CONCURRENT_SLEDGEHAMMER`) queues sledgehammer requests.
@@ -511,6 +536,10 @@ harness prompts vary per experiment (four variants exist), but the invariants mu
 The comparison runs validated this: the failure modes that survived all prompt variants were
 exactly the ones later fixed in tools/output text, not in prompts. *Con accepted:* longer
 schemas cost tokens on every round — mitigated by keeping per-call outputs terse (2.4).
+*Mechanics (bitten twice, 2026-09-30 and 2026-10-17):* only a string LITERAL as the first
+statement is a docstring — `"""text""" + CONST` is an expression and FastMCP ships the tool with
+an empty description; append notes inside the literal (or set `__doc__` in a decorator, as
+`synced_tool` does). `tests/test_mcp_tools_smoke.py` guards this in-container.
 
 ### 2.9 The LSP-like file-sync MCP: a second server for file-editing agents (2026-08 →)
 
@@ -548,6 +577,27 @@ created for a path that exists, so a typo no longer leases a session. **(Bug 20,
 per path, so concurrent first calls share one session.
 
 ---
+
+
+### 2.10 Memory protocol: the server reports facts, the MCP words the advice (2026-10-17)
+
+**Chosen:** the server never words advice and never evicts a leased session (owner decisions
+D3/D4): it publishes structured facts (503 `error` keys, `X-Memory-State`, `/api/v1/memory`,
+`error_kind`). Each MCP server keeps a **registration list** of the sessions it holds (kind, what
+for, idle time, server expiry, attributed memory; session id and lease stay private, the agent
+sees a display-only `ref` that no tool accepts), wraps every tool with a guard that turns an HTTP
+error into `{"error": "memory_pressure", "your_sessions", "others", "advice"}` and attaches a
+`memory_reminder` while the tier is warning/critical, and offers `list_my_sessions` /
+`memory_status` / `release_idle` tools. Advice rules, in order: release what you hold but do not
+use (scratch always, bindings/batch items idle for `ADVICE_IDLE_S`; never the stepwise theory —
+idle there means the model was thinking), retry after `retry_after_s` when the server can reclaim
+others' idle sessions, and — on repeated failure, running builds, other task groups holding the
+memory, or external pressure — stop and tell the user: the agent cannot free that memory.
+**Alternative:** advice text in the server's 503 (one source of truth for every client).
+**Why:** the server is hidden from the agent; only the MCP knows its own tool names and what the
+agent is doing with each session. The LSP server also frees its own warm scratch sessions first
+(by tier) before asking the agent for anything. Verified live by forcing the gate through
+`isabelle_multi_attempt` and `verify_batch` (NOTES, batch 4).
 
 ## Cross-cutting lesson
 

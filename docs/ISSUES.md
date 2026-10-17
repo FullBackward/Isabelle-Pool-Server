@@ -62,7 +62,12 @@ HTTP DELETE /sessions/{id}
   → remove_session_async(...) per running session  +  Server_Utils.stop_server(...)
 ```
 
-**Status summary:** Bugs 1–6 are resolved in the current code. Bug 5 (Isabelle OS processes lingering after close) was re-checked on 2026-06-04 and is **not reproducible** — clean reaping verified for normal close and close-during-sledgehammer; the accumulation-to-OOM it described is explained by the now-fixed gateway-orphan-on-shutdown (`killpg`, internal working notes) and gateway-OOM-under-concurrency (Bug 6) issues. A narrow optional hardening item remains (force-kill fallback for a genuinely wedged ML process). See the [Claude Work Log](#internal working notes-log-dated) for the dated history.
+**Status summary (2026-10-17):** memory awareness landed on `Impl-memory-robustness` (research gaps G1–G9 of
+`claude-work/2026-10-16-research-memory-mcp-awareness/REPORT.md`): the gate now reads `/proc/meminfo` on
+native hosts (it read 0 — G7), builds are memory-gated with their own concurrency knob (G3), per-session
+attribution from the ML side, request-path prover-death detection, structured 503 facts + `X-Memory-State`
++ `/api/v1/memory`, budget admission with reservations, size-aware eviction of unleased sessions, and the
+MCP registry/advice/reminder layer (G4, G5). Bugs 1–6 are resolved in the current code. Bug 5 (Isabelle OS processes lingering after close) was re-checked on 2026-06-04 and is **not reproducible** — clean reaping verified for normal close and close-during-sledgehammer; the accumulation-to-OOM it described is explained by the now-fixed gateway-orphan-on-shutdown (`killpg`, internal working notes) and gateway-OOM-under-concurrency (Bug 6) issues. A narrow optional hardening item remains (force-kill fallback for a genuinely wedged ML process). See the [Claude Work Log](#internal working notes-log-dated) for the dated history.
 
 ---
 
@@ -989,6 +994,9 @@ REPL-5…9, MCP-5…7) stay in FINDINGS.md until promoted here.
 | `server/app/services/session_manager.py` | `close_session()`: re-check `in_use` after `pop()` | ✅ Done (Bug 4) |
 | (none — verification only) | Isabelle server/session OS processes confirmed to terminate on close (incl. mid-sledgehammer) | ✅ Verified not-reproducible (Bug 5); optional force-kill fallback remains |
 | `server/app/core/config.py`, `session_manager.py`, `router.py` | Sledgehammer concurrency semaphore + gateway auto-restart | ✅ Done (Bug 6) |
+| `server/app/services/memory_monitor.py` | `/proc/meminfo` fallback (native hosts read 0 → gate inert), tiers, RSS attribution, external pressure | ✅ Done (G7, G2, G8 — 2026-10-17) |
+| `server/app/services/memory_policy.py`, `build_verify.py`, `routes/heaps.py` | Builds gated by memory with their own knob; budget admission with reservations; `discard_dead` | ✅ Done (G3, G1 — 2026-10-17) |
+| `mcp_servers/common/{registry,memory_advice,guard}.py`, both pools/apps | Registration list, structured advice, reminders, release tools, scratch TTL | ✅ Done (G4, G5 — 2026-10-17) |
 
 ---
 
@@ -1072,4 +1080,7 @@ disk; the entries are kept as the historical record. Summary of work completed:
 
 | 2026-09-30 | **TEST-1: MCP tools smoke + HTTP security-input suites (Bugs 23, 24 found and fixed)** | `tests/test_mcp_tools_smoke.py` (both servers in-process: tool sets, descriptions, prompt, shims) and `tests/test_security_inputs.py` (78 HTTP-layer payloads via TestClient + stub manager/heap-pool overrides: ML in 5 spellings on 4 text endpoints, diagnostic denylist, import/theory-name injection, traversal, admin token). Found: theory-name injection via `enter_theory` path + two model fields (Bug 23, fixed); 13 LSP tools with empty descriptions (Bug 24, fixed). `test_mcp_comparison_fixes.py` now skips without `openai` — the suite runs with no flags: 376 passed / 2 skipped. | internal notes (Part 10) |
 
-*Last updated: 2026-09-30.*
+| 2026-10-16 | **Research: memory management + MCP memory awareness** | Read the whole memory path (cgroup gate, LRU, ML heap cap, MCP pools); found 9 gaps (G1–G9: create-time-only gate, no attribution, builds bypass the gate, MCP hoards leased sessions, 503 body lost in tools, expiry invisible, native hosts blind, no external-pressure signal, dead env keys); rebuilt the Docker image (`isabelle-pool-server:local`, Isabelle2026-RC2 — the local image was the July 2025-2 one). Owner decisions: advice MCP-side, attribution from Scala/ML, leased sessions never evicted. | `claude-work/2026-10-16-research-memory-mcp-awareness/REPORT.md` |
+| 2026-10-17 | **Memory awareness implemented (builder/reviewer loop, 10 commits)** | `eb85b86` batch 1 bug fixes (G7 native fallback, G3 build gate + `ISABELLE_MAX_CONCURRENT_BIGSTEP_BUILDS`, capacity warnings, env hygiene); `501a1ba` ML-side probe (`isabelle_pool_server_mem`: pid from `/proc/self`, Poly/ML stats); `a96f76d` tiers / structured 503s / `X-Memory-State` / build admit hook; `f1fb31a` attribution + `discard_dead` + Scala `session_phase`; `bb1ec6b` `/api/v1/memory`, `error_kind`, request-path death check; `d2bc679` + `f554176` MCP registry, advice rules, reminders, `list_my_sessions` / `memory_status` / `release_idle`, scratch TTL, fan-out translation; `aa860ea` + `4815c37` + `0710afc` budget admission (reservation at the decision), size-aware eviction, tiered sweep, sledgehammer refused at critical, external pressure. Live gates on the RC2 container incl. a forced-pressure run through the fan-out tools (batch 4). | plan + reviews: `claude-work/2026-10-17-plan-memory-mcp-awareness/`; builder notes + live scripts: `claude-work/2026-10-17-impl-memory-mcp-awareness/` |
+
+*Last updated: 2026-10-17.*
