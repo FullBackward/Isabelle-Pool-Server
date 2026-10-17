@@ -65,9 +65,14 @@ class MemorySnapshot:
     # Host/VM MemAvailable when the figures above come from a cgroup (the VM
     # that hosts the container); None when unreadable or already host-based.
     host_available_bytes: Optional[int] = None
-    # True when the container itself is below the pressure threshold but the
-    # host/VM has less than the available floor left: something OUTSIDE this
-    # server holds the memory (batch 3, gap G8). None when undecidable.
+    # What everything OUTSIDE this container uses on the host/VM:
+    # MemTotal - MemAvailable - used (None when unreadable).
+    host_others_used_bytes: Optional[int] = None
+    # True when this container is below its own threshold, the host/VM is
+    # below the available floor, AND others use more than the headroom this
+    # container was promised (limit x (1 - threshold)): something outside this
+    # server holds the memory (gap G8; review aa860ea S1 — a container that is
+    # itself the pressure is not "external"). None when undecidable.
     external_pressure: Optional[bool] = None
 
     @property
@@ -320,20 +325,27 @@ class MemoryMonitor:
         used = self._read_used()  # sets last_source
         limit = self._read_limit()
         host_available: Optional[int] = None
+        others_used: Optional[int] = None
         external: Optional[bool] = None
         if self.last_source in (SOURCE_CGROUP_V2, SOURCE_CGROUP_V1):
-            host_available = _meminfo_fields("MemAvailable").get("MemAvailable")
-            if host_available is not None and limit > 0:
+            fields = _meminfo_fields("MemTotal", "MemAvailable")
+            host_available = fields.get("MemAvailable")
+            host_total = fields.get("MemTotal")
+            if host_available is not None and host_total is not None and limit > 0:
+                others_used = max(0, host_total - host_available - used)
+                headroom = limit * (1.0 - self.pressure_threshold / 100.0)
                 own_pressure = used / limit * 100.0
                 external = (
-                    own_pressure < self.pressure_threshold
-                    and host_available < self.min_available_bytes
+                    own_pressure < self.pressure_threshold  # we are not the pressure
+                    and host_available < self.min_available_bytes  # the host is short
+                    and others_used > headroom  # others exceed our promised headroom
                 )
         snap = MemorySnapshot(
             used_bytes=used,
             limit_bytes=limit,
             source=self.last_source,
             host_available_bytes=host_available,
+            host_others_used_bytes=others_used,
             external_pressure=external,
         )
         self.last_snapshot = snap
@@ -357,11 +369,15 @@ class MemoryMonitor:
         ``extra_bytes`` (batch 3 budget admission) is what the candidate and
         the work already in flight are expected to add: admission holds only
         if usage INCLUDING it stays under the threshold and the floor. A
-        snapshot flagged ``external_pressure`` never admits.
+        host that is itself under the available floor never admits, whatever
+        the cause (external or not).
         """
         snap = snapshot if snapshot is not None else self.read()
-        if snap.external_pressure:
-            return False
+        if (
+            snap.host_available_bytes is not None
+            and snap.host_available_bytes < self.min_available_bytes
+        ):
+            return False  # the host itself is short, whatever the cause
         if snap.limit_bytes <= 0:
             return True
         projected = snap.used_bytes + max(0, extra_bytes)
@@ -384,5 +400,10 @@ class MemoryMonitor:
                 None
                 if snap.host_available_bytes is None
                 else round(snap.host_available_bytes / (1024.0 * 1024.0), 1)
+            ),
+            "host_others_used_mb": (
+                None
+                if snap.host_others_used_bytes is None
+                else round(snap.host_others_used_bytes / (1024.0 * 1024.0), 1)
             ),
         }

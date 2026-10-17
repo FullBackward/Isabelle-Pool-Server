@@ -155,7 +155,7 @@ class SessionManagerHelpersMixin:
         return f"wrap_{dep_key[:16]}"
 
     # ----- memory-pressure relief -----------------------------------------
-    def _pop_oldest_idle_locked(self) -> Optional[Tuple[uuid.UUID, _Isabelle_Session]]:
+    def _pop_evictable_locked(self) -> Optional[Tuple[uuid.UUID, _Isabelle_Session]]:
         """Pop the eviction candidate under memory pressure: the LARGEST idle
         unleased session when RSS is known (batch 3), else the oldest. Leased
         sessions are never touched (D3). Caller holds _lock."""
@@ -164,20 +164,25 @@ class SessionManagerHelpersMixin:
             return None
         return sid, self._lru.pop(sid)
 
-    def _relieve_memory_pressure(self, where: str):
-        """Evict idle LRU sessions oldest-first while under memory pressure.
+    def _relieve_memory_pressure(self, where: str, extra_bytes: int = 0):
+        """Evict idle UNLEASED sessions (largest first when sized) while the
+        admission rule refuses — INCLUDING the budget projection
+        ``extra_bytes`` (reserved in-flight work + the candidate's estimate,
+        review aa860ea B1): a create refused only by the budget must still
+        reclaim idle sessions, else the 503 lists `evictable` rows the server
+        never touches and the client's "retry" advice loops.
 
         Returns the latest MemorySnapshot. Closes sessions outside the manager
         lock. Stops when memory can admit again or no idle session remains.
         Synchronous (closing a session blocks); call via asyncio.to_thread from
-        async contexts.
+        async contexts. The sweep calls it with ``extra_bytes=0`` (plain rule).
         """
         snap = self.memory.read()
-        if self.memory.can_admit(snap):
+        if self.memory.can_admit(snap, extra_bytes=extra_bytes):
             return snap
-        while not self.memory.can_admit(snap):
+        while not self.memory.can_admit(snap, extra_bytes=extra_bytes):
             with self._lock:
-                popped = self._pop_oldest_idle_locked()
+                popped = self._pop_evictable_locked()
             if popped is None:
                 break  # nothing idle left to reclaim
             sid, sess = popped

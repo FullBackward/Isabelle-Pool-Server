@@ -52,6 +52,9 @@ def session_facts_row(session: Any, now: float) -> Dict[str, Any]:
 def _parse_estimates(spec: str) -> Dict[str, int]:
     """``"HOL=2048,HOL-Analysis=4096"`` -> {field: MB}; bad entries are skipped."""
     out: Dict[str, int] = {}
+    spec = spec.strip().strip(
+        "\"'"
+    )  # a loader may keep the .env quotes (review aa860ea S3)
     for item in spec.split(","):
         name, _, value = item.partition("=")
         name, value = name.strip(), value.strip()
@@ -106,13 +109,19 @@ class MemoryPolicyMixin:
         )
         return mb * 1024 * 1024
 
+    def session_budget_bytes(self, field: Optional[str]) -> int:
+        """Bytes a new session on ``field`` must fit on top of current usage:
+        reserved in-flight work + the field's estimate (relief + admission)."""
+        return self.reserved_bytes() + estimate_session_mb(field) * 1024 * 1024
+
     def admits_session(self, snapshot: MemorySnapshot, field: Optional[str]) -> bool:
         """Budget rule for a new session: used + reserved + estimate(field)
         under the threshold and the floor (plus the plain rule)."""
         if not self.memory.can_admit(snapshot):
             return False
-        extra = self.reserved_bytes() + estimate_session_mb(field) * 1024 * 1024
-        return self.memory.can_admit(snapshot, extra_bytes=extra)
+        return self.memory.can_admit(
+            snapshot, extra_bytes=self.session_budget_bytes(field)
+        )
 
     def admits_build(self, snapshot: MemorySnapshot) -> bool:
         """Budget rule for one more `isabelle build` process."""
@@ -258,11 +267,8 @@ class MemoryPolicyMixin:
             "builds_in_flight": self.builds_in_flight(),
             "sledgehammer_inflight": int(metrics.sledgehammer_inflight_value()),
             "external_pressure": snap.external_pressure,
-            "host_available_mb": (
-                None
-                if snap.host_available_bytes is None
-                else round(snap.host_available_bytes / (1024.0 * 1024.0), 1)
-            ),
+            "host_available_mb": _mb(snap.host_available_bytes),
+            "host_others_used_mb": _mb(snap.host_others_used_bytes),
             "reserved_mb": round(self.reserved_bytes() / (1024.0 * 1024.0), 1),
         }
         if include_sessions:
@@ -310,9 +316,8 @@ class MemoryPolicyMixin:
         warnings: List[str] = []
         try:
             snap = snapshot if snapshot is not None else self.memory.read()
-        except (
-            Exception
-        ):  # pylint: disable=broad-exception-caught  # never stop startup
+        except Exception:  # pylint: disable=broad-exception-caught
+            # never stop startup
             logger.exception("capacity check could not read memory")
             return warnings
         limit_mb = snap.limit_mb

@@ -38,6 +38,9 @@ async def root(session_manager: SessionManagerDep):
         "memory_source": lru.get("memory_source", "unknown"),
         "memory_state": lru.get("memory_state", "unknown"),
         "sessions_rss_mb": lru.get("sessions_rss_mb", 0),
+        "external_pressure": lru.get("external_pressure"),
+        "host_available_mb": lru.get("host_available_mb"),
+        "host_others_used_mb": lru.get("host_others_used_mb"),
         "timestamp": datetime.now().isoformat(),
     }
 

@@ -201,18 +201,25 @@ class SessionManager(SessionManagerHelpersMixin, MemoryPolicyMixin):
             # sessions first; only refuse if pressure persists with nothing idle
             # left to evict. Busy/leased sessions are never touched.
             if self.memory_management_enabled:
-                snap = await asyncio.to_thread(self._relieve_memory_pressure, where)
+                # Budget (batch 3): reserved in-flight work + this field's estimate,
+                # applied to relief AND the decision (review aa860ea B1).
+                extra = self.session_budget_bytes(normalized_field)
+                snap = await asyncio.to_thread(
+                    self._relieve_memory_pressure, where, extra
+                )
                 # Teardown -> cgroup accounting lags (poly exit, kernel reclaim):
                 # retry briefly before refusing, so a close immediately followed
                 # by a create does not 503 on a stale snapshot.
                 retries = Memory.ADMISSION_RETRIES
-                while not self.admits_session(snap, normalized_field) and retries > 0:
+                while (
+                    not self.memory.can_admit(snap, extra_bytes=extra) and retries > 0
+                ):
                     retries -= 1
                     await asyncio.sleep(Memory.ADMISSION_RETRY_DELAY_S)
-                    snap = await asyncio.to_thread(self._relieve_memory_pressure, where)
-                # Budget rule (batch 3): used + reserved in-flight work + the
-                # field's estimated size must stay under the threshold.
-                if not self.admits_session(snap, normalized_field):
+                    snap = await asyncio.to_thread(
+                        self._relieve_memory_pressure, where, extra
+                    )
+                if not self.memory.can_admit(snap, extra_bytes=extra):
                     raise self.create_refused(
                         where, snap
                     )  # MemoryPressure: 503 + facts
