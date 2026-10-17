@@ -32,6 +32,13 @@ Lifecycle:
 | `isabelle_close(file_path, destroy?)` | Release the session and unbind. With `destroy=true` (or `ISABELLE_MCP_LSP_CLOSE_DESTROYS=true`) the session is torn down immediately instead of released warm — the sanctioned way to free a multi-GB session; reopening the file rebinds transparently |
 | `isabelle_sync(file_path)` | Force a disk→session sync check (normally implicit) |
 
+Memory (see "Memory protocol" below):
+| Tool | What it does |
+|---|---|
+| `isabelle_list_sessions()` | What this MCP holds (open files + warm scratch sessions): idle time, expiry, memory per session (`ref` is display-only) |
+| `isabelle_memory_status()` | Server memory state, used/limit, what you hold vs. what others hold, advice |
+| `isabelle_release_idle(max_idle_s?)` | Close idle warm scratch sessions; with `max_idle_s > 0` also release idle open files (opt-in: next query reloads) |
+
 Read-only (each syncs first):
 | Tool | What it does |
 |---|---|
@@ -99,3 +106,19 @@ ISABELLE_MCP_LSP_TRANSPORT=streamable-http PYTHONPATH=. python -m mcp_servers.ls
 - Scratch sessions are held leased for reuse; they are reclaimed by the
   server's abandoned-lease reaper if the MCP dies.
 - No completions / code actions / widgets yet.
+
+## Memory protocol
+
+The server never evicts a leased session (bindings and scratch sessions are leased — they are
+this MCP's to release) and never words advice; it reports **facts**: every 503 body has an
+`error` key (`memory_pressure` with the numbers and the sessions involved, `pool_full`,
+`gateway_unavailable`), every response carries `X-Memory-State` (ok / warning / critical), and
+`GET /api/v1/memory` lists every session's expiry and attributed memory. This server keeps a
+**registry** of what it holds (session id and lease stay private; the agent sees a display-only
+`ref`), turns a memory 503 into `{"error": "memory_pressure", "your_sessions": [...],
+"others": {...}, "advice": [...]}`, and while the server is at warning/critical attaches a
+`memory_reminder` to results and closes its idle warm scratch sessions first. Advice, in order:
+release what you hold but do not use (`isabelle_release_idle()`, `isabelle_close(file,
+destroy=true)`), retry after `retry_after_s`, and — when the memory is held by other clients,
+builds, or external pressure — stop and tell the user. Knobs: `ISABELLE_MCP_LSP_SCRATCH_IDLE_S`
+(default 300 s, warm scratch TTL) and `ISABELLE_MCP_LSP_ADVICE_IDLE_S` (default 120 s).

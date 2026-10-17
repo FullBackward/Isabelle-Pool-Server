@@ -308,16 +308,72 @@ def test_dead_prover_detected_by_session_phase_when_pid_unknown(api):
     assert mgr.discarded == [SID]
 
 
-def test_enter_theory_reports_dead_prover(api):
+def test_enter_theory_on_dead_prover_is_404(api):
     s = _session()
     s.enter_thy = lambda *a, **kw: None  # type: ignore[method-assign]
     s.backend.raw.phase = "Terminated(x)"
-    body = (
-        api(_Manager(s))
-        .post(f"/api/v1/sessions/{SID}/enter_theory/T", headers=LEASE)
-        .json()
+    mgr = _Manager(s)
+    resp = api(mgr).post(f"/api/v1/sessions/{SID}/enter_theory/T", headers=LEASE)
+    assert resp.status_code == 404
+    assert "discarded" in resp.json()["detail"]
+    assert mgr.discarded == [SID]
+
+
+def test_known_dead_pid_skips_the_backend_call(api, tmp_path, monkeypatch):
+    """review bb1ec6b S1: a corpse must not cost the subgoal budget."""
+    monkeypatch.setattr(mm, "_PROC_ROOT", str(tmp_path / "proc-empty"))
+    (tmp_path / "proc-empty").mkdir()
+    s = _session()
+    s.record_mem_stats({"pid": "999", "size_heap": "1"})
+    calls = []
+    s.execute_command = lambda *a, **kw: calls.append(1) or s.canned_step  # type: ignore[method-assign]
+    s.verify_chunk = lambda *a, **kw: calls.append(1) or s.canned_chunk  # type: ignore[method-assign]
+    mgr = _Manager(s)
+    c = api(mgr)
+    b1 = c.post(
+        f"/api/v1/sessions/{SID}/commands", json={"command": "by simp"}, headers=LEASE
+    ).json()
+    b2 = c.post(
+        f"/api/v1/sessions/{SID}/verify_chunk",
+        json={"chunk": "lemma x: True by simp"},
+        headers=LEASE,
+    ).json()
+    assert calls == []  # backend never consulted
+    assert b1["error_kind"] == "prover_died" and b2["error_kind"] == "prover_died"
+    assert b2["success"] is False and b2["commands"] == []
+
+
+def test_exception_on_dead_prover_becomes_404(api):
+    """review bb1ec6b S2: a call that raises on a corpse discards it and answers 404."""
+    s = _session()
+
+    def boom(*a, **kw):
+        raise RuntimeError(
+            "Timeout waiting for isabelle_pool_server_goals_query result"
+        )
+
+    s.execute_command = boom  # type: ignore[method-assign]
+    s.backend.raw.phase = "Terminated(Process_Result(137))"
+    mgr = _Manager(s)
+    resp = api(mgr).post(
+        f"/api/v1/sessions/{SID}/commands", json={"command": "by simp"}, headers=LEASE
     )
-    assert body["success"] is False and body["error_kind"] == "prover_died"
+    assert resp.status_code == 404
+    assert mgr.discarded == [SID]
+
+
+def test_exception_on_live_prover_propagates(api):
+    s = _session()
+
+    def boom(*a, **kw):
+        raise RuntimeError("ordinary backend failure")
+
+    s.execute_command = boom  # type: ignore[method-assign]
+    mgr = _Manager(s)
+    resp = api(mgr).post(
+        f"/api/v1/sessions/{SID}/commands", json={"command": "by simp"}, headers=LEASE
+    )
+    assert resp.status_code == 500 and mgr.discarded == []
 
 
 def test_chunk_error_message_is_classified(api):

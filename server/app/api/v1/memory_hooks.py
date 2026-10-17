@@ -17,7 +17,12 @@ from __future__ import annotations
 from typing import Any, Callable, Optional, Tuple
 
 from server.app.core.logging import get_logger
-from server.app.services.session_memory import check_prover_dead, probe_memory
+from server.app.errors import SessionNotFound
+from server.app.services.session_memory import (
+    check_prover_dead,
+    probe_memory,
+    prover_dead,
+)
 from server.app.services.success_checker import (
     ERROR_KIND_PROVER_DIED,
     classify_error_kind,
@@ -31,20 +36,41 @@ PROVER_DIED_TEXT = (
 )
 
 
+def _discard(session: Any, session_manager: Any) -> None:
+    logger.error("prover died session_id=%s; discarding", session.session_id)
+    try:
+        session_manager.discard_dead(session.session_id)
+    except Exception:  # pylint: disable=broad-exception-caught
+        logger.exception("discard_dead failed for %s", session.session_id)
+
+
 def run_with_memory_hooks(
     fn: Callable[[], Any], session: Any, session_manager: Any
 ) -> Tuple[Any, Optional[str]]:
-    """Run ``fn`` (a blocking backend call), then the hooks. Returns
-    ``(result, override)`` where ``override`` is ``"prover_died"`` or None.
-    Call via ``asyncio.to_thread``."""
-    result = fn()
+    """Run ``fn`` (a blocking backend call) bracketed by the hooks. Returns
+    ``(result, override)`` where ``override`` is ``"prover_died"`` or None
+    (``result`` is None when the call was skipped). Call via ``asyncio.to_thread``.
+
+    - pid known and its process gone (microseconds): skip the backend entirely
+      — a corpse would otherwise burn the whole subgoal budget (review bb1ec6b S1);
+    - ``fn`` raised on a dead prover (e.g. sledgehammer timing out on a corpse):
+      discard and answer 404 like the next call would (S2);
+    - after a normal return: death check (pid or Isabelle session phase), then
+      the memory probe when due, skipped on a corpse.
+    """
+    if prover_dead(session):
+        _discard(session, session_manager)
+        return None, ERROR_KIND_PROVER_DIED
+    try:
+        result = fn()
+    except Exception:
+        if check_prover_dead(session):
+            _discard(session, session_manager)
+            raise SessionNotFound(PROVER_DIED_TEXT) from None
+        raise
     try:
         if check_prover_dead(session):
-            logger.error("prover died session_id=%s; discarding", session.session_id)
-            try:
-                session_manager.discard_dead(session.session_id)
-            except Exception:  # pylint: disable=broad-exception-caught
-                logger.exception("discard_dead failed for %s", session.session_id)
+            _discard(session, session_manager)
             return result, ERROR_KIND_PROVER_DIED
         probe_memory(session)
     except Exception:  # pylint: disable=broad-exception-caught

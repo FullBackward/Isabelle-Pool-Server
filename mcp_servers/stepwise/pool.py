@@ -15,7 +15,7 @@ from typing import Any, List, MutableMapping, Optional
 
 from client.async_client import PoolAsyncClient
 
-from ..common import GymClientMixin
+from ..common import KIND_BATCH, KIND_THEORY, GymClientMixin, SessionRegistry
 from .config import Config
 
 
@@ -43,10 +43,15 @@ class SessionPool(GymClientMixin):
         self._current: "MutableMapping[Any, Current]" = weakref.WeakKeyDictionary()
         self._default_key = _StdioKey()  # stable sentinel for keyless transports
         self._lock = asyncio.Lock()
+        # What this process holds on the server (session + lease kept here,
+        # never shown to the agent) — the registration list of plan §2.C.
+        self.registry = SessionRegistry()
 
     def conn_key(self, ctx: Any) -> Any:
         """Per-connection key: the MCP session object itself (weak-keyed);
-        falls back to a pool-owned sentinel (e.g. stdio)."""
+        falls back to a pool-owned sentinel (e.g. stdio, or no ctx at all)."""
+        if ctx is None:
+            return self._default_key
         try:
             sess = ctx.session
             if sess is not None:
@@ -90,6 +95,9 @@ class SessionPool(GymClientMixin):
             await self._safe_close(old)
         sid, lease = await self._begin_theory(name, imports, field)
         cur = Current(session_id=sid, lease_id=lease, theory=name)
+        self.registry.register(
+            sid, lease, KIND_THEORY, key, label=f"theory {name}", imports=tuple(imports)
+        )
         async with self._lock:
             self._current[key] = cur
         return cur
@@ -98,10 +106,12 @@ class SessionPool(GymClientMixin):
         cur = self._current.get(self.conn_key(ctx))
         if cur is None:
             raise RuntimeError("No active theory for this connection — call enter_theory first.")
+        self.registry.touch(cur.session_id)
         return cur
 
     async def _safe_close(self, cur: Current) -> None:
         """Best-effort DELETE of the gym session (destroys the backend)."""
+        self.registry.unregister(cur.session_id)
         try:
             c = await self.client()
             await c.close_session(cur.session_id, lease_id=cur.lease_id)
@@ -117,13 +127,18 @@ class SessionPool(GymClientMixin):
         return False
 
     async def verify_batch(
-        self, items: List[Dict[str, Any]], max_parallel: int, timeout: float
+        self,
+        items: List[Dict[str, Any]],
+        max_parallel: int,
+        timeout: float,
+        owner: Any = None,
     ) -> List[Dict[str, Any]]:
         """Verify many independent chunks CONCURRENTLY across the server's session pool.
 
         Each item = {name, imports?, field?, chunk}. Bounded by a semaphore so we never
         oversubscribe the server pool / memory gate. This single tool is how a sequential
-        MCP agent exploits the server's inter-session parallelism.
+        MCP agent exploits the server's inter-session parallelism. ``owner`` is the
+        connection key, so the registry attributes the transient sessions to it.
         """
         c = await self.client()
         cap = max(1, min(int(max_parallel), Config.MAX_PARALLEL))
@@ -138,6 +153,14 @@ class SessionPool(GymClientMixin):
                 sid = lease = None
                 try:
                     sid, lease = await self._begin_theory(name, imports, field)
+                    self.registry.register(
+                        sid,
+                        lease,
+                        KIND_BATCH,
+                        owner,
+                        label=f"batch {name}",
+                        imports=tuple(imports),
+                    )
                     rep = await c.verify_chunk(sid, chunk, timeout=timeout, lease_id=lease)
                     cmds = rep.get("commands", []) or []
                     return {
@@ -153,6 +176,7 @@ class SessionPool(GymClientMixin):
                     return {"name": name, "error": f"{type(e).__name__}: {e}"}
                 finally:
                     if sid is not None:
+                        self.registry.unregister(sid)
                         try:
                             await c.close_session(sid, lease_id=lease)
                         except Exception:

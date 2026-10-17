@@ -6,6 +6,7 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException
 
 from server.app.core.config import Logging
+from server.app.errors import SessionNotFound
 from server.app.core.input_guards import validate_import_name
 from server.app.core.logging import get_logger, logging_context
 from server.app.services.theory_parsing import parse_theory_header, suggested_field
@@ -90,7 +91,7 @@ async def verify_chunk(
         session,
         session_manager,
     )
-    report = result.get("report", {}) or {}
+    report = (result or {}).get("report", {}) or {}
     commands = [
         CommandStatus(
             index=int(c.get("i", 0)),
@@ -128,7 +129,7 @@ async def verify_chunk(
         timed_out=timed_out,
         stuck_line=stuck_line,
         commands=commands,
-        execution_time=float(result.get("execution_time", 0.0) or 0.0),
+        execution_time=float((result or {}).get("execution_time", 0.0) or 0.0),
         error=PROVER_DIED_TEXT if override else report.get("error"),
         error_kind=error_kind,
     )
@@ -219,13 +220,10 @@ async def enter_theory(
             session_manager,
         )
     )
-    if override:
-        return {
-            "success": False,
-            "message": PROVER_DIED_TEXT,
-            "imports": imports,
-            "error_kind": override,
-        }
+    if (
+        override
+    ):  # the session IS gone: 404, so no client continues on it (review bb1ec6b S3)
+        raise SessionNotFound(PROVER_DIED_TEXT)
     return {"success": True, "message": f"Entered theory {theory_name}", "imports": imports}
 
 

@@ -368,7 +368,11 @@ async def run_attempt(problem, repeat: int, results_path: Path, client=None, cfg
             final_thy_path.write_text(src, encoding="utf-8")
             result.final_thy_path = str(final_thy_path)
             logger.log_text("FINAL_SOURCE", src)
-            await call_tool(session, "isabelle_close", {"file_path": str(target_path)})
+            await call_tool(
+                session,
+                "isabelle_close",
+                {"file_path": str(target_path), "destroy": True},
+            )  # leave nothing warm behind (review bb1ec6b S5)
 
     except Exception as e:
         while hasattr(e, "exceptions") and getattr(e, "exceptions"):
@@ -389,13 +393,21 @@ async def run_attempt(problem, repeat: int, results_path: Path, client=None, cfg
         result.round_latencies = round_latencies
         if session is not None:
             try:
-                await call_tool(session, "isabelle_close", {"file_path": str(target_path)})
+                await call_tool(
+                    session,
+                    "isabelle_close",
+                    {"file_path": str(target_path), "destroy": True},
+                )  # leave nothing warm behind (review bb1ec6b S5)
             except Exception:
                 pass
     finally:
         if session is not None:
             try:
-                await call_tool(session, "isabelle_close", {"file_path": str(target_path)})
+                await call_tool(
+                    session,
+                    "isabelle_close",
+                    {"file_path": str(target_path), "destroy": True},
+                )  # leave nothing warm behind (review bb1ec6b S5)
             except Exception:
                 pass
         # Arbiter (must be before logger.close() to keep the file descriptor open)

@@ -20,6 +20,10 @@ class Config:
     # httpx timeout for the underlying client (must exceed CHUNK_TIMEOUT + server grace).
     HTTP_TIMEOUT: float = env_float(_P, "HTTP_TIMEOUT", 600.0)
 
+    # A session this connection holds counts as "idle" for memory advice and
+    # reminders after this many seconds without a tool call.
+    ADVICE_IDLE_S: int = env_int(_P, "ADVICE_IDLE_S", 120)
+
     # Transport: "stdio" (local) or "streamable-http" (remote).
     TRANSPORT: str = env_str(_P, "TRANSPORT", "stdio")
     HOST: str = env_str(_P, "HOST", "127.0.0.1")

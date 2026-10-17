@@ -23,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
+import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -30,7 +31,13 @@ import httpx
 
 from client.async_client import PoolAsyncClient
 
-from ..common import GymClientMixin, is_not_found  # noqa: F401  (is_not_found re-exported)
+from ..common import (  # noqa: F401  (is_not_found re-exported)
+    KIND_BINDING,
+    KIND_SCRATCH,
+    GymClientMixin,
+    SessionRegistry,
+    is_not_found,
+)
 from .config import Config
 
 
@@ -79,6 +86,9 @@ class LspPool(GymClientMixin):
         self._scratch_counts: Dict[Tuple, int] = {}
         self._scratch_lock = asyncio.Lock()
         self._retire_tasks: set = set()  # deferred closes of busy dropped sessions
+        # What this process holds on the server (bindings + scratch; session and
+        # lease kept here, never shown to the agent) — plan §2.C.
+        self.registry = SessionRegistry()
 
     # ---------------------------------------------------------- file bindings
 
@@ -134,6 +144,16 @@ class LspPool(GymClientMixin):
             task_group=group,
             heap_session=heap_session,
         )
+        self.registry.register(
+            binding.session_id,
+            binding.lease_id,
+            KIND_BINDING,
+            canon,
+            label=f"file {os.path.basename(canon)}",
+            task_group=group,
+            heap_session=heap_session,
+            imports=tuple(imports or ()),
+        )
         async with self._bindings_lock:
             old = self._bindings.pop(canon, None)
             self._bindings[canon] = binding
@@ -160,6 +180,7 @@ class LspPool(GymClientMixin):
         async with self._bindings_lock:
             binding = self._bindings.get(canon)
             if binding is not None:
+                self.registry.touch(binding.session_id)
                 return binding
             fut = self._creating.get(canon)
             owner = fut is None
@@ -209,6 +230,7 @@ class LspPool(GymClientMixin):
                 if not is_not_found(e):
                     raise
                 # session evicted server-side: rebind once and retry
+                self.registry.unregister(binding.session_id)
                 fresh = await self._create_binding(
                     canon, binding.task_group, binding.heap_session, None)
                 binding.session_id = fresh.session_id
@@ -225,11 +247,13 @@ class LspPool(GymClientMixin):
     async def call(self, binding: FileBinding, fn, *args, **kwargs):
         """Run a client call against a binding's session, rebinding once on 404."""
         c = await self.client()
+        self.registry.touch(binding.session_id)
         try:
             return await fn(c, binding.session_id, *args, **kwargs)
         except httpx.HTTPStatusError as e:
             if not is_not_found(e):
                 raise
+        self.registry.unregister(binding.session_id)
         fresh = await self._create_binding(
             binding.file_path, binding.task_group, binding.heap_session, None)
         binding.session_id = fresh.session_id
@@ -250,7 +274,22 @@ class LspPool(GymClientMixin):
             await self._safe_release(binding)
         return True
 
+    async def release_idle_bindings(self, max_idle_s: float) -> List[str]:
+        """Release (warm, not destroy) every open file whose session has not
+        been used for ``max_idle_s`` seconds: an unleased session is one the
+        server may reclaim under pressure (owner decision D3 — the MCP lets
+        go, the server never takes). Opt-in: the next sync costs a reload."""
+        now = time.time()
+        idle = self.registry.idle(min_idle_s=max_idle_s, now=now, kinds=(KIND_BINDING,))
+        paths = [e.owner for e in idle if isinstance(e.owner, str)]
+        released = []
+        for path in paths:
+            if await self.close_binding(path, destroy=False):
+                released.append(path)
+        return released
+
     async def _safe_release(self, binding: FileBinding) -> None:
+        self.registry.unregister(binding.session_id)
         try:
             c = await self.client()
             await c.release_session(binding.session_id, lease_id=binding.lease_id)
@@ -261,6 +300,7 @@ class LspPool(GymClientMixin):
         """Sanctioned immediate teardown: DELETE the binding's own session
         (authorized by the binding's own lease). The rebind-on-404 path
         recovers transparently if the file is opened again afterwards."""
+        self.registry.unregister(binding.session_id)
         try:
             c = await self.client()
             await c.close_session(binding.session_id, lease_id=binding.lease_id)
@@ -291,10 +331,18 @@ class LspPool(GymClientMixin):
         clear error naming the cap and the wait."""
         async with self._scratch_lock:
             queue = self._scratch.setdefault(key, asyncio.Queue())
-        try:
-            return queue.get_nowait()
-        except asyncio.QueueEmpty:
-            pass
+        while True:
+            try:
+                sid, lease, released_at = queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            if time.time() - released_at > Config.SCRATCH_IDLE_S:
+                # Warm but idle too long: let go (it is leased, so only the MCP
+                # can free it — review f1fb31a / plan G4).
+                await self.drop_scratch(key, sid, lease)
+                continue
+            self.registry.touch(sid)
+            return sid, lease
         async with self._scratch_lock:
             count = self._scratch_counts.get(key, 0)
             if count < Config.SCRATCH_POOL_SIZE:
@@ -304,7 +352,11 @@ class LspPool(GymClientMixin):
                 create = False
         if not create:
             try:
-                return await asyncio.wait_for(queue.get(), Config.SCRATCH_WAIT_TIMEOUT)
+                sid, lease, _ = await asyncio.wait_for(
+                    queue.get(), Config.SCRATCH_WAIT_TIMEOUT
+                )
+                self.registry.touch(sid)
+                return sid, lease
             except asyncio.TimeoutError:
                 raise RuntimeError(
                     f"scratch pool exhausted: all {Config.SCRATCH_POOL_SIZE} scratch "
@@ -321,6 +373,16 @@ class LspPool(GymClientMixin):
                 task_group=task_group,
                 heap_session=heap_session or None,
                 label=f"scratch:{task_group}:{heap_session or 'plain'}",
+            )
+            self.registry.register(
+                resp["session_id"],
+                resp["lease_id"],
+                KIND_SCRATCH,
+                f"scratch:{task_group}:{heap_session or 'plain'}",
+                label=f"scratch {task_group}/{heap_session or 'plain'}",
+                task_group=task_group,
+                heap_session=heap_session or None,
+                imports=imports,
             )
             return resp["session_id"], resp["lease_id"]
         except BaseException:
@@ -360,8 +422,32 @@ class LspPool(GymClientMixin):
 
     async def release_scratch(self, key: Tuple, session_id: str, lease_id: str) -> None:
         queue = self._scratch.get(key)
+        self.registry.touch(session_id)
         if queue is not None:
-            queue.put_nowait((session_id, lease_id))
+            queue.put_nowait((session_id, lease_id, time.time()))
+
+    async def retire_idle_scratch(self, max_idle_s: float = 0.0) -> int:
+        """Close every warm scratch session idle for at least ``max_idle_s``
+        seconds (0 = all idle ones). Returns how many were closed. Used by
+        isabelle_release_idle and by the memory reminder hook."""
+        now = time.time()
+        dropped = 0
+        for key, queue in list(self._scratch.items()):
+            keep = []
+            while True:
+                try:
+                    item = queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+                sid, lease, released_at = item
+                if now - released_at >= max_idle_s:
+                    await self.drop_scratch(key, sid, lease)
+                    dropped += 1
+                else:
+                    keep.append(item)
+            for item in keep:
+                queue.put_nowait(item)
+        return dropped
 
     async def drop_scratch(self, key: Tuple, session_id: str, lease_id: str) -> None:
         """Discard a scratch session (404, or an aborted use) and close it
@@ -371,6 +457,7 @@ class LspPool(GymClientMixin):
         and idle — blocking a pool slot — until the abandoned-lease reaper."""
         async with self._scratch_lock:
             self._scratch_counts[key] = max(0, self._scratch_counts.get(key, 1) - 1)
+        self.registry.unregister(session_id)
         try:
             c = await self.client()
             await c.close_session(session_id, lease_id=lease_id)

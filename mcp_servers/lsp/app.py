@@ -16,16 +16,52 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Any, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional, TypeVar
 
 from mcp.server.fastmcp import FastMCP
 
+from ..common import ToolNames, advise, make_guard, others_summary
 from ..common import dump_json as _j
 from .config import Config
 from .pool import LspPool, attempt_prefix, header_imports
 
 mcp = FastMCP("isabelle-pool-server-lsp", host=Config.HOST, port=Config.PORT)
 pool = LspPool()
+
+# Memory protocol (plan §2.C, owner decisions D3/D4): the server reports FACTS
+# (503 bodies with an `error` key, the X-Memory-State header, /api/v1/memory);
+# this server words the advice and names its own tools. Every tool is wrapped:
+# an HTTP error becomes structured JSON with advice; while the server is at
+# warning/critical a MEMORY REMINDER is attached to results and the idle warm
+# scratch sessions are closed first (the MCP frees its own before asking).
+TOOLS = ToolNames(
+    release_idle="isabelle_release_idle()",
+    close="isabelle_close(file_path, destroy=true)",
+    list_sessions="isabelle_list_sessions()",
+    memory_status="isabelle_memory_status()",
+    reopen="the next file-scoped call reopens it automatically",
+)
+_guard = make_guard(
+    registry=pool.registry,
+    tools=TOOLS,
+    get_client=pool.client,
+    owner_of=lambda args, kwargs: None,
+    idle_s=Config.ADVICE_IDLE_S,
+    on_reminder=lambda: pool.retire_idle_scratch(0.0),
+)
+
+
+_F = TypeVar("_F", bound=Callable[..., Awaitable[Any]])
+
+
+def tool(**kw: Any) -> Callable[[_F], _F]:
+    """`@mcp.tool()` + the memory guard (see TOOLS)."""
+
+    def deco(fn: _F) -> _F:
+        return mcp.tool(**kw)(_guard(fn))  # type: ignore[no-any-return]
+
+    return deco
+
 
 _SYNC_NOTE = (
     "The file is re-read from disk and re-synced to its session before "
@@ -41,7 +77,7 @@ def synced_tool(**kw):
     i.e. no instructions for the agent — caught by tests/test_mcp_tools_smoke.py.)"""
     def deco(fn):
         fn.__doc__ = (fn.__doc__ or "").rstrip() + " " + _SYNC_NOTE
-        return mcp.tool(**kw)(fn)
+        return mcp.tool(**kw)(_guard(fn))
     return deco
 
 
@@ -54,7 +90,8 @@ async def _bound_synced(file_path: str):
 
 # ------------------------------------------------------------------ lifecycle
 
-@mcp.tool()
+
+@tool()
 async def isabelle_open(
     file_path: str, task_group: Optional[str] = None,
     heap_session: Optional[str] = None, label: Optional[str] = None,
@@ -82,18 +119,19 @@ async def isabelle_open(
     })
 
 
-@mcp.tool()
+@tool()
 async def isabelle_close(file_path: str, destroy: bool = False) -> str:
     """Release the file's session and unbind. With destroy=true (or the
     ISABELLE_MCP_LSP_CLOSE_DESTROYS env), the session is torn down immediately
     instead of released warm back to the pool — the sanctioned way to free a
-    multi-GB session. Reopening the file afterwards rebinds transparently."""
+    multi-GB session (do this when a MEMORY REMINDER or memory_pressure advice
+    asks you to free memory). Reopening the file afterwards rebinds transparently."""
     destroyed = destroy or Config.CLOSE_DESTROYS
     closed = await pool.close_binding(file_path, destroy=destroyed)
     return _j({"closed": closed, "destroyed": destroyed, "file": file_path})
 
 
-@mcp.tool()
+@tool()
 async def isabelle_sync(file_path: str) -> str:
     """Force a disk → session re-sync check. Normally implicit: every file-scoped
     tool syncs before answering. Returns whether a reload happened and the
@@ -274,7 +312,7 @@ async def isabelle_checkpoint(file_path: str) -> str:
         binding, lambda c, sid: c.save_checkpoint(sid, lease_id=binding.lease_id)))
 
 
-@mcp.tool()
+@tool()
 async def isabelle_restore(file_path: str, checkpoint_id: int) -> str:
     """Restore a previously saved checkpoint on the file session. """
     binding = await pool.get_binding(file_path)
@@ -283,7 +321,7 @@ async def isabelle_restore(file_path: str, checkpoint_id: int) -> str:
         lambda c, sid: c.restore_checkpoint(sid, checkpoint_id, lease_id=binding.lease_id)))
 
 
-@mcp.tool()
+@tool()
 async def isabelle_rollback(file_path: str) -> str:
     """Roll back the most recent edit on the file session. NOTE: a failed
     load/attempt never persists on the file session — rollback is only for
@@ -297,7 +335,7 @@ async def isabelle_rollback(file_path: str) -> str:
         return _j({"success": False, "error": str(e)})
 
 
-@mcp.tool()
+@tool()
 async def isabelle_history(file_path: str) -> str:
     """Command history of the file session (commands executed since creation)."""
     binding = await pool.get_binding(file_path)
@@ -305,7 +343,7 @@ async def isabelle_history(file_path: str) -> str:
         binding, lambda c, sid: c.get_history(sid, lease_id=binding.lease_id)))
 
 
-@mcp.tool()
+@tool()
 async def isabelle_last_report(file_path: str) -> str:
     """The retained report of the most recent sync/verification of this file
     (per-command status with ranges). """
@@ -328,7 +366,11 @@ async def isabelle_multi_attempt(
     ISABELLE_MCP_LSP_MAX_PARALLEL and the scratch pool size). Per candidate:
     success / proof_open / pending_qed / used_sorry / timed_out and the failed
     or still-running commands with messages. Lines in `failed` are
-    candidate-relative (candidate line 1 = file line `line`).
+    candidate-relative (candidate line 1 = file line `line`). MEMORY: a
+    candidate result with error memory_pressure, or a memory_reminder on the
+    answer, means the prover server is short of memory — call
+    isabelle_release_idle(), then retry; if the advice says the memory is
+    held by others, stop and tell the user.
     """
     binding, _ = await _bound_synced(file_path)
     text = binding.cached_text or ""
@@ -377,7 +419,7 @@ async def isabelle_multi_attempt(
     return _j(list(results))
 
 
-@mcp.tool()
+@tool()
 async def isabelle_run_code(
     chunk: str, imports: Optional[List[str]] = None,
     task_group: Optional[str] = None, heap_session: Optional[str] = None,
@@ -422,9 +464,82 @@ async def isabelle_run_code(
         return _j({"success": False, "error": f"{type(e).__name__}: {e}"})
 
 
+# ------------------------------------------------------------- memory tools
+
+
+@tool()
+async def isabelle_list_sessions() -> str:
+    """The prover sessions this MCP holds: open files (bindings) and warm
+    scratch sessions, each with idle time, when the server will reap it, and
+    the memory attributed to it (refreshed from the server).
+
+    `ref` is display-only: no tool takes it — act by file path
+    (isabelle_close) or with isabelle_release_idle(). Use together with
+    isabelle_memory_status() after a memory_pressure error or a MEMORY REMINDER."""
+    c = await pool.client()
+    try:
+        facts = await c.memory_status()
+        pool.registry.merge(facts.get("sessions") or [])
+        pool.registry.mark_missing(facts.get("sessions") or [])
+    except Exception:  # noqa: BLE001 — the local view is still useful
+        pass
+    return _j(
+        {
+            "sessions": [e.to_agent() for e in pool.registry.all()],
+            "memory_state": c.last_memory_state,
+        }
+    )
+
+
+@tool()
+async def isabelle_memory_status() -> str:
+    """Prover-server memory: state (ok / warning / critical), used vs limit,
+    what this MCP holds, what others hold (sessions, task groups, builds,
+    external pressure), and advice when memory is tight. Call it after a
+    memory_pressure error or a MEMORY REMINDER; if the advice says the memory
+    is held by others, stop and tell the user."""
+    c = await pool.client()
+    facts = await c.memory_status()
+    pool.registry.merge(facts.get("sessions") or [])
+    owned = pool.registry.all()
+    state = facts.get("state")
+    memory = facts.get("memory") or {}
+    return _j(
+        {
+            "state": state,
+            "memory": {
+                k: memory.get(k)
+                for k in ("used_mb", "limit_mb", "available_mb", "pressure_pct")
+            },
+            "your_sessions": [e.to_agent() for e in owned],
+            "others": others_summary(facts, {e.session_id for e in owned}),
+            "advice": (
+                advise(facts, owned, tools=TOOLS, idle_s=Config.ADVICE_IDLE_S)
+                if state in ("warning", "critical")
+                else []
+            ),
+        }
+    )
+
+
+@tool()
+async def isabelle_release_idle(max_idle_s: int = 0) -> str:
+    """Free prover memory this MCP is holding: closes every warm scratch
+    session that is idle (always), and with max_idle_s > 0 also releases
+    open files whose session has not been used for that many seconds (their
+    next query reloads the file — slower, so opt-in). The answer to a MEMORY
+    REMINDER or memory_pressure advice; then retry the failed call."""
+    scratch = await pool.retire_idle_scratch(0.0)
+    files = (
+        await pool.release_idle_bindings(float(max_idle_s)) if max_idle_s > 0 else []
+    )
+    return _j({"scratch_closed": scratch, "files_released": files})
+
+
 # ------------------------------------------------------------------ heap tools
 
-@mcp.tool()
+
+@tool()
 async def isabelle_build_heap(
     task_group: str, project: str, session_name: Optional[str] = None,
 ) -> str:
@@ -445,7 +560,7 @@ async def isabelle_build_heap(
         return _j({"error": detail, "status_code": status})
 
 
-@mcp.tool()
+@tool()
 async def isabelle_heap_status(task_group: Optional[str] = None, project: Optional[str] = None) -> str:
     """Heap status. With project (+task_group): the full manifest (theory
     files with sha256/mtime, ROOT text, fingerprint, status, build log tail).

@@ -20,8 +20,23 @@ client wrappers added in Phase 0); it does **not** modify or patch Isabelle.
 `diagnostic` (read-only queries — `thm`/`term`/`find_theorems`/`print_*`, output that
 `verify_chunk` discards), `proof_state`, `source`, `sledgehammer`, `checkpoint`, `restore`,
 `rollback`, `close_theory`, `verify_batch`.
+`list_my_sessions` (the sessions this connection holds: idle time, expiry, memory),
+`memory_status` (server memory state + who holds it + advice).
 ### Resources
 `isabelle-pool-server://health`, `isabelle-pool-server://sessions`.
+
+### Memory protocol
+The server never evicts a leased session (it is the client's) and never words advice; it
+reports **facts**: every 503 body has an `error` key (`memory_pressure` with the numbers and
+the sessions involved, `pool_full`, `gateway_unavailable`), every response carries
+`X-Memory-State` (ok / warning / critical) and `GET /api/v1/memory` lists every session's
+expiry and attributed memory. This server keeps a **registry** of what it holds (session id
+and lease stay private; the agent sees a display-only `ref`), turns a memory 503 into
+`{"error": "memory_pressure", "your_sessions": [...], "others": {...}, "advice": [...]}`, and
+attaches a `memory_reminder` to results while the server is at warning/critical. Advice, in
+order: release what you hold but do not use (`close_theory()`), retry after `retry_after_s`,
+and — when the memory is held by other clients, builds, or external pressure — stop and tell
+the user. Knob: `ISABELLE_MCP_ADVICE_IDLE_S` (default 120 s) — idle threshold for "not using".
 ### Prompts
 `prove_theorem`.
 

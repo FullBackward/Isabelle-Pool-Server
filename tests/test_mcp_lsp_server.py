@@ -32,6 +32,17 @@ class FakeClient:
         self.dirty = set()  # sessions that have loaded a document (command history)
         self._counter = 0
         self.fail_next_load_404 = False
+        self.last_memory_state = "ok"
+
+    async def memory_status(self):
+        return {
+            "state": self.last_memory_state,
+            "memory": {},
+            "sessions": [],
+            "evictable": [],
+            "leased": [],
+            "builds_in_flight": {},
+        }
 
     async def create_session(self, theories=None, field="HOL", task_group=None,
                              heap_session=None, project=None, label=None):
@@ -461,3 +472,73 @@ def test_failed_creation_is_not_cached_and_waiters_see_the_error(tmp_path):
     assert all(isinstance(r, RuntimeError) for r in results)  # both saw the one failure
     assert retry.session_id == "s9" and len(calls) == 2
     assert pool._creating == {}
+
+
+# ------------------------------------------------- memory awareness (plan 2.C)
+
+
+def test_registry_tracks_bindings_and_scratch(tmp_path):
+    f = tmp_path / "Reg.thy"
+    f.write_text("theory Reg imports Main begin end")
+    pool = _pool_with_fake()
+
+    async def run():
+        b = await pool.get_binding(str(f))
+        key = pool.scratch_key("default", None, ["Main"], None)
+        s = await pool.acquire_scratch(key)
+        await pool.release_scratch(key, *s)
+        kinds = sorted((e.kind, e.session_id) for e in pool.registry.all())
+        await pool.close_binding(str(f))
+        left = [e.kind for e in pool.registry.all()]
+        return b.session_id, s[0], kinds, left
+
+    sid, scratch_sid, kinds, left = asyncio.run(run())
+    assert kinds == sorted([("binding", sid), ("scratch", scratch_sid)])
+    assert left == ["scratch"]  # the binding was unregistered on close
+    assert all("lease" not in k for e in pool.registry.all() for k in e.to_agent())
+
+
+def test_scratch_idle_ttl_closes_stale_sessions(monkeypatch):
+    from mcp_servers.lsp.config import Config
+
+    monkeypatch.setattr(
+        Config, "SCRATCH_IDLE_S", 0.0
+    )  # everything released is stale at once
+    pool = _pool_with_fake()
+    key = pool.scratch_key("default", None, ["Main"], None)
+
+    async def run():
+        a = await pool.acquire_scratch(key)
+        await pool.release_scratch(key, *a)
+        await asyncio.sleep(0.01)
+        b = await pool.acquire_scratch(
+            key
+        )  # the stale one is dropped, a fresh one created
+        return a, b
+
+    a, b = asyncio.run(run())
+    assert a != b and pool._client.closed == [a[0]]
+    assert pool.registry.get(a[0]) is None and pool.registry.get(b[0]) is not None
+
+
+def test_retire_idle_scratch_and_release_idle_bindings(tmp_path):
+    f = tmp_path / "Idle.thy"
+    f.write_text("theory Idle imports Main begin end")
+    pool = _pool_with_fake()
+
+    async def run():
+        b = await pool.get_binding(str(f))
+        key = pool.scratch_key("default", None, ["Main"], None)
+        s = await pool.acquire_scratch(key)
+        await pool.release_scratch(key, *s)
+        dropped = await pool.retire_idle_scratch(0.0)
+        pool.registry.touch(
+            b.session_id, now=0.0
+        )  # pretend the file was last used long ago
+        released = await pool.release_idle_bindings(60.0)
+        return dropped, released, s[0], b.session_id
+
+    dropped, released, scratch_sid, bind_sid = asyncio.run(run())
+    assert dropped == 1 and pool._client.closed == [scratch_sid]
+    assert released == [canonical_path(str(f))] and pool._client.released == [bind_sid]
+    assert pool.registry.all() == []

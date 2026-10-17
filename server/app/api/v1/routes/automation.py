@@ -39,7 +39,9 @@ async def sledgehammer(
     finally:
         metrics.sledgehammer_seconds.observe(time.time() - start)
     elapsed = time.time() - start
-    if override:  # dead prover: no suggestion is trustworthy; session discarded
+    if (
+        override or suggestions is None
+    ):  # dead prover: nothing trustworthy; session discarded
         suggestions = []
     found = len(suggestions) > 0
     metrics.sledgehammer_total.labels("success" if found else "failure").inc()

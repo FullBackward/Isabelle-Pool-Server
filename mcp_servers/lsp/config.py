@@ -28,6 +28,14 @@ class Config:
     # clear error instead of hanging forever (Bug 17 / audit MCP-1).
     SCRATCH_WAIT_TIMEOUT: float = env_float(_P, "SCRATCH_WAIT_TIMEOUT", ATTEMPT_TIMEOUT + 60.0)
 
+    # Warm scratch sessions idle longer than this are closed on the next
+    # acquire / reminder (they are leased, so the server never evicts them —
+    # the MCP must let go itself).
+    SCRATCH_IDLE_S: float = env_float(_P, "SCRATCH_IDLE_S", 300.0)
+    # A held session counts as "idle" for memory advice and reminders after
+    # this many seconds without a tool call.
+    ADVICE_IDLE_S: int = env_int(_P, "ADVICE_IDLE_S", 120)
+
     # When true, isabelle_close destroys the session (immediate teardown,
     # freeing memory) instead of the default warm release back to the pool.
     # The per-call `destroy` argument on isabelle_close overrides this.
