@@ -6,6 +6,8 @@ server — it skips cleanly when any is missing.
 """
 from __future__ import annotations
 
+import os
+
 import dataclasses
 import json
 import sys
@@ -101,7 +103,10 @@ def _server_up() -> bool:
         return False
 
 
-@pytest.mark.skipif(not _server_up(), reason="needs the Isabelle Pool Server on :8000")
+@pytest.mark.skipif(
+    os.environ.get("ISABELLE_LIVE_TESTS") != "1" or not _server_up(),
+    reason="live test: set ISABELLE_LIVE_TESTS=1 with the Isabelle Pool Server on :8000",
+)
 def test_mock_llm_solves_through_arbiter(tmp_path):
     """Scripted model: write_file(good proof) → DONE. Asserts the full path —
     stdio MCP spawn, file tools, sync, DONE gate, arbiter — yields a solved row."""

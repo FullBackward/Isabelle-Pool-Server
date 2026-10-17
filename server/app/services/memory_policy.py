@@ -114,14 +114,20 @@ class MemoryPolicyMixin:
         reserved in-flight work + the field's estimate (relief + admission)."""
         return self.reserved_bytes() + estimate_session_mb(field) * 1024 * 1024
 
-    def admits_session(self, snapshot: MemorySnapshot, field: Optional[str]) -> bool:
-        """Budget rule for a new session: used + reserved + estimate(field)
-        under the threshold and the floor (plus the plain rule)."""
+    def admits_session(
+        self,
+        snapshot: MemorySnapshot,
+        field: Optional[str],
+        extra_bytes: Optional[int] = None,
+    ) -> bool:
+        """THE budget rule for a new session (single definition, review 4815c37
+        S2): the plain rule, then used + ``extra_bytes`` (reserved in-flight
+        work + the field's estimate; computed here unless the caller already
+        has it) under the threshold and the floor."""
         if not self.memory.can_admit(snapshot):
             return False
-        return self.memory.can_admit(
-            snapshot, extra_bytes=self.session_budget_bytes(field)
-        )
+        extra = self.session_budget_bytes(field) if extra_bytes is None else extra_bytes
+        return self.memory.can_admit(snapshot, extra_bytes=extra)
 
     def admits_build(self, snapshot: MemorySnapshot) -> bool:
         """Budget rule for one more `isabelle build` process."""

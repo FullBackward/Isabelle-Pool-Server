@@ -392,3 +392,82 @@ def test_external_pressure_requires_others_to_exceed_headroom(tmp_path, monkeypa
     assert snap.host_others_used_bytes == 2300 * MB and snap.external_pressure is False
     assert m.can_admit(snap) is False  # the host is short regardless of cause
     assert m.status_dict(snap)["host_others_used_mb"] == 2300.0
+
+
+# ------------------------------ reservation at the admission decision (live run 5/6)
+
+
+class _FakeRaw:
+    def exit(self):
+        return None
+
+    def mem_stats(self):
+        return {}
+
+
+class _FakeGateway:
+    """Enough of ReplBackendGatewayProcess for _create_session: builds Java
+    lists and returns a raw backend after a short delay (the race window)."""
+
+    class _JVM:
+        class java:  # noqa: N801
+            class util:  # noqa: N801
+                @staticmethod
+                def ArrayList():  # noqa: N802
+                    class _L(list):
+                        def add(self, x):
+                            self.append(x)
+
+                    return _L()
+
+    def __init__(self):
+        self.gateway = type("G", (), {"jvm": self._JVM()})()
+        self.created = 0
+
+    def get_repl_backend_with_initial_theories(self, **kw):
+        import time as _t
+
+        _t.sleep(0.3)  # creation takes a while: concurrent creates overlap here
+        self.created += 1
+        return _FakeRaw()
+
+    def is_alive(self):
+        return True
+
+
+def test_concurrent_creates_reserve_before_the_backend_exists(monkeypatch):
+    """Two creates arrive together; the budget allows ONE estimate on top of
+    usage. The first must reserve at its admission decision so the second is
+    refused — before this fix both passed (the reservation came after awaits)."""
+    monkeypatch.setattr(Memory, "ADMISSION_RETRIES", 0)
+    monkeypatch.setattr(mp, "SESSION_ESTIMATES_MB", {"HOL": 2048})
+    sm = SessionManager()
+    sm.memory = _monitor()
+    sm.memory.read = lambda: _snap(10000, 14336)  # type: ignore[method-assign]  # 70 %: one 2048 fits, two do not
+    sm.gateway = _FakeGateway()
+    sm._ensure_gateway = lambda: None  # type: ignore[method-assign]
+
+    class _Thy:
+        created_files = []
+
+        def gen_file(self, name, deps):
+            return type("R", (), {"data": f"{name}.thy", "err": None})()
+
+    sm.thy_init = _Thy()
+
+    async def both():
+        results = await asyncio.gather(
+            sm._create_session(["Main"], "HOL", lease_id="L1"),
+            sm._create_session(["Main"], "HOL", lease_id="L2"),
+            return_exceptions=True,
+        )
+        return results
+
+    results = asyncio.run(both())
+    kinds = sorted(type(r).__name__ for r in results)
+    assert kinds == ["MemoryAwareSession", "MemoryPressure"], kinds
+    assert sm.gateway.created == 1
+    assert sm.creates_in_flight == 0
+    for r in results:
+        if not isinstance(r, Exception):
+            r.close()

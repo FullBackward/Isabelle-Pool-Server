@@ -212,17 +212,24 @@ class SessionManager(SessionManagerHelpersMixin, MemoryPolicyMixin):
                 # by a create does not 503 on a stale snapshot.
                 retries = Memory.ADMISSION_RETRIES
                 while (
-                    not self.memory.can_admit(snap, extra_bytes=extra) and retries > 0
+                    not self.admits_session(snap, normalized_field, extra)
+                    and retries > 0
                 ):
                     retries -= 1
                     await asyncio.sleep(Memory.ADMISSION_RETRY_DELAY_S)
                     snap = await asyncio.to_thread(
                         self._relieve_memory_pressure, where, extra
                     )
-                if not self.memory.can_admit(snap, extra_bytes=extra):
+                # The decision: recompute the budget AFTER the awaits above (a
+                # concurrent create may have reserved meanwhile) and reserve
+                # with no await in between, so the next create sees this one.
+                extra = self.session_budget_bytes(normalized_field)
+                if not self.admits_session(snap, normalized_field, extra):
                     raise self.create_refused(
                         where, snap
                     )  # MemoryPressure: 503 + facts
+            # Released once the backend exists (or creation failed).
+            self.creates_in_flight += 1
 
             session_id = uuid.uuid4()
 
@@ -249,14 +256,15 @@ class SessionManager(SessionManagerHelpersMixin, MemoryPolicyMixin):
                             session_dirs=java_dirs,
                         )
 
-                self.creates_in_flight += 1  # budget reservation until resident
                 try:
                     raw_backend = await asyncio.wait_for(
                         asyncio.to_thread(_create_backend),
                         timeout=Timeouts.SESSION_CREATE,
                     )
                 finally:
-                    self.creates_in_flight -= 1
+                    self.creates_in_flight -= (
+                        1  # the backend exists (or creation failed)
+                    )
             except TimeoutError:
                 # asyncio.TimeoutError alias (3.11+): the request must not
                 # outlive a wedged gateway — fail fast with a clean error.
