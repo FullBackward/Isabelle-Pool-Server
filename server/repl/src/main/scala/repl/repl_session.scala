@@ -58,6 +58,10 @@ class Repl_Session(session_manager: Session_Manager, initial_thys: List[String] 
 
   private def session: Headless.Session = session_data.session
 
+  /** Isabelle session phase as text (`Ready`, `Terminated(...)`, ...): the
+   *  prover-level sign, if any, that the ML process is gone. */
+  def phase_string: String = session.phase.toString
+
   def entered_some_thy: Boolean = current_thy_info.isDefined
 
   def current_thy_begun: Boolean = current_thy_info match {

@@ -54,17 +54,17 @@ FACTS = {
 }
 
 
-@app.get("/__test_memory_pressure")
+@app.get("/__test_memory_pressure", include_in_schema=False)
 async def _raise_memory_pressure():
     raise MemoryPressure("cannot create session: memory pressure too high", facts=FACTS)
 
 
-@app.get("/__test_pool_full")
+@app.get("/__test_pool_full", include_in_schema=False)
 async def _raise_pool_full():
     raise PoolExhausted("Session pool is full")
 
 
-@app.get("/__test_gateway_down")
+@app.get("/__test_gateway_down", include_in_schema=False)
 async def _raise_gateway_down():
     raise GatewayUnavailable("gateway unresponsive")
 

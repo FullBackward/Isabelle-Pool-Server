@@ -150,6 +150,28 @@ def proc_alive(pid: int) -> bool:
     return os.path.isdir(f"{_PROC_ROOT}/{pid}")
 
 
+def read_starttime(pid: int) -> Optional[int]:
+    """Process start time (clock ticks since boot, field 22 of /proc/<pid>/stat).
+    Together with the pid it identifies ONE process: a pid reused after a
+    prover death carries a different start time (review a96f76d S1)."""
+    try:
+        with open(f"{_PROC_ROOT}/{pid}/stat", "r", encoding="utf-8") as fh:
+            _, _, rest = fh.read().rpartition(")")
+        fields = rest.split()
+        return int(fields[19]) if len(fields) > 19 else None  # state is fields[0]
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def proc_matches(pid: int, starttime: Optional[int]) -> bool:
+    """True while ``pid`` exists AND (when known) still has ``starttime``."""
+    if not proc_alive(pid):
+        return False
+    if starttime is None:
+        return True
+    return read_starttime(pid) == starttime
+
+
 def read_rss(pid: int) -> Optional[int]:
     """Resident set size of one process in bytes (``VmRSS`` from
     /proc/<pid>/status); None when the process is gone or unreadable."""

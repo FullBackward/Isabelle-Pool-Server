@@ -46,6 +46,8 @@ def _bare_manager():
     mgr = SessionManager.__new__(SessionManager)
     mgr._lock = threading.Lock()
     mgr._lru = {"sid-1": _FakeSession()}
+    mgr.idle_timeout = 1800.0  # the listing reports expiry (memory-awareness, batch 2)
+    mgr.max_lease_age = 7200.0
     return mgr
 
 

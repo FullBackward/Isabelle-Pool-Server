@@ -23,6 +23,7 @@ from server.app.services.memory_monitor import (
     SOURCE_FALLBACK,
     MemoryMonitor,
     MemorySnapshot,
+    rss_tree,
 )
 
 logger = get_logger(__name__)
@@ -65,6 +66,69 @@ class MemoryPolicyMixin:
     build_verifier: Any
     heap_pool: Any = None  # set by the app lifespan (builds-in-flight facts)
 
+    def discard_dead(self, session_id: Any, reason: str = "prover_died") -> bool:
+        """Remove a session whose ML process is gone (plan-review B2).
+
+        Marking it CLOSED is not enough: a CLOSED session left in the LRU is
+        skipped by the sweep, refused by close_session, keeps its lease and its
+        pool slot. Pops under the lock, closes outside it (best effort — the
+        backend has nothing to talk to), counts the eviction. Returns False
+        when the id is unknown (already gone)."""
+        with self._lock:
+            session = self._lru.pop(session_id, None)
+        if session is None:
+            return False
+        logger.error(
+            "discarding dead session session_id=%s reason=%s pid=%s",
+            session_id,
+            reason,
+            getattr(session, "ml_pid", None),
+        )
+        try:
+            session.close()
+        except Exception:  # pylint: disable=broad-exception-caught
+            logger.warning("close of dead session %s raised (ignored)", session_id)
+        metrics.sessions_evicted.labels(reason).inc()
+        metrics.memory_failures.labels(reason).inc()
+        return True
+
+    def sample_sessions_rss(self, now: Optional[float] = None) -> Dict[str, int]:
+        """Sweep-side attribution: one /proc scan for every session with a known
+        pid; a pid that vanished means the prover died -> discard_dead."""
+        now = time.time() if now is None else now
+        with self._lock:
+            pairs = [
+                (sid, s) for sid, s in self._lru.items() if getattr(s, "ml_pid", None)
+            ]
+        tree = rss_tree({s.ml_pid for _, s in pairs})
+        dead = []
+        for sid, session in pairs:
+            rss = tree.get(session.ml_pid)
+            # prover_alive is start-time aware: a reused pid is NOT the session's poly.
+            if rss is None or session.prover_alive() is False:
+                dead.append(sid)
+            else:
+                session.set_rss(rss, now)
+        for sid in dead:
+            self.discard_dead(sid)
+        return {"sampled": len(pairs) - len(dead), "dead": len(dead)}
+
+    @staticmethod
+    def rss_totals(sessions: List[Any]) -> Dict[str, float]:
+        """Pool RSS totals in MB, split by lease state (metrics S5)."""
+        leased = unleased = 0
+        for s in sessions:
+            rss = getattr(s, "rss_bytes", None) or 0
+            if s.leased:
+                leased += rss
+            else:
+                unleased += rss
+        return {
+            "sessions_rss_mb": _mb(leased + unleased) or 0.0,
+            "sessions_rss_leased_mb": _mb(leased) or 0.0,
+            "sessions_rss_unleased_mb": _mb(unleased) or 0.0,
+        }
+
     def builds_in_flight(self) -> Dict[str, int]:
         heap = 0
         pool = getattr(self, "heap_pool", None)
@@ -85,7 +149,10 @@ class MemoryPolicyMixin:
         (plan §3.1): snapshot + tier, builds in flight, and the pool's sessions
         split into ``evictable`` (idle, unleased — the server may reclaim them)
         and ``leased`` (client-owned — never evicted, only reported), each
-        capped at Memory.FACTS_LIST_CAP by RSS. Facts only, no advice."""
+        capped at Memory.FACTS_LIST_CAP by RSS. Facts only, no advice.
+
+        Takes ``_lock`` (non-reentrant): NEVER call while holding it — compute
+        under the lock, call this outside (review a96f76d S2)."""
         snap = snapshot if snapshot is not None else self.memory.read()
         now = time.time()
         facts: Dict[str, Any] = {
@@ -99,7 +166,7 @@ class MemoryPolicyMixin:
             },
             "retry_after_s": 5,
             "builds_in_flight": self.builds_in_flight(),
-            "sledgehammer_inflight": metrics.sledgehammer_inflight_value(),
+            "sledgehammer_inflight": int(metrics.sledgehammer_inflight_value()),
             "external_pressure": None,  # batch 3
         }
         if include_sessions:
@@ -124,12 +191,14 @@ class MemoryPolicyMixin:
     def create_refused(self, where: str, snap: MemorySnapshot) -> MemoryPressure:
         """The 503 for a session create/acquire the gate refused."""
         metrics.pool_exhausted.labels("memory").inc()
+        facts = self.memory_facts(snap)
         return MemoryPressure(
             f"{where}: cannot create session: memory pressure too high "
             f"({snap.pressure_pct:.0f}%, {snap.available_mb:.0f}MB available) "
             f"and no idle sessions to evict. Try again later or raise the "
             f"container memory limit / ISABELLE_MEMORY_PRESSURE_THRESHOLD.",
-            facts=self.memory_facts(snap),
+            facts=facts,
+            retry_after_s=int(facts["retry_after_s"]),  # one source for body + header
         )
 
     def log_capacity_warnings(
@@ -164,6 +233,12 @@ class MemoryPolicyMixin:
                 f"memory limit ({limit_mb:.0f}MB): two ML processes at the cap can exceed "
                 f"the limit together"
             )
+        if Memory.WARNING_THRESHOLD >= Memory.PRESSURE_THRESHOLD:
+            warnings.append(
+                f"ISABELLE_MEMORY_WARNING_THRESHOLD={Memory.WARNING_THRESHOLD} is not below "
+                f"ISABELLE_MEMORY_PRESSURE_THRESHOLD={Memory.PRESSURE_THRESHOLD}: the "
+                f"'warning' tier can never be reported"
+            )
         if self.memory_management_enabled and snap.source == SOURCE_FALLBACK:
             warnings.append(
                 "memory management is enabled but neither cgroup accounting nor "
@@ -188,12 +263,14 @@ class MemoryPolicyMixin:
         if self.memory.can_admit(snap):
             return
         metrics.pool_exhausted.labels("memory_build").inc()
+        facts = self.memory_facts(snap)
         raise MemoryPressure(
             f"cannot start {kind} build: memory pressure too high "
             f"({snap.pressure_pct:.0f}%, {snap.available_mb:.0f}MB available). "
             f"Try again later, close idle sessions, or raise the container memory "
             f"limit / ISABELLE_MEMORY_PRESSURE_THRESHOLD.",
-            facts=self.memory_facts(snap),
+            facts=facts,
+            retry_after_s=int(facts["retry_after_s"]),
         )
 
     async def build_admit(self, kind: str) -> None:

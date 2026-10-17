@@ -1,0 +1,220 @@
+"""Per-session memory attribution (plan §2.B, owner decision D2).
+
+The numbers come from the session's own ML process: ``Backend_Probes.mem_stats``
+(an overlay query registered in REPL.ML) returns the process id and the
+Poly/ML runtime statistics; the server then reads the resident size of that
+pid (plus its sledgehammer children) from ``/proc``. The cgroup stays the truth
+for the container total — this is attribution, not admission.
+
+``MemoryAwareSession`` is the session class the manager instantiates; it is a
+plain ``_Isabelle_Session`` plus this mixin, kept in its own module because
+``session.py`` sits at the source-size gate. Helpers at module level are no-ops
+for sessions without the mixin (test stubs).
+
+Field semantics (plan-review 501a1ba S1/S2):
+- a probe answer is a *fresh heap sample* only when it carries ``size_heap``;
+  ``{}`` (no host command yet) and ``{pid}``-only answers (the cached pid) are
+  "no new sample", never failures;
+- ``heap_mb`` is ``size_heap``, the dynamic heap the runtime has reserved; the
+  mmapped heap image lives outside it, so RSS stays the attribution figure and
+  no "live data" is derived from the heap keys.
+"""
+
+from __future__ import annotations
+
+import time
+from typing import Any, Callable, Dict, Mapping, Optional
+
+from server.app.core.config import Memory, Repl, Timeouts
+from server.app.core.logging import get_logger
+from server.app.services.memory_monitor import proc_matches, read_starttime
+from server.app.services.internal_models import SessionStatus
+from server.app.services.session import _Isabelle_Session
+
+logger = get_logger(__name__)
+
+HEAP_KEY = "size_heap"
+_MB = 1024.0 * 1024.0
+
+
+def _mb(value: Optional[int]) -> Optional[float]:
+    return None if value is None else round(value / _MB, 1)
+
+
+class SessionMemoryMixin:  # pylint: disable=too-many-instance-attributes
+    """Memory facts of one session; see the module docstring."""
+
+    # provided by _Isabelle_Session
+    session_id: Any
+    status: Any
+    backend: Any
+    _call_backend: Callable[..., Any]
+
+    ml_pid: Optional[int]
+    ml_starttime: Optional[int]  # /proc start time of ml_pid: guards against pid reuse
+    ml_heap: Dict[str, int]
+    ml_phase: Optional[str]
+    rss_bytes: Optional[int]
+    rss_sampled_at: float
+    mem_sampled_at: float
+    mem_probe_error: Optional[str]
+
+    def _init_memory(self) -> None:
+        self.ml_pid = None
+        self.ml_starttime = None
+        self.ml_heap = {}
+        self.ml_phase = None
+        self.rss_bytes = None
+        self.rss_sampled_at = 0.0
+        self.mem_sampled_at = 0.0
+        self.mem_probe_error = None
+
+    @property
+    def heap_bytes(self) -> Optional[int]:
+        """Poly/ML ``size_heap`` of the last fresh sample (reserved dynamic heap)."""
+        return self.ml_heap.get(HEAP_KEY)
+
+    @property
+    def rss_mb(self) -> Optional[float]:
+        """Resident size of the ML process (+ children) at the last sweep."""
+        return _mb(self.rss_bytes)
+
+    @property
+    def heap_mb(self) -> Optional[float]:
+        """``size_heap`` of the last fresh sample, in MB."""
+        return _mb(self.heap_bytes)
+
+    def record_mem_stats(
+        self, facts: Mapping[str, str], now: Optional[float] = None
+    ) -> bool:
+        """Store a probe answer. Returns True for a fresh heap sample."""
+        now = time.time() if now is None else now
+        pid = str(facts.get("pid", "") or "")
+        if pid.isdigit() and int(pid) != self.ml_pid:
+            self.ml_pid = int(pid)
+            self.ml_starttime = read_starttime(self.ml_pid)
+        self.mem_sampled_at = now
+        if "error" in facts:
+            self.mem_probe_error = str(facts["error"])[:200]
+            return False
+        if HEAP_KEY not in facts:
+            return False
+        heap: Dict[str, int] = {}
+        for key, value in facts.items():
+            if key == "pid":
+                continue
+            try:
+                heap[str(key)] = int(float(value))  # "now" is a float string
+            except (TypeError, ValueError):
+                continue
+        self.ml_heap = heap
+        self.mem_probe_error = None
+        return True
+
+    def maybe_probe_mem(
+        self, now: Optional[float] = None, min_interval: Optional[float] = None
+    ) -> bool:
+        """Run the ML probe unless one ran within ``min_interval`` seconds.
+
+        Request-path only (after a call that already paid an overlay); a probe
+        submitted from the sweep would queue behind in-flight work on the
+        session's single worker thread. A failed probe counts as a sample
+        (``mem_sampled_at`` set) and is logged at WARNING without a traceback,
+        so a distressed prover costs at most one short probe per interval.
+        """
+        now = time.time() if now is None else now
+        interval = Memory.PROBE_MIN_INTERVAL_S if min_interval is None else min_interval
+        if self.status == SessionStatus.CLOSED:
+            return False
+        if now - self.mem_sampled_at < interval:
+            return False
+        try:
+            raw = self._call_backend(
+                lambda: dict(self.backend.raw.mem_stats()),
+                timeout=Repl.MEM_TIMEOUT_S + Timeouts.BACKEND_GRACE_S,
+            )
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            self.mem_sampled_at = now
+            self.mem_probe_error = f"{type(exc).__name__}: {exc}"[:200]
+            logger.warning(
+                "memory probe failed session_id=%s: %s",
+                self.session_id,
+                self.mem_probe_error,
+            )
+            return False
+        return self.record_mem_stats({str(k): str(v) for k, v in raw.items()}, now)
+
+    def set_rss(self, rss_bytes: Optional[int], now: Optional[float] = None) -> None:
+        """Record the sweep's RSS reading (bytes) for this session."""
+        self.rss_bytes = rss_bytes
+        self.rss_sampled_at = time.time() if now is None else now
+
+    def prover_alive(self) -> Optional[bool]:
+        """None until the pid is known; else whether THAT process still exists
+        (pid present and, when recorded, the same start time — a reused pid
+        after a prover death must not read as alive)."""
+        if self.ml_pid is None:
+            return None
+        return proc_matches(self.ml_pid, self.ml_starttime)
+
+    def memory_fields(self) -> Dict[str, Any]:
+        """Listing / facts fields (never the pid: it is an internal handle)."""
+        return {
+            "rss_mb": self.rss_mb,
+            "heap_mb": self.heap_mb,
+            "mem_sampled_at": self.mem_sampled_at or None,
+            "mem_probe_error": self.mem_probe_error,
+        }
+
+
+class MemoryAwareSession(SessionMemoryMixin, _Isabelle_Session):
+    """The session class the manager creates: a plain session + memory facts."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._init_memory()
+
+
+def probe_memory(session: Any, now: Optional[float] = None) -> bool:
+    """Request-path hook: probe if due. No-op for sessions without the mixin."""
+    if isinstance(session, SessionMemoryMixin):
+        return session.maybe_probe_mem(now)
+    return False
+
+
+def prover_dead(session: Any) -> bool:
+    """True only when the pid is known AND its process is gone."""
+    return isinstance(session, SessionMemoryMixin) and session.prover_alive() is False
+
+
+def expiry_fields(
+    session: Any, now: float, idle_timeout: float, max_lease_age: float
+) -> Dict[str, Any]:
+    """When the server will reap the session if nothing touches it: idle
+    sessions after ``idle_timeout``, leased ones after ``max_lease_age``
+    (the abandoned-lease rule). Absolute epoch seconds + seconds remaining."""
+    last = float(session.last_activity)
+    leased = bool(session.leased)
+    idle_expires_at = last + idle_timeout
+    lease_expires_at: Optional[float] = last + max_lease_age if leased else None
+    applies: float = (
+        lease_expires_at if lease_expires_at is not None else idle_expires_at
+    )
+    return {
+        "idle_s": round(max(0.0, now - last), 1),
+        "idle_expires_at": idle_expires_at,
+        "lease_expires_at": lease_expires_at,
+        "expires_in_s": round(max(0.0, applies - now), 1),
+    }
+
+
+def memory_fields(session: Any) -> Dict[str, Any]:
+    """Listing fields for any session object (None-filled without the mixin)."""
+    if isinstance(session, SessionMemoryMixin):
+        return session.memory_fields()
+    return {
+        "rss_mb": None,
+        "heap_mb": None,
+        "mem_sampled_at": None,
+        "mem_probe_error": None,
+    }

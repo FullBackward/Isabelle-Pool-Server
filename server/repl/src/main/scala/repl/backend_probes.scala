@@ -94,8 +94,10 @@ trait Backend_Probes { this: ReplBackend =>
   def mem_stats(): java.util.Map[String, String] = {
     val lines =
       if (!repl_session.current_thy_begun) List()
-      else state_query("isabelle_pool_server_mem_query", Nil, MEM_BUDGET_MS,
-             skip_end = repl_session.current_thy_ended)
+      else
+        try state_query("isabelle_pool_server_mem_query", Nil, MEM_BUDGET_MS,
+              skip_end = repl_session.current_thy_ended)
+        catch { case ERROR(msg) => List("error=" + msg) }  // never a traceback per interval
     val facts = new java.util.LinkedHashMap[String, String]()
     for (line <- lines) {
       val i = line.indexOf('=')
@@ -106,6 +108,10 @@ trait Backend_Probes { this: ReplBackend =>
     else cached_ml_pid.foreach(pid => facts.put("pid", pid))
     facts
   }
+
+  /** Isabelle session phase (`Ready`, `Terminated(...)`, ...); see
+   *  Repl_Session.phase_string. */
+  def session_phase(): String = repl_session.phase_string
 
   /** Pretty-printed open subgoals of the current proof state ([] when not in a
    *  proof — including after a trailing theory `end`, which closes the theory

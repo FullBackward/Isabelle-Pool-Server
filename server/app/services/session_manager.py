@@ -15,6 +15,7 @@ from server.app.errors import GatewayUnavailable, PoolExhausted, SessionBusyErro
 from server.app.services.memory_monitor import MemoryMonitor
 from server.app.services.memory_policy import MemoryPolicyMixin
 from server.app.services.session import SessionStatus, _Isabelle_Session
+from server.app.services.session_memory import MemoryAwareSession
 from server.app.services.threaded_backend import ThreadedBackend
 
 from pathlib import Path
@@ -267,7 +268,7 @@ class SessionManager(SessionManagerHelpersMixin, MemoryPolicyMixin):
                 raise RuntimeError(f"{where}: failed to create threaded backend for session {session_id}: {e}") from e
 
             try:
-                session = _Isabelle_Session(
+                session = MemoryAwareSession(  # _Isabelle_Session + memory facts
                     session_id=session_id,
                     session_theories=dependency_theories,
                     loaded_theories=loaded_theories,

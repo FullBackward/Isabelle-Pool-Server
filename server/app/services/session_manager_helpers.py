@@ -13,7 +13,7 @@ import hashlib
 import threading
 import time
 import uuid
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 from server.repl.src.python.repl_backend_gateway import ReplBackendGatewayProcess
 from server.app.core.config import Memory, Server
@@ -21,6 +21,7 @@ from server.app.core.logging import get_logger, logging_context
 from server.app.core import metrics
 from server.app.errors import GatewayUnavailable, SessionError
 from server.app.services.session import SessionStatus, _Isabelle_Session
+from server.app.services.session_memory import expiry_fields, memory_fields
 
 # Single global lock guarding gateway (re)creation across all manager operations.
 _gateway_lock = threading.Lock()
@@ -28,6 +29,13 @@ logger = get_logger(__name__)
 
 
 class SessionManagerHelpersMixin:
+    # Created in SessionManager.__init__ / provided by MemoryPolicyMixin; declared
+    # here for the memory-aware listing and sweep code (mypy strict).
+    idle_timeout: float
+    max_lease_age: float
+    rss_totals: Callable[..., Dict[str, float]]
+    sample_sessions_rss: Callable[..., Dict[str, int]]
+
     # ----- gateway lifecycle / recovery -----------------------------------
     def _where(self, func_name: str) -> str:
         return f"{__name__}.{self.__class__.__name__}.{func_name}"
@@ -196,6 +204,7 @@ class SessionManagerHelpersMixin:
         delete the session it belongs to — the lease leak). Only the
         token-gated admin endpoint passes ``include_lease=True``.
         """
+        now = time.time()
         with self._lock:
             entries = []
             for sid, session in self._lru.items():
@@ -217,6 +226,12 @@ class SessionManagerHelpersMixin:
                     "label": session.label,
                     "task_group": session.task_group,
                 }
+                # Expiry + memory (plan §2.B): when the reaper would act, and
+                # what the session's ML process holds. Never the pid or lease.
+                entry.update(
+                    expiry_fields(session, now, self.idle_timeout, self.max_lease_age)
+                )
+                entry.update(memory_fields(session))
                 if include_lease:
                     entry["lease_id"] = session.lease_id
                 entries.append(entry)
@@ -270,6 +285,13 @@ class SessionManagerHelpersMixin:
             except Exception:
                 logger.exception("failed to close idle session session_id=%s", sid)
 
+        # Attribution + prover-death detection: one /proc scan for every session
+        # with a known ML pid (no backend call); a vanished pid is discarded.
+        try:
+            await asyncio.to_thread(self.sample_sessions_rss)
+        except Exception:  # the sweep must never die
+            logger.exception("rss sampling failed")
+
         # Proactively reclaim idle sessions if the container is under memory
         # pressure, independent of the idle-timeout sweep above.
         if self.memory_management_enabled and not self.memory.can_admit():
@@ -300,6 +322,7 @@ class SessionManagerHelpersMixin:
                 "busy_sessions": sum(1 for s in sessions if s.in_use),
                 "leased_sessions": sum(1 for s in sessions if s.leased),
             }
+            info.update(self.rss_totals(sessions))
         # Read memory outside the lock (file reads, no shared state).
         info["memory_management_enabled"] = self.memory_management_enabled
         info.update(self.memory.status_dict())
