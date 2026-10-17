@@ -599,8 +599,13 @@ retry line instead of rule 1 — correct at that instant, and the next refusal n
 **Alternative:** advice text in the server's 503 (one source of truth for every client).
 **Why:** the server is hidden from the agent; only the MCP knows its own tool names and what the
 agent is doing with each session. The LSP server also frees its own warm scratch sessions first
-(by tier) before asking the agent for anything. Verified live by forcing the gate through
-`isabelle_multi_attempt` and `verify_batch` (NOTES, batch 4).
+(by tier) before asking the agent for anything. Verified live (batch 4, lock-protected run 12 on a
+second server instance with a test threshold): three concurrent candidates reserve their estimates
+at the admission decision, so one is refused with rule-1 advice; `isabelle_release_idle` closes the
+warm scratch sessions and the retried single candidate is admitted — the agent's loop closes.
+That the release is *necessary* is shown by the unit test on budget-driven relief, not by the live
+run (the live threshold is a lever); the gateway JVMs' own memory is in the cgroup figure but
+attributed to no session (open item).
 
 ## Cross-cutting lesson
 
