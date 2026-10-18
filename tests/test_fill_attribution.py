@@ -190,3 +190,45 @@ def test_facts_row_and_memory_route_fields():
         "sledgehammer_peak_mb",
         "sledgehammer_shared_with",
     } <= set(memory_route._SESSION_FIELDS)
+
+
+def test_cancelled_step_keeps_attribution_until_the_solvers_end(monkeypatch):
+    """Review 260d78d S3: cancel_job_nowait cancels the job task while the
+    executor future (the solvers) still runs; the attribution stays on the
+    session until that future completes, then it is cleared and the slot
+    released."""
+    from test_fill_job import _cmd, _JobMgr, _Session
+
+    from server.app.core.config import Memory
+
+    monkeypatch.setattr(Memory, "FILL_SAMPLE_S", 0.01)
+    cmds = [_cmd(2, "lemma", 1), _cmd(4, "sorry", 1, col=12)]
+    replies = {
+        (2, 1): {"found": True, "subgoals": 1, "results": ["Try this: by simp (1 ms)"]}
+    }
+    s = _Session(replies, delay=0.3)
+    mgr = _JobMgr()
+    mgr.sample_sledgehammer_rss = lambda: 50 * 1024**2
+
+    async def go():
+        job = mgr.start_fill(
+            s,
+            text="lemma a: A sorry\n",
+            mode="chunk",
+            commands=cmds,
+            timeout_s=20,
+            max_total_s=600,
+            provers="",
+        )
+        await asyncio.sleep(0.08)
+        assert s.memory_fields()["sledgehammer_mb"] == 50.0
+        mgr.cancel_job_nowait(s.session_id)
+        await asyncio.sleep(0.05)  # task cancelled, the 0.3 s "solver" still runs
+        assert job.task.done() or job.task.cancelled() or job.cancelled
+        assert s.memory_fields()["sledgehammer_mb"] == 50.0  # still attributed
+        assert mgr.slots.running == 1  # and the slot still taken
+        await asyncio.sleep(0.4)
+        assert s.memory_fields()["sledgehammer_mb"] == 0.0
+        assert mgr.slots.running == 0
+
+    asyncio.run(go())

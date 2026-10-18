@@ -8,8 +8,9 @@ import json
 import httpx
 
 from mcp_servers.common.guard import make_guard
-from mcp_servers.common.memory_advice import (
+from mcp_servers.common.memory_advice import (  # pylint: disable=protected-access
     ToolNames,
+    _others_text,
     advise,
     others_summary,
     parse_http_error,
@@ -153,6 +154,7 @@ def test_others_summary_excludes_own_sessions():
         "sessions": 2,
         "rss_mb": 5.0,
         "unmeasured": 0,
+        "sledgehammer_mb": 0.0,
         "task_groups": ["b"],
         "builds_in_flight": 3,
         "external_pressure": False,
@@ -344,3 +346,32 @@ def test_unmeasured_holders_are_not_reported_as_zero_mb():
     )
     text = " ".join(advise(facts, [], tools=TOOLS))
     assert ">= 400.0 MB measured, 1 not yet measured" in text
+
+
+def test_others_summary_counts_running_sledgehammers():
+    """Review 260d78d S2: the ATP memory of others' running sledgehammers is a
+    separate field (`rss_mb` is the poly tree) and the text names it."""
+    facts = _facts(
+        leased=[
+            {
+                "session_id": "theirs",
+                "rss_mb": 2.0,
+                "sledgehammer_mb": 1300.5,
+                "task_group": "b",
+            },
+            {
+                "session_id": "more",
+                "rss_mb": 1.0,
+                "sledgehammer_mb": 0.0,
+                "task_group": "b",
+            },
+        ],
+        evictable=[],
+        builds_in_flight={},
+        external_pressure=False,
+    )
+    o = others_summary(facts, set())
+    assert o["rss_mb"] == 3.0 and o["sledgehammer_mb"] == 1300.5
+    assert "plus ~1300.5 MB of running sledgehammers" in _others_text(o)
+    quiet = {**o, "sledgehammer_mb": 0.0}
+    assert "sledgehammer" not in _others_text(quiet)

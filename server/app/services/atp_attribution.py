@@ -67,12 +67,20 @@ class AtpAttributionMixin:
                     pass
 
         task = asyncio.get_running_loop().create_task(loop())
+        cancelled = False
         try:
             yield
+        except asyncio.CancelledError:
+            # the solvers of a cancelled step live on until their own timeout:
+            # the caller clears the attribution when the future completes
+            # (review 260d78d S3); the sampler stops here all the same
+            cancelled = True
+            raise
         finally:
             stop.set()
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await task
-            clear = getattr(session, "clear_sledgehammer_rss", None)
-            if clear is not None:
-                clear()
+            if not cancelled:
+                clear = getattr(session, "clear_sledgehammer_rss", None)
+                if clear is not None:
+                    clear()

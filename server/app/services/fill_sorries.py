@@ -21,10 +21,9 @@ import contextlib
 import re
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from server.app.core import metrics
-from server.app.core.config import Memory
 from server.app.core.logging import get_logger
 from server.app.services.atp_attribution import AtpAttributionMixin
 from server.app.services.memory_hooks import run_with_memory_hooks
@@ -531,16 +530,20 @@ class FillJobMixin(AtpAttributionMixin):
                 int(getattr(session, "sledgehammer_peak_bytes", 0) or 0),
             )
         finally:
-            if slots is not None:
-                if fut is None or fut.done():
-                    await slots.release()
-                else:
-                    # cancelled while the worker still runs the overlay (review S2):
-                    # the slot stays taken until that process actually ends
-                    def _release_later(_f: Any, s: Any = slots) -> None:
+            if fut is not None and not fut.done():
+                # cancelled while the worker still runs the overlay (reviews
+                # ebffafe S2, 260d78d S3): the slot stays taken and the ATP
+                # attribution stays on the session until that process ends
+                def _done_later(_f: Any, s: Any = slots, sess: Any = session) -> None:
+                    clear = getattr(sess, "clear_sledgehammer_rss", None)
+                    if clear is not None:
+                        clear()
+                    if s is not None:
                         asyncio.get_running_loop().create_task(s.release())
 
-                    fut.add_done_callback(_release_later)
+                fut.add_done_callback(_done_later)
+            elif slots is not None:
+                await slots.release()
         job.inflight = (
             None  # cleared only after a normal completion: cancel_job waits on it
         )
