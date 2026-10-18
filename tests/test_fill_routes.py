@@ -140,15 +140,13 @@ def test_submit_poll_cancel_and_in_flight_409(api):
         assert (
             body["status"] in ("queued", "running")
             and body["n"] == 1
-            and body["eta_s"]["worst"] >= 35
+            and body["eta_s"]["worst"] >= 60
         )
         assert body["load_success"] is True
         r2 = client.post(
             f"/api/v1/sessions/{SID}/fill_sorries", json={"text": TEXT}, headers=LEASE
         )
-        assert (
-            r2.status_code == 409 and r2.json()["detail"]["error"] == "fill_in_flight"
-        )
+        assert r2.status_code == 409 and r2.json()["error"] == "fill_in_flight"
         before = s.activity
         st = client.get(f"/api/v1/sessions/{SID}/fill_sorries", headers=LEASE).json()
         assert s.activity == before + 1  # polling counts as activity (B2)
@@ -407,3 +405,84 @@ def test_interactive_slot_uses_tier_aware_slots(api):
             and r.json()["found"] is True
             and mgr.slots.running == 0
         )
+
+
+# ------------------------------------------ review 4c253fe B1: validate, then cancel
+
+
+class _LeaseCheckingManager(_RecordingManager):
+    """The real manager raises on a wrong lease; the routes must do that BEFORE
+    touching the job (B1)."""
+
+    def get_session(self, session_id, lease_id=None, require_lease=True):
+        from server.app.errors import SessionLeaseError
+
+        if require_lease and lease_id != "lease-1":
+            raise SessionLeaseError("Invalid lease token")
+        return self.session
+
+
+def test_wrong_or_missing_lease_cannot_cancel_the_job():
+    saved = app.router.lifespan_context
+    app.router.lifespan_context = _no_lifespan
+    try:
+        for route in ("close", "release"):
+            s = _Session(delay=0.5)
+            mgr = _LeaseCheckingManager(s)
+            app.dependency_overrides[get_session_manager] = (lambda m: (lambda: m))(mgr)
+            with TestClient(app, raise_server_exceptions=False) as client:
+                assert (
+                    client.post(
+                        f"/api/v1/sessions/{SID}/fill_sorries",
+                        json={"text": TEXT, "mode": "chunk"},
+                        headers=LEASE,
+                    ).status_code
+                    == 202
+                )
+                for headers in ({"X-Lease-Id": "WRONG"}, {}):
+                    if route == "close":
+                        r = client.delete(f"/api/v1/sessions/{SID}", headers=headers)
+                    else:
+                        r = client.post(
+                            f"/api/v1/sessions/{SID}/release", headers=headers
+                        )
+                    assert r.status_code in (400, 403), (
+                        route,
+                        headers,
+                        r.status_code,
+                        r.text,
+                    )
+                    assert mgr.fill_job(SID).status in ("queued", "running"), (
+                        route,
+                        headers,
+                    )
+                assert mgr.events == []  # neither close nor release was reached
+                client.delete(f"/api/v1/sessions/{SID}/fill_sorries", headers=LEASE)
+            app.dependency_overrides.pop(get_session_manager, None)
+    finally:
+        app.router.lifespan_context = saved
+
+
+def test_registry_pruned_when_the_session_closes():
+    sm, sess = _real_manager_with_job()
+
+    async def go():
+        job = sm.start_fill(
+            sess,
+            text=TEXT,
+            mode="chunk",
+            commands=REPORT["commands"],
+            timeout_s=5,
+            max_total_s=60,
+            provers="",
+        )
+        await asyncio.sleep(0.01)
+        await sm.cancel_job(sess.session_id)
+        sm.close_session(sess.session_id, lease_id="lease-1")
+        assert (
+            job.status == "cancelled"
+            and sm.fill_job(sess.session_id) is None
+            and sm.fill_status(sess.session_id) is None
+        )
+
+    asyncio.run(go())

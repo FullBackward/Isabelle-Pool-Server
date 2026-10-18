@@ -152,11 +152,11 @@ def test_eta_and_remaining_steps():
     )
     job.status = "running"
     assert job.eta(10.0) == {
-        "worst": 80.0,
+        "worst": 130.0,
         "typical": 22.0,
-    }  # 2 steps × 35 + 10 / 2 × 6 + 10
+    }  # 2 steps × (30 + 30) + 10 / 2 × 6 + 10
     job.results[0].subgoals = 2
-    assert job.eta(0.0)["worst"] == 105.0
+    assert job.eta(0.0)["worst"] == 180.0
     job.parked_reason = "critical"
     assert job.eta(0.0) is None
     job.status = "done"
@@ -237,7 +237,9 @@ class _Session(SessionMemoryMixin):
         self.delay, self.dead = delay, dead
         self.status = "active"
         self._init_memory()
-        self.mem_sampled_at = float("inf")  # never due: the fake has no backend to probe
+        self.mem_sampled_at = float(
+            "inf"
+        )  # never due: the fake has no backend to probe
 
     def sledgehammer_at_command(self, index, subgoal, timeout_s, max_proofs, provers):
         self.calls.append((index, subgoal, timeout_s, max_proofs, provers))

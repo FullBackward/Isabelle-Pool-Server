@@ -528,7 +528,6 @@ class SessionManager(SessionManagerHelpersMixin, MemoryPolicyMixin, FillJobMixin
         Unlike ``close_session``, the backend is kept alive.
         """
         sid = self._normalize_session_id(session_id)
-        self.cancel_job_nowait(sid)  # a fill job must not outlive the lease (B2)
         with self._lock:
             session = self._lru.get(sid)
             if session is None:
@@ -536,6 +535,7 @@ class SessionManager(SessionManagerHelpersMixin, MemoryPolicyMixin, FillJobMixin
             if session.status == SessionStatus.CLOSED:
                 raise SessionNotFound(f"Session {sid} is closed")
             session.require_lease(lease_id)
+            self.cancel_job_nowait(sid)  # B1: after the lease check
             if session.in_use:
                 raise SessionBusyError(f"Session {sid} is busy and cannot be released")
             session.release_lease()
@@ -573,7 +573,6 @@ class SessionManager(SessionManagerHelpersMixin, MemoryPolicyMixin, FillJobMixin
         require_lease: bool = True,
     ) -> bool:
         sid = self._normalize_session_id(session_id)
-        self.cancel_job_nowait(sid)  # safety net (B2); async callers await cancel_job
         with self._lock:
             session = self._lru.get(sid)
             if session is None:
@@ -582,9 +581,11 @@ class SessionManager(SessionManagerHelpersMixin, MemoryPolicyMixin, FillJobMixin
                 raise SessionNotFound(f"Session {sid} is closed")
             if require_lease:
                 session.require_lease(lease_id)
+            self.cancel_job_nowait(sid)  # B1: after the lease check
             if session.in_use:
                 raise SessionBusyError(f"Session {sid} is busy and cannot be closed")
             self._lru.pop(sid, None)
+            self.forget_job(sid)  # S4: registry pruned with the session
             if session.in_use:
                 self._lru[sid] = session
                 self._lru.move_to_end(sid)

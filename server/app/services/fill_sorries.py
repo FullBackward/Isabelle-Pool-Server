@@ -35,7 +35,7 @@ from server.app.services.success_checker import (
 
 logger = get_logger(__name__)
 
-STEP_OVERHEAD_S = 5.0  # overlay bracket + preplay on a timed-out step
+STEP_OVERHEAD_S = 30.0  # the Scala overlay budget beyond timeout_s: the true wall bound of a step (review S1)
 TYPICAL_STEP_S = 6.0  # measured: proved steps answer in 2–6 s (research §2)
 
 OUTCOME_SKIPPED = "skipped"
@@ -285,10 +285,7 @@ class FillJob:  # pylint: disable=too-many-instance-attributes
         self, queue_wait_s: float = 0.0, extra: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """The §3.2 status body."""
-        patched, unpatchable = self.patched_text()
-        for r in self.results:
-            if r.target.index in unpatchable and r.outcome == SH_PROVED:
-                r.outcome, r.reason = OUTCOME_PARTIAL, "unpatchable"
+        patched, _unpatchable = self.patched_text()
         body: Dict[str, Any] = {
             "status": self.status,
             "n": len(self.targets),
@@ -388,9 +385,15 @@ class FillJobMixin:
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await asyncio.wait({job.inflight}, timeout=job.timeout_s + 45.0)
         job.inflight = None
+        await asyncio.sleep(0)  # let the slot's done-callback run (review S2)
         job.status, job.finished_at = "cancelled", time.time()
         metrics.fill_jobs_total.labels("cancelled").inc()
         return True
+
+    def forget_job(self, session_id: Any) -> None:
+        """Drop the session's registry entry (the session is gone — review S4).
+        A still-running task keeps its own reference and finishes on its own."""
+        self._jobs().pop(str(session_id), None)
 
     def cancel_job_nowait(self, session_id: Any) -> None:
         """Thread-safe flag + task cancel for sync close paths (discard_dead)."""
@@ -478,6 +481,12 @@ class FillJobMixin:
                 break
             subgoal += 1
         rep = replacement_for(max(result.subgoals, 1), methods)
+        if rep is not None:
+            _text, bad = build_patch(
+                job.text, [result.target], {result.target.index: rep}
+            )
+            if bad:
+                rep = None  # the sorry span could not be located (review B6)
         if rep is None:
             result.outcome, result.reason = OUTCOME_PARTIAL, "unpatchable"
         else:
@@ -503,6 +512,7 @@ class FillJobMixin:
             await slots.acquire(parkable=True, on_wait=on_wait)
         job.parked_reason, job.queue_position = None, -1
         t0 = time.time()
+        fut: Optional["asyncio.Future[Any]"] = None
         try:
 
             def call() -> Any:
@@ -528,8 +538,18 @@ class FillJobMixin:
             reply, override = fut.result()
         finally:
             if slots is not None:
-                await slots.release()
-        job.inflight = None  # cleared only after a normal completion: cancel_job waits on it
+                if fut is None or fut.done():
+                    await slots.release()
+                else:
+                    # cancelled while the worker still runs the overlay (review S2):
+                    # the slot stays taken until that process actually ends
+                    def _release_later(_f: Any, s: Any = slots) -> None:
+                        asyncio.get_running_loop().create_task(s.release())
+
+                    fut.add_done_callback(_release_later)
+        job.inflight = (
+            None  # cleared only after a normal completion: cancel_job waits on it
+        )
         ms = int((time.time() - t0) * 1000)
         if override:
             job.cancelled, job.error = True, "prover_died"

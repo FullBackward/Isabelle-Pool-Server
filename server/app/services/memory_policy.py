@@ -185,6 +185,9 @@ class MemoryPolicyMixin:
             session = self._lru.pop(session_id, None)
         if session is None:
             return False
+        forget = getattr(self, "forget_job", None)
+        if forget is not None:  # registry pruned with the session (review S4)
+            forget(session_id)
         logger.error(
             "discarding dead session session_id=%s reason=%s pid=%s",
             session_id,

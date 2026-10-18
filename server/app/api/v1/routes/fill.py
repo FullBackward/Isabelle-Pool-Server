@@ -18,6 +18,17 @@ router = APIRouter(tags=["fill"])
 logger = get_logger(__name__)
 
 
+def _in_flight() -> JSONResponse:
+    """409 with a top-level `error` key, like the 503 bodies (plan §3.1 / review S3)."""
+    return JSONResponse(
+        status_code=409,
+        content={
+            "error": "fill_in_flight",
+            "detail": "a fill_sorries job is already running on this session",
+        },
+    )
+
+
 @router.post("/api/v1/sessions/{session_id}/fill_sorries", status_code=202)
 async def fill_sorries(
     request: FillSorriesRequest,
@@ -28,7 +39,7 @@ async def fill_sorries(
     the initial state; 409 ``fill_in_flight`` while a job runs on this session."""
     old = session_manager.fill_job(session.session_id)
     if old is not None and old.status in ("queued", "running"):
-        raise HTTPException(status_code=409, detail={"error": "fill_in_flight"})
+        return _in_flight()
 
     def call() -> Any:
         if request.mode == "document":
@@ -73,9 +84,7 @@ async def fill_sorries(
             provers=request.provers or "",
         )
     except ValueError:
-        raise HTTPException(
-            status_code=409, detail={"error": "fill_in_flight"}
-        ) from None
+        return _in_flight()
     logger.info(
         "fill_sorries started session_id=%s sorries=%s",
         session.session_id,
