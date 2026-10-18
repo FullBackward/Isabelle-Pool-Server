@@ -101,9 +101,7 @@ async def sledgehammer_at(
     results = [to_ascii(str(r)) for r in (result.get("results") or [])]
     # `found` used to copy the backend's flag, which is true whenever the overlay
     # answered — including "No proof found". A proof is found only on "Try this:".
-    outcome, method = classify_sledgehammer(results)
-    if result.get("error"):
-        outcome = "error"
+    outcome, method = classify_sledgehammer(results, error=result.get("error"))
     return SledgehammerAtResponse(
         found=outcome == SH_PROVED,
         results=results,

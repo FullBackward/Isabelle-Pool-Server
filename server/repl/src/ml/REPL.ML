@@ -147,7 +147,9 @@ fun sledgehammer_results timeout_s i state =
 
 (* === Sledgehammer for the server-side `fill_sorries` job (plan 2026-10-18 §1.1):
    like sledgehammer_results, hosted on the command BEFORE a `sorry`, but with
-   `max_proofs` (1 = stop at the first proof) and an optional space-separated
+   `max_proofs` (1 = stop as soon as one proof is in; provers run concurrently,
+   so a second "Try this" line may still arrive — the server takes the first)
+   and an optional space-separated
    `provers` list passed through to default_params, and a first line
    "subgoals=N" (N = premises of the goal the sorry would close) so the server
    knows how many subgoals to attack. Outside a proof, or for a subgoal index

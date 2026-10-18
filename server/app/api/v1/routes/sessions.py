@@ -177,6 +177,9 @@ async def release_session(
     for reuse.  Unlike DELETE, the backend stays alive."""
     with logging_context(session_id=session_id):
         lease_id = require_lease_id(x_lease_id)
+        cancel = getattr(session_manager, "cancel_job", None)
+        if cancel is not None:  # a fill job ends with the lease (fill_sorries B2)
+            await cancel(session_id)
         logger.info("releasing session lease")
         session_manager.release_session(session_id, lease_id)
         logger.info("session lease released")
@@ -214,6 +217,11 @@ async def close_session(
 ):
     with logging_context(session_id=session_id):
         lease_id = x_lease_id
+        cancel = getattr(session_manager, "cancel_job", None)
+        if (
+            cancel is not None
+        ):  # cancel + await the fill job BEFORE the backend stops (B2)
+            await cancel(session_id)
         if not lease_id:
             # A session released back to the pool carries NO lease to present,
             # so it is uncloseable by lease check alone (the force-close gap

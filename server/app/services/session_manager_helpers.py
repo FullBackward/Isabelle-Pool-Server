@@ -296,6 +296,9 @@ class SessionManagerHelpersMixin:
         for sid in to_close:
             logger.info("closing idle session session_id=%s", sid)
             try:
+                cancel = getattr(self, "cancel_job", None)
+                if cancel is not None:  # a reaped lease takes its fill job with it (B2)
+                    await cancel(sid)
                 await asyncio.to_thread(self.close_session, sid, require_lease=False)
                 metrics.sessions_evicted.labels("idle").inc()
                 closed.append(sid)

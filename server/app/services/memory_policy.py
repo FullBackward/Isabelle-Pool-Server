@@ -178,6 +178,9 @@ class MemoryPolicyMixin:
         pool slot. Pops under the lock, closes outside it (best effort — the
         backend has nothing to talk to), counts the eviction. Returns False
         when the id is unknown (already gone)."""
+        cancel = getattr(self, "cancel_job_nowait", None)
+        if cancel is not None:  # a dead prover's fill job stops (B2)
+            cancel(session_id)
         with self._lock:
             session = self._lru.pop(session_id, None)
         if session is None:

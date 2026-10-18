@@ -13,9 +13,11 @@ from server.app.core.logging import get_logger, logging_context
 from server.app.core import metrics
 from server.app.errors import GatewayUnavailable, PoolExhausted, SessionBusyError, SessionNotFound, SessionStartError
 from server.app.services.memory_monitor import MemoryMonitor
+from server.app.services.fill_sorries import FillJobMixin
 from server.app.services.memory_policy import MemoryPolicyMixin
 from server.app.services.session import SessionStatus, _Isabelle_Session
 from server.app.services.session_memory import MemoryAwareSession
+from server.app.services.sledgehammer_slots import SledgehammerSlots
 from server.app.services.threaded_backend import ThreadedBackend
 
 from pathlib import Path
@@ -28,7 +30,7 @@ from server.app.services.session_manager_helpers import (
 logger = get_logger(__name__)
 
 
-class SessionManager(SessionManagerHelpersMixin, MemoryPolicyMixin):
+class SessionManager(SessionManagerHelpersMixin, MemoryPolicyMixin, FillJobMixin):
 
     def __init__(
         self,
@@ -62,6 +64,7 @@ class SessionManager(SessionManagerHelpersMixin, MemoryPolicyMixin):
         # running loop on first use.
         self.sledgehammer_sem = asyncio.Semaphore(Server.MAX_CONCURRENT_SLEDGEHAMMER)
         self.max_concurrent_sledgehammer = Server.MAX_CONCURRENT_SLEDGEHAMMER
+        self.slots = SledgehammerSlots(self, Server.MAX_CONCURRENT_SLEDGEHAMMER)
 
         # Big-step builds: bounded by their own knob (default 1) and gated by
         # memory in verify_big_step_build — not derived from the session pool.
@@ -525,6 +528,7 @@ class SessionManager(SessionManagerHelpersMixin, MemoryPolicyMixin):
         Unlike ``close_session``, the backend is kept alive.
         """
         sid = self._normalize_session_id(session_id)
+        self.cancel_job_nowait(sid)  # a fill job must not outlive the lease (B2)
         with self._lock:
             session = self._lru.get(sid)
             if session is None:
@@ -569,6 +573,7 @@ class SessionManager(SessionManagerHelpersMixin, MemoryPolicyMixin):
         require_lease: bool = True,
     ) -> bool:
         sid = self._normalize_session_id(session_id)
+        self.cancel_job_nowait(sid)  # safety net (B2); async callers await cancel_job
         with self._lock:
             session = self._lru.get(sid)
             if session is None:

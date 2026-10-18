@@ -20,7 +20,9 @@ SH_ERROR = "error"
 _TRY_THIS_RE = re.compile(r"Try this:\s*(.+?)\s*(?:\(\s*[\d.]+\s*(?:ms|s)\s*\))?\s*$")
 
 
-def classify_sledgehammer(lines: Optional[List[str]]) -> Tuple[str, Optional[str]]:
+def classify_sledgehammer(
+    lines: Optional[List[str]], error: Optional[str] = None
+) -> Tuple[str, Optional[str]]:
     """``(outcome, method)`` of the lines a sledgehammer run printed.
 
     ``proved`` with the first ``Try this:`` method text (timing suffix cut);
@@ -31,6 +33,10 @@ def classify_sledgehammer(lines: Optional[List[str]]) -> Tuple[str, Optional[str
     ``none`` (sledgehammer's own verdict), not ``timeout``.
     """
     rows = [str(l).strip() for l in (lines or []) if str(l).strip()]
+    if error and not rows:
+        # a backend-level error (plan review d1fc90e S2): the overlay budget
+        # expiring is a timeout, anything else an error
+        return (SH_TIMEOUT if "timed out" in error.lower() else SH_ERROR), None
     for row in rows:
         m = _TRY_THIS_RE.search(row)
         if m:

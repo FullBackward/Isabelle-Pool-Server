@@ -163,6 +163,13 @@ class Memory:
     )
     # Cap on the evictable / leased session lists in 503 bodies and /memory.
     FACTS_LIST_CAP: Final = int(os.getenv("ISABELLE_MEMORY_FACTS_LIST_CAP", "50"))
+    # fill_sorries (plan 2026-10-18): per-sorry sledgehammer budget, wall bound of
+    # one job (incl. time parked), how often a parked job re-checks the tier, and
+    # how often a running step samples the ATP processes' memory.
+    FILL_TIMEOUT_S: Final = int(os.getenv("ISABELLE_FILL_TIMEOUT_S", "30"))
+    FILL_MAX_TOTAL_S: Final = float(os.getenv("ISABELLE_FILL_MAX_TOTAL_S", "600"))
+    FILL_PARK_POLL_S: Final = float(os.getenv("ISABELLE_FILL_PARK_POLL_S", "5"))
+    FILL_SAMPLE_S: Final = float(os.getenv("ISABELLE_FILL_SAMPLE_S", "2"))
     # Budget admission (batch 3): expected resident size of a NEW session by
     # Isabelle session/field ("HOL=2048,HOL-Analysis=4096"; unknown fields use
     # SESSION_ESTIMATE_MB), and of one `isabelle build` process. A create or
