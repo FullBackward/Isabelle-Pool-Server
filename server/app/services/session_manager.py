@@ -535,9 +535,9 @@ class SessionManager(SessionManagerHelpersMixin, MemoryPolicyMixin, FillJobMixin
             if session.status == SessionStatus.CLOSED:
                 raise SessionNotFound(f"Session {sid} is closed")
             session.require_lease(lease_id)
-            self.cancel_job_nowait(sid)  # B1: after the lease check
             if session.in_use:
                 raise SessionBusyError(f"Session {sid} is busy and cannot be released")
+            self.cancel_job_nowait(sid)  # after lease + busy checks (reviews B1, S1)
             session.release_lease()
             self._lru.move_to_end(sid, last=True)
         with logging_context(session_id=sid, field=session.field):
@@ -581,9 +581,9 @@ class SessionManager(SessionManagerHelpersMixin, MemoryPolicyMixin, FillJobMixin
                 raise SessionNotFound(f"Session {sid} is closed")
             if require_lease:
                 session.require_lease(lease_id)
-            self.cancel_job_nowait(sid)  # B1: after the lease check
             if session.in_use:
                 raise SessionBusyError(f"Session {sid} is busy and cannot be closed")
+            self.cancel_job_nowait(sid)  # after lease + busy checks (reviews B1, S1)
             self._lru.pop(sid, None)
             self.forget_job(sid)  # S4: registry pruned with the session
             if session.in_use:

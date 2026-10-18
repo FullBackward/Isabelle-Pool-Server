@@ -59,6 +59,10 @@ class SessionMemoryMixin:  # pylint: disable=too-many-instance-attributes
     rss_sampled_at: float
     mem_sampled_at: float
     mem_probe_error: Optional[str]
+    sledgehammer_rss_bytes: int
+    sledgehammer_peak_bytes: int
+    sledgehammer_shared_with: int
+    sledgehammer_sampled_at: float
 
     def _init_memory(self) -> None:
         self.ml_pid = None
@@ -69,6 +73,10 @@ class SessionMemoryMixin:  # pylint: disable=too-many-instance-attributes
         self.rss_sampled_at = 0.0
         self.mem_sampled_at = 0.0
         self.mem_probe_error = None
+        self.sledgehammer_rss_bytes = 0
+        self.sledgehammer_peak_bytes = 0
+        self.sledgehammer_shared_with = 0
+        self.sledgehammer_sampled_at = 0.0
 
     @property
     def heap_bytes(self) -> Optional[int]:
@@ -150,6 +158,23 @@ class SessionMemoryMixin:  # pylint: disable=too-many-instance-attributes
         self.rss_bytes = rss_bytes
         self.rss_sampled_at = time.time() if now is None else now
 
+    def note_sledgehammer_rss(
+        self, rss_bytes: int, shared_with: int = 0, now: Optional[float] = None
+    ) -> None:
+        """A sample of the ATP processes while this session's sledgehammer runs
+        (fill_sorries §1.6). With other steps in flight the children cannot be
+        told apart, so the whole sum is attributed to each and ``shared_with``
+        says how many other steps share it (review B4)."""
+        self.sledgehammer_rss_bytes = int(rss_bytes)
+        self.sledgehammer_peak_bytes = max(self.sledgehammer_peak_bytes, int(rss_bytes))
+        self.sledgehammer_shared_with = int(shared_with)
+        self.sledgehammer_sampled_at = time.time() if now is None else now
+
+    def clear_sledgehammer_rss(self) -> None:
+        """The step ended: nothing of the ATPs is attributed any more (peak stays)."""
+        self.sledgehammer_rss_bytes = 0
+        self.sledgehammer_shared_with = 0
+
     def prover_alive(self) -> Optional[bool]:
         """None until the pid is known; else whether THAT process still exists
         (pid present and, when recorded, the same start time — a reused pid
@@ -182,6 +207,11 @@ class SessionMemoryMixin:  # pylint: disable=too-many-instance-attributes
             "heap_mb": self.heap_mb,
             "mem_sampled_at": self.mem_sampled_at or None,
             "mem_probe_error": self.mem_probe_error,
+            "sledgehammer_mb": (
+                _mb(self.sledgehammer_rss_bytes) if self.sledgehammer_rss_bytes else 0.0
+            ),
+            "sledgehammer_peak_mb": _mb(self.sledgehammer_peak_bytes) or 0.0,
+            "sledgehammer_shared_with": self.sledgehammer_shared_with,
         }
 
 
@@ -303,4 +333,7 @@ def memory_fields(session: Any) -> Dict[str, Any]:
         "heap_mb": None,
         "mem_sampled_at": None,
         "mem_probe_error": None,
+        "sledgehammer_mb": None,
+        "sledgehammer_peak_mb": None,
+        "sledgehammer_shared_with": None,
     }

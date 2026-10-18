@@ -10,7 +10,7 @@ from server.app.core.logging import get_logger
 from server.app.services.success_checker import SH_PROVED, classify_sledgehammer
 
 from ..deps import LeasedSession, SessionManagerDep, sledgehammer_slot
-from ..memory_hooks import PROVER_DIED_TEXT, run_with_memory_hooks
+from ..memory_hooks import PROVER_DIED_TEXT, run_with_memory_hooks, track_atps
 from ..schemas.API_models import SledgehammerRequest, SledgehammerResponse
 from ..serializers import to_ascii
 
@@ -27,7 +27,9 @@ async def sledgehammer(
     logger.info("sledgehammer requested timeout_s=%s", request.timeout_s)
     start = time.time()
     try:
-        async with sledgehammer_slot(session_manager):
+        async with sledgehammer_slot(session_manager), track_atps(
+            session_manager, session
+        ):
             suggestions, override = await asyncio.to_thread(
                 run_with_memory_hooks,
                 lambda: list(session.sledgehammer(request.timeout_s)),

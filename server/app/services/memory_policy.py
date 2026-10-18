@@ -46,6 +46,11 @@ def session_facts_row(session: Any, now: float) -> Dict[str, Any]:
         "idle_s": round(max(0.0, now - float(session.last_activity)), 1),
         "rss_mb": _mb(getattr(session, "rss_bytes", None)),
         "heap_mb": _mb(getattr(session, "heap_bytes", None)),
+        "sledgehammer_mb": _mb(getattr(session, "sledgehammer_rss_bytes", 0) or 0)
+        or 0.0,
+        "sledgehammer_shared_with": int(
+            getattr(session, "sledgehammer_shared_with", 0) or 0
+        ),
     }
 
 

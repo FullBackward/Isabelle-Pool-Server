@@ -17,6 +17,7 @@ Error texts are labelled with ``classify_error_kind`` so a client can tell
 
 from __future__ import annotations
 
+import contextlib
 from typing import Any, Callable, Optional, Tuple
 
 from server.app.core.logging import get_logger
@@ -79,6 +80,15 @@ def run_with_memory_hooks(
     except Exception:  # pylint: disable=broad-exception-caught
         logger.exception("memory hook failed (ignored)")
     return result, None
+
+
+def track_atps(session_manager: Any, session: Any) -> Any:
+    """The manager's ATP-attribution tracker for ``session`` (fill_sorries §1.6),
+    or a null context for managers without one (tests, stubs)."""
+    track = getattr(session_manager, "track_sledgehammer", None)
+    if track is None:
+        return contextlib.nullcontext()
+    return track(session)
 
 
 def kind_for(

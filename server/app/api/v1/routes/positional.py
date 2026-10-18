@@ -10,6 +10,7 @@ from server.app.core.logging import get_logger
 from server.app.services.success_checker import SH_PROVED, classify_sledgehammer
 
 from ..deps import LeasedSession, SessionManagerDep, sledgehammer_slot
+from ..memory_hooks import track_atps
 from ..schemas.API_models import (
     CommandAtLineResponse,
     DefinitionResponse,
@@ -95,7 +96,7 @@ async def sledgehammer_at(
     """Position-explicit sledgehammer (overlay print op; no text edits). Shares
     the server-wide sledgehammer semaphore with the tip-based endpoint."""
     start = time.time()
-    async with sledgehammer_slot(session_manager):
+    async with sledgehammer_slot(session_manager), track_atps(session_manager, session):
         result = await asyncio.to_thread(
             session.sledgehammer_at, request.line, request.subgoal, request.timeout_s)
     results = [to_ascii(str(r)) for r in (result.get("results") or [])]

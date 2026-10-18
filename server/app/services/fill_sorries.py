@@ -26,6 +26,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from server.app.core import metrics
 from server.app.core.config import Memory
 from server.app.core.logging import get_logger
+from server.app.services.atp_attribution import AtpAttributionMixin
 from server.app.services.memory_hooks import run_with_memory_hooks
 from server.app.services.success_checker import (
     SH_ERROR,
@@ -323,8 +324,9 @@ def _classify_step(reply: Dict[str, Any]) -> StepResult:
     return StepResult(0, outcome, method, lines=lines or ([error] if error else []))
 
 
-class FillJobMixin:
-    """Manager-side job registry: one ``FillJob`` per session id."""
+class FillJobMixin(AtpAttributionMixin):
+    """Manager-side job registry: one ``FillJob`` per session id (the ATP
+    attribution tracker comes from ``AtpAttributionMixin``, §1.6)."""
 
     _fill_jobs: Dict[str, FillJob]
 
@@ -429,15 +431,12 @@ class FillJobMixin:
     async def _run_fill(self, job: FillJob, session: Any) -> None:
         job.status, job.started_at = "running", time.time()
         slots = getattr(self, "slots", None)
-        sampler: Callable[[], Optional[int]] = getattr(
-            self, "sample_sledgehammer_rss", lambda: None
-        )
         try:
             for ti, result in enumerate(job.results):
                 job.current = ti
                 if job.cancelled or time.time() - job.created_at > job.max_total_s:
                     break
-                await self._run_target(job, result, session, slots, sampler)
+                await self._run_target(job, result, session, slots)
             if job.cancelled:
                 job.status = "cancelled"
             else:
@@ -457,15 +456,13 @@ class FillJobMixin:
             metrics.fill_jobs_total.labels(job.status).inc()
 
     async def _run_target(  # pylint: disable=too-many-arguments,too-many-positional-arguments
-        self, job: FillJob, result: TargetResult, session: Any, slots: Any, sampler: Any
+        self, job: FillJob, result: TargetResult, session: Any, slots: Any
     ) -> None:
         subgoal, methods = 1, []
         while True:
             if job.cancelled:
                 return
-            step = await self._run_step(
-                job, result.target, subgoal, session, slots, sampler
-            )
+            step = await self._run_step(job, result.target, subgoal, session, slots)
             if result.subgoals < 0:
                 result.subgoals = step.subgoals
             result.per_subgoal.append(step)
@@ -499,7 +496,6 @@ class FillJobMixin:
         subgoal: int,
         session: Any,
         slots: Any,
-        sampler: Any,
     ) -> StepResult:
         def on_wait(position: int, reason: Optional[str]) -> None:
             job.queue_position = position
@@ -524,18 +520,16 @@ class FillJobMixin:
                 None, lambda: run_with_memory_hooks(call, session, self)
             )
             job.inflight = fut
-            while not fut.done():
-                await asyncio.wait({fut}, timeout=Memory.FILL_SAMPLE_S)
-                rss = sampler()
-                if rss:
-                    job.peak_rss_bytes = max(job.peak_rss_bytes, int(rss))
-                    try:
-                        session.note_sledgehammer_rss(
-                            int(rss), getattr(slots, "running", 1)
-                        )
-                    except AttributeError:
-                        pass
+            async with self.track_sledgehammer(session):
+                # shield: cancelling the job task must not cancel the executor
+                # future (the thread keeps running) — cancel_job waits on it and
+                # the slot is released only when it completes (reviews B2, S2)
+                await asyncio.shield(fut)
             reply, override = fut.result()
+            job.peak_rss_bytes = max(
+                job.peak_rss_bytes,
+                int(getattr(session, "sledgehammer_peak_bytes", 0) or 0),
+            )
         finally:
             if slots is not None:
                 if fut is None or fut.done():

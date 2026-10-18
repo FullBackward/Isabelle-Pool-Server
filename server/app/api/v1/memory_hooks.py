@@ -6,6 +6,13 @@ from server.app.services.memory_hooks import (  # noqa: F401
     first_error_text,
     kind_for,
     run_with_memory_hooks,
+    track_atps,
 )
 
-__all__ = ["PROVER_DIED_TEXT", "first_error_text", "kind_for", "run_with_memory_hooks"]
+__all__ = [
+    "PROVER_DIED_TEXT",
+    "first_error_text",
+    "kind_for",
+    "run_with_memory_hooks",
+    "track_atps",
+]

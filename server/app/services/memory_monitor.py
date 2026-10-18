@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from server.app.core.config import Memory
 from server.app.core.logging import get_logger
@@ -224,6 +224,84 @@ def _ppid_map() -> Dict[int, int]:
     return result
 
 
+def pgrp_map() -> Dict[int, Tuple[int, int, str]]:
+    """pid -> (ppid, pgrp, comm) for every process (one /proc scan; comm may
+    contain spaces or parentheses, so the stat line is split after its last ')')."""
+    result: Dict[int, Tuple[int, int, str]] = {}
+    try:
+        names = os.listdir(_PROC_ROOT)
+    except OSError:
+        return result
+    for name in names:
+        if not name.isdigit():
+            continue
+        try:
+            with open(f"{_PROC_ROOT}/{name}/stat", "r", encoding="utf-8") as fh:
+                stat = fh.read()
+        except OSError:
+            continue
+        head, _, rest = stat.rpartition(")")
+        comm = head.partition("(")[2]
+        fields = rest.split()
+        if len(fields) >= 3:
+            try:
+                result[int(name)] = (int(fields[1]), int(fields[2]), comm)
+            except ValueError:
+                continue
+    return result
+
+
+ATP_EXCLUDED_COMMS = frozenset(
+    {
+        "bash",
+        "sh",
+        "bash_process",
+        "timeout",
+        "java",
+        "poly",
+        "Naproche",
+        "python",
+        "python3",
+        "isabelle",
+    }
+)
+
+
+def gateway_children_rss(
+    root_pid: int, exclude_pids: Iterable[int] = ()
+) -> Tuple[int, int]:
+    """``(bytes, count)`` of the gateway's descendants that are not plumbing
+    (launcher/bash/JVM/bash_process) and not under a prover: the ATP and SMT
+    solvers sledgehammer runs (fill_sorries §1.6). ML's bash goes through
+    Scala, so they hang off the JVM — `bash_process` runs each script in a
+    NEW session (own pgrp/sid), so the walk follows parent links from
+    ``root_pid``, not the process group. Subtrees rooted at ``exclude_pids``
+    (the sessions' polys) are skipped whole."""
+    excluded = set(int(p) for p in exclude_pids)
+    procs = pgrp_map()
+    children: Dict[int, List[int]] = {}
+    for pid, (ppid, _pgrp, _comm) in procs.items():
+        children.setdefault(ppid, []).append(pid)
+    total, count = 0, 0
+    root_pid = int(root_pid)
+    if root_pid not in procs:
+        return 0, 0
+    stack, seen = [root_pid], set()
+    while stack:
+        pid = stack.pop()
+        if pid in seen or pid in excluded:
+            continue
+        seen.add(pid)
+        stack.extend(children.get(pid, []))
+        if pid == root_pid or procs[pid][2] in ATP_EXCLUDED_COMMS:
+            continue
+        rss = read_rss(pid)
+        if rss:
+            total += rss
+            count += 1
+    return total, count
+
+
 def rss_tree(root_pids: Iterable[int]) -> Dict[int, Optional[int]]:
     """RSS in bytes of each root process PLUS its descendants (a session's poly
     and, during sledgehammer, the ATP children it forks). None for a root that
@@ -277,7 +355,10 @@ class MemoryMonitor:
         them. Subtracting inactive_file is the same correction `docker stats`
         applies (v2 key: inactive_file; v1 hierarchical key: total_inactive_file).
         """
-        for path, key in ((_CG_V2_STAT, "inactive_file"), (_CG_V1_STAT, "total_inactive_file")):
+        for path, key in (
+            (_CG_V2_STAT, "inactive_file"),
+            (_CG_V1_STAT, "total_inactive_file"),
+        ):
             try:
                 with open(path, "r", encoding="utf-8") as fh:
                     for line in fh:
