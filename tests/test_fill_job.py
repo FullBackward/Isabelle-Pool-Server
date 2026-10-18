@@ -438,3 +438,75 @@ def test_job_prover_death_marks_error():
     _, job = _run_job(s, cmds, "lemma a: A sorry\n")
     d = job.to_dict()
     assert d["results"][0]["outcome"] == "error" and job.error == "prover_died"
+
+
+def test_slot_wait_expires_at_the_deadline(monkeypatch):
+    """Review ed2d751 B1: a queued/parked wait past `deadline` raises
+    SlotWaitExpired instead of waiting for the tier forever."""
+    from server.app.core.config import Memory
+    from server.app.services.sledgehammer_slots import SlotWaitExpired
+
+    monkeypatch.setattr(Memory, "FILL_PARK_POLL_S", 0.05)
+    slots = SledgehammerSlots(_Mgr("critical"), 2)
+    seen = []
+
+    async def go():
+        t = time.time()
+        with pytest.raises(SlotWaitExpired) as ei:
+            await slots.acquire(
+                parkable=True,
+                on_wait=lambda p, r: seen.append((p, r)),
+                deadline=time.time() + 0.2,
+            )
+        assert ei.value.parked_reason == "critical" and 0.15 <= time.time() - t < 1.0
+        assert seen and seen[0] == (0, "critical")
+        assert (
+            slots.waiters() == 0 and slots.running == 0
+        )  # nothing taken, nothing left queued
+
+    asyncio.run(go())
+
+
+def test_parked_job_ends_when_max_total_s_runs_out(monkeypatch):
+    """Review ed2d751 B1: max_total_s bounds the job INCLUDING parking — the
+    job ends `done` with the untried sorries skipped and a parked reason."""
+    from server.app.core.config import Memory
+
+    monkeypatch.setattr(Memory, "FILL_PARK_POLL_S", 0.05)
+    cmds = [
+        _cmd(2, "lemma", 1),
+        _cmd(4, "sorry", 1, col=12),
+        _cmd(6, "lemma", 2),
+        _cmd(8, "sorry", 2, col=12),
+    ]
+    s = _Session({}, delay=0.0)
+    mgr = _JobMgr()
+    mgr.memory.last_state = "critical"  # capacity 0: every step parks
+
+    async def go():
+        job = mgr.start_fill(
+            s,
+            text="lemma a: A sorry\nlemma b: B sorry\n",
+            mode="chunk",
+            commands=cmds,
+            timeout_s=20,
+            max_total_s=0.3,
+            provers="",
+        )
+        t = time.time()
+        for _ in range(40):
+            if job.status in ("done", "cancelled", "error"):
+                break
+            await asyncio.sleep(0.05)
+        assert job.status == "done" and time.time() - t < 1.5
+        body = mgr.fill_status(s.session_id)
+        assert [r["outcome"] for r in body["results"]] == ["skipped", "skipped"]
+        assert body["results"][0]["reason"] == "max_total_s while parked (critical)"
+        assert body["results"][1]["reason"] == "max_total_s"
+        assert body["parked"] is False and body["eta_s"] == {
+            "worst": 0.0,
+            "typical": 0.0,
+        }
+        assert s.calls == [] and mgr.slots.running == 0 and mgr.slots.waiters() == 0
+
+    asyncio.run(go())

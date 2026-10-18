@@ -27,6 +27,7 @@ from server.app.core import metrics
 from server.app.core.logging import get_logger
 from server.app.services.atp_attribution import AtpAttributionMixin
 from server.app.services.memory_hooks import run_with_memory_hooks
+from server.app.services.sledgehammer_slots import SlotWaitExpired
 from server.app.services.success_checker import (
     SH_ERROR,
     SH_PROVED,
@@ -188,6 +189,9 @@ class StepResult:
     ms: int = 0
     lines: List[str] = field(default_factory=list)
     subgoals: int = -1  # the host goal's subgoal count as the backend reported it
+    reason: Optional[str] = (
+        None  # for a skipped step: why (e.g. max_total_s while parked)
+    )
 
 
 @dataclass
@@ -471,6 +475,8 @@ class FillJobMixin(AtpAttributionMixin):
                 for i in range(subgoal + 1, max(result.subgoals, 0) + 1):
                     result.per_subgoal.append(StepResult(i, OUTCOME_SKIPPED))
                 result.outcome = step.outcome if subgoal == 1 else OUTCOME_PARTIAL
+                if step.reason:
+                    result.reason = step.reason
                 return
             methods.append(step.method or "")
             if subgoal >= max(result.subgoals, 1):
@@ -504,7 +510,22 @@ class FillJobMixin(AtpAttributionMixin):
                 job.parked_reason = None
 
         if slots is not None:
-            await slots.acquire(parkable=True, on_wait=on_wait)
+            try:
+                await slots.acquire(
+                    parkable=True,
+                    on_wait=on_wait,
+                    deadline=job.created_at + job.max_total_s,
+                )
+            except SlotWaitExpired as exc:
+                # the wall budget ran out while queued/parked (review ed2d751 B1):
+                # no slot was taken; the step is skipped and _run_fill ends the job
+                job.parked_reason, job.queue_position = None, -1
+                where = (
+                    f"parked ({exc.parked_reason})" if exc.parked_reason else "queued"
+                )
+                return StepResult(
+                    subgoal, OUTCOME_SKIPPED, reason=f"max_total_s while {where}"
+                )
         job.parked_reason, job.queue_position = None, -1
         t0 = time.time()
         fut: Optional["asyncio.Future[Any]"] = None

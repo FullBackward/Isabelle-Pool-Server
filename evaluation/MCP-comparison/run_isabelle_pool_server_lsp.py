@@ -21,12 +21,13 @@ import shutil
 import sys
 import time as time_mod
 from pathlib import Path
+from typing import Any
 
 # Allow importing from repo root
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from common.arbiter import check
-from common.config import MCPServerConfig, load, load_raw
+from common.config import Config, MCPServerConfig, load, load_raw
 from common.metrics import AttemptResult, Timer, TokenAggregator, append_result
 from common.problems import load_problems, sanitize_for_isabelle
 from common.session_logger import SessionLogger
@@ -121,12 +122,12 @@ def _variant_prompt(variant: str | None, file_path: Path) -> str | None:
     return str(prompts[variant]).replace("{file_path}", str(file_path))
 
 
-def _variant_mcp_config(cfg, variant: str | None) -> MCPServerConfig:
+def _variant_mcp_config(cfg: Config, variant: str | None) -> MCPServerConfig:
     """The MCP launch config; a variant that uses the fill tool caps the tool's
     patience below the harness tool timeout (plan 2026-10-18 §1.5 invariant:
     patience_s <= tool_timeout_seconds - 60) so the tool returns `continuing`
     instead of the harness timing the call out."""
-    base = cfg.mcp_servers[SYSTEM]
+    base: MCPServerConfig = cfg.mcp_servers[SYSTEM]
     if not variant:
         return base
     env = dict(base.env)
@@ -221,6 +222,30 @@ async def warmup_lsp(session, cfg, logger, file_path: Path) -> None:
         logger.log_text("SETUP warmup_lsp", "ok")
     except Exception as e:  # noqa: BLE001 — warm-up is best-effort
         logger.log_text("SETUP warmup_lsp", f"warm-up failed (ignored): {e}")
+
+
+ARBITER_RETRIES = 4
+ARBITER_RETRY_S = 15.0
+
+
+async def _check_with_headroom(
+    problem, final_thy_path: Path, gym_url: str, logger
+) -> dict[str, Any]:
+    """`check` with retries on a memory 503: right after the attempt's session
+    is destroyed the cgroup still counts it for a few seconds and the
+    bigstep build admission refuses (seen in the fill_sorries smoke)."""
+    verdict: dict[str, Any] = {"solved": False, "error": "arbiter not run", "build_log": ""}
+    for attempt in range(ARBITER_RETRIES):
+        verdict = await check(problem, final_thy_path, gym_url=gym_url)
+        err = str(verdict.get("error") or "")
+        if verdict["solved"] or "503" not in err or attempt == ARBITER_RETRIES - 1:
+            return verdict
+        logger.log_text(
+            "ARBITER_RETRY",
+            f"503 from the arbiter server ({err[:80]}); retrying in {ARBITER_RETRY_S}s",
+        )
+        await asyncio.sleep(ARBITER_RETRY_S)
+    return verdict
 
 
 async def run_attempt(
@@ -461,9 +486,14 @@ async def run_attempt(
                 )  # leave nothing warm behind (review bb1ec6b S5)
             except Exception:
                 pass
-        # Arbiter (must be before logger.close() to keep the file descriptor open)
+        # Arbiter (must be before logger.close() to keep the file descriptor open).
+        # The file session was just destroyed; its memory leaves the cgroup a few
+        # seconds later, and the arbiter's build is admitted against memory — a
+        # 503 memory_pressure here is retried while that settles (review ed2d751 S5).
         if final_thy_path.exists():
-            verdict = await check(problem, final_thy_path, gym_url=cfg.arbiter_gym_url)
+            verdict = await _check_with_headroom(
+                problem, final_thy_path, cfg.arbiter_gym_url, logger
+            )
             logger.log_text("ARBITER_VERDICT", (
                 f"solved={verdict['solved']} "
                 f"error={verdict.get('error')} "

@@ -19,6 +19,10 @@ services:
     # directory (it used to be `isabellegym-isabelle-gym`).
     image: isabelle-pool-server:local
     container_name: isabelle-pool-server
+    # tini as pid 1: the entrypoint exec's the server, which never reaps the
+    # solvers sledgehammer leaves reparented to pid 1 (eprover/vampire/timeout
+    # zombies accumulate over a campaign — review ed2d751 S2).
+    init: true
     volumes:
       - .:/app
       - isabelle_user_data:/root/.isabelle

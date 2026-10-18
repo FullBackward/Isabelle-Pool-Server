@@ -281,3 +281,26 @@ def test_status_and_cancel_on_an_unopened_file_never_open_a_session(
     cn = _call(app.isabelle_fill_cancel(file_path=str(tmp_path / "Nope.thy")))
     assert st["error"] == "no_fill_job" and cn["error"] == "no_fill_job"
     assert fake.acquired == [] and fake.status_calls == 0 and fake.cancelled == []
+
+
+def test_advice_names_the_parked_budget_exhaustion():
+    """Review ed2d751 B1: a job that ended on max_total_s while parked says so."""
+    from mcp_servers.lsp.fill_tools import shape
+
+    body = _body(
+        "done",
+        results=(
+            ROW,
+            {
+                **UNSOLVED,
+                "outcome": "skipped",
+                "reason": "max_total_s while parked (critical)",
+            },
+        ),
+    )
+    out = shape(body, continuing=False)
+    assert out["continuing"] is False
+    assert any(
+        "max_total_s" in a and "parked (critical)" in a and "[3]" in a
+        for a in out["advice"]
+    )

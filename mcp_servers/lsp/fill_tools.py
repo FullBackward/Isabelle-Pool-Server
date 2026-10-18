@@ -81,6 +81,26 @@ def shape(body: Dict[str, Any], continuing: bool) -> Dict[str, Any]:
         )
     else:
         advice.append("The file has no `sorry`; nothing to fill.")
+    budget = [
+        r["line"]
+        for r in out["results"]
+        if r.get("outcome") == "skipped"
+        and str(r.get("reason") or "").startswith("max_total_s")
+    ]
+    if budget and not continuing:
+        why = next(
+            (
+                str(r.get("reason"))
+                for r in out["results"]
+                if str(r.get("reason") or "").startswith("max_total_s")
+            ),
+            "max_total_s",
+        )
+        advice.append(
+            f"The job's max_total_s ran out before line(s) {budget} were tried ({why}): "
+            "call isabelle_fill_sorries again later (a parked job waits for the server's "
+            "memory tier to drop) or with a larger max_total_s."
+        )
     if body.get("error"):
         advice.append(f"The job ended with an error: {body['error']}.")
     out["advice"] = advice
@@ -144,7 +164,10 @@ async def isabelle_fill_sorries(
     returns after `patience_s` (default 240) with `continuing: true` and the
     partial state — the job KEEPS RUNNING server-side until max_total_s; call
     isabelle_fill_status(file_path) to collect it, isabelle_fill_cancel to
-    stop it. While a step runs, other tools on this file answer `busy`."""
+    stop it. `max_total_s` bounds the job INCLUDING time parked at critical
+    memory: a job parked that long ends with its untried sorries `skipped`
+    (reason `max_total_s while parked`) — call again later. While a step
+    runs, other tools on this file answer `busy`."""
     binding, _ = await _bound_synced(file_path)
     text = binding.cached_text
     if text is None:

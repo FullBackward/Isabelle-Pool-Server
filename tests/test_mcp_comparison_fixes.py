@@ -347,3 +347,39 @@ def test_variant_rows_and_logs_live_under_the_variant_folder(tmp_path):
     assert (
         log2.log_path == tmp_path / "isabelle_pool_server_lsp" / "logs" / "p_rep0.log"
     )
+
+
+def test_arbiter_retries_a_memory_503_until_it_clears(monkeypatch):
+    """Review ed2d751 S5: right after the attempt's session is destroyed the
+    bigstep admission can refuse; the runner retries the arbiter."""
+    import asyncio
+
+    r = _lsp_runner()
+    monkeypatch.setattr(r, "ARBITER_RETRY_S", 0.0)
+    answers = [
+        {
+            "solved": False,
+            "error": "gym arbiter: HTTPStatusError: Server error '503 Service Unavailable'",
+            "build_log": "",
+        },
+        {"solved": True, "error": None, "build_log": "ok"},
+    ]
+    calls = []
+
+    async def fake_check(problem, path, gym_url):
+        calls.append(gym_url)
+        return answers.pop(0)
+
+    monkeypatch.setattr(r, "check", fake_check)
+
+    class Log:
+        def log_text(self, *a):
+            pass
+
+    out = asyncio.run(r._check_with_headroom(None, Path("x.thy"), "http://x", Log()))
+    assert out["solved"] is True and len(calls) == 2
+    answers.extend(
+        [{"solved": False, "error": "file still contains sorry/oops", "build_log": ""}]
+    )
+    out = asyncio.run(r._check_with_headroom(None, Path("x.thy"), "http://x", Log()))
+    assert out["solved"] is False and len(calls) == 3  # a non-503 verdict is final

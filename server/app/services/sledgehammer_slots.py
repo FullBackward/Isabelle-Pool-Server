@@ -28,6 +28,15 @@ logger = get_logger(__name__)
 STATE_CAPACITY = {"ok": None, "unknown": None, "warning": 1, "critical": 0}
 
 
+class SlotWaitExpired(Exception):
+    """The wait for a slot (queued or parked) reached the caller's deadline;
+    ``parked_reason`` is the tier reason at that moment or None (queued)."""
+
+    def __init__(self, parked_reason: Optional[str]) -> None:
+        super().__init__(parked_reason or "queued")
+        self.parked_reason = parked_reason
+
+
 class SledgehammerSlots:
     """See the module docstring. ``manager`` provides ``memory`` (the monitor
     with the cached ``last_state`` / ``last_snapshot``), ``memory_management_enabled``
@@ -83,12 +92,17 @@ class SledgehammerSlots:
             self._cond = asyncio.Condition()
         return self._cond
 
-    async def acquire(self, parkable: bool, on_wait: Any = None) -> int:
+    async def acquire(
+        self, parkable: bool, on_wait: Any = None, deadline: Optional[float] = None
+    ) -> int:
         """Take a slot. ``parkable=False``: raise ``MemoryPressure`` when the tier
         allows nothing (the interactive endpoints' refusal); ``parkable=True``:
         wait, re-checking the tier every ``PARK_POLL_S``. ``on_wait(position,
         reason)`` is called on every re-check so a job can publish its queue
-        position / parked state. Returns the waiter token (for diagnostics)."""
+        position / parked state. ``deadline`` (``time.time()``-based): a wait —
+        queued or parked — that reaches it raises ``SlotWaitExpired`` so a job's
+        ``max_total_s`` bounds its wall time including parking (plan §4, review
+        ed2d751 B1). Returns the waiter token (for diagnostics)."""
         cond = self._condition()
         token = next(self._tokens)
         async with cond:
@@ -104,15 +118,20 @@ class SledgehammerSlots:
                     if cap == 0 and not parkable:
                         self._waiters.remove(token)
                         raise self._refusal()
+                    if deadline is not None and time.time() >= deadline:
+                        self._waiters.remove(token)
+                        cond.notify_all()
+                        raise SlotWaitExpired(self.parked_reason())
                     if on_wait is not None:
                         try:
                             on_wait(self.queue_position(token), self.parked_reason())
                         except Exception:  # pylint: disable=broad-exception-caught
                             pass
+                    wait_s = float(Memory.FILL_PARK_POLL_S)
+                    if deadline is not None:
+                        wait_s = max(0.05, min(wait_s, deadline - time.time()))
                     try:
-                        await asyncio.wait_for(
-                            cond.wait(), timeout=Memory.FILL_PARK_POLL_S
-                        )
+                        await asyncio.wait_for(cond.wait(), timeout=wait_s)
                     except asyncio.TimeoutError:
                         pass  # re-check the tier
             except BaseException:
