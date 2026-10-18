@@ -26,7 +26,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from common.arbiter import check
-from common.config import load
+from common.config import MCPServerConfig, load, load_raw
 from common.metrics import AttemptResult, Timer, TokenAggregator, append_result
 from common.problems import load_problems, sanitize_for_isabelle
 from common.session_logger import SessionLogger
@@ -105,6 +105,35 @@ _DONE_SORRY_RE = re.compile(r"\b(sorry|oops)\b")
 
 # Max times an attempt is sent back when the DONE gate rejects its claim
 DONE_NUDGE_LIMIT = 2
+
+
+def _variant_prompt(variant: str | None, file_path: Path) -> str | None:
+    """The user prompt of a named variant (config `prompts.<variant>`, with
+    `{file_path}` substituted); None for the baseline, which keeps the built-in
+    prompt below byte for byte."""
+    if not variant:
+        return None
+    prompts = load_raw().get("prompts") or {}
+    if variant not in prompts:
+        raise SystemExit(
+            f"--prompt-variant {variant!r}: no `prompts.{variant}` in config.yaml"
+        )
+    return str(prompts[variant]).replace("{file_path}", str(file_path))
+
+
+def _variant_mcp_config(cfg, variant: str | None) -> MCPServerConfig:
+    """The MCP launch config; a variant that uses the fill tool caps the tool's
+    patience below the harness tool timeout (plan 2026-10-18 §1.5 invariant:
+    patience_s <= tool_timeout_seconds - 60) so the tool returns `continuing`
+    instead of the harness timing the call out."""
+    base = cfg.mcp_servers[SYSTEM]
+    if not variant:
+        return base
+    env = dict(base.env)
+    cap = max(30, int(cfg.budgets.tool_timeout_seconds) - 60)
+    patience = int(env.get("ISABELLE_MCP_LSP_FILL_PATIENCE_S", "240"))
+    env["ISABELLE_MCP_LSP_FILL_PATIENCE_S"] = str(min(patience, cap))
+    return MCPServerConfig(command=base.command, env=env)
 
 
 def _lsp_prompt_body(problem, file_path: Path) -> str:
@@ -194,7 +223,14 @@ async def warmup_lsp(session, cfg, logger, file_path: Path) -> None:
         logger.log_text("SETUP warmup_lsp", f"warm-up failed (ignored): {e}")
 
 
-async def run_attempt(problem, repeat: int, results_path: Path, client=None, cfg=None) -> None:
+async def run_attempt(
+    problem,
+    repeat: int,
+    results_path: Path,
+    client=None,
+    cfg=None,
+    variant: str | None = None,
+) -> None:
     from common.mcp_client import call_tool, list_tools, mcp_session_startup_retry
     from common.model import ModelClient, no_tool_call_action
 
@@ -209,6 +245,7 @@ async def run_attempt(problem, repeat: int, results_path: Path, client=None, cfg
         model_id=cfg.model.model_id,
         model_provider=cfg.model.provider,
         model_temperature=cfg.model.temperature,
+        variant=variant or "baseline",
     )
     timer = Timer()
     attempt_t0 = time_mod.time()
@@ -216,7 +253,11 @@ async def run_attempt(problem, repeat: int, results_path: Path, client=None, cfg
     tool_times: list[float] = []
     round_latencies: list[float] = []
 
-    runs_dir = cfg.paths.runs_dir / SYSTEM
+    runs_dir = (
+        cfg.paths.runs_dir / SYSTEM / variant
+        if variant
+        else cfg.paths.runs_dir / SYSTEM
+    )
     workdir = runs_dir / "work" / f"{problem.name}_rep{repeat}"
     runs_dir.mkdir(parents=True, exist_ok=True)
     if workdir.exists():
@@ -225,18 +266,28 @@ async def run_attempt(problem, repeat: int, results_path: Path, client=None, cfg
     target_path = workdir / problem.path.name
     target_path.write_text(problem.full_text, encoding="utf-8")
     final_thy_path = runs_dir / f"{problem.name}_rep{repeat}.thy"
-    logger = SessionLogger(SYSTEM, problem.name, repeat, cfg.paths.runs_dir)
+    logger = SessionLogger(
+        SYSTEM, problem.name, repeat, cfg.paths.runs_dir, variant=variant
+    )
 
     messages = [
-        {"role": "user", "content": _lsp_prompt_body(problem, target_path)},
+        {
+            "role": "user",
+            "content": _variant_prompt(variant, target_path)
+            or _lsp_prompt_body(problem, target_path),
+        },
     ]
+    if variant:
+        logger.log_text("PROMPT_VARIANT", variant)
     if system_prompt:
         logger.log_text("SYSTEM_PROMPT", system_prompt)
     logger.log_message(messages[0])
 
     session = None
     try:
-        async with mcp_session_startup_retry(cfg.mcp_servers[SYSTEM]) as session:
+        async with mcp_session_startup_retry(
+            _variant_mcp_config(cfg, variant)
+        ) as session:
             mcp_tools = await list_tools(session)
             tools = mcp_tools + FILE_TOOLS
             try:
@@ -437,6 +488,12 @@ async def main() -> None:
     parser.add_argument("--thy-dir", required=True, type=Path, help="Directory containing .thy problems")
     parser.add_argument("--repeats", type=int, default=None, help="Overrides config repeats")
     parser.add_argument("--select", help="Only run problems whose name contains this substring")
+    parser.add_argument(
+        "--prompt-variant",
+        default=None,
+        help="Name under `prompts:` in config.yaml; results/logs go to runs/<system>/<name>/ "
+        "and rows carry variant=<name>. Omit for the byte-identical baseline prompt.",
+    )
     args = parser.parse_args()
 
     cfg = load()
@@ -445,13 +502,20 @@ async def main() -> None:
     if args.select:
         problems = [p for p in problems if args.select in p.name]
 
-    results_path = cfg.paths.runs_dir / SYSTEM / "results.jsonl"
+    variant = args.prompt_variant or None
+    _variant_prompt(variant, Path("x"))  # fail early on an unknown name
+    out_dir = (
+        cfg.paths.runs_dir / SYSTEM / variant
+        if variant
+        else cfg.paths.runs_dir / SYSTEM
+    )
+    results_path = out_dir / "results.jsonl"
     results_path.parent.mkdir(parents=True, exist_ok=True)
 
     for problem in problems:
         for repeat in range(repeats):
             try:
-                await run_attempt(problem, repeat, results_path)
+                await run_attempt(problem, repeat, results_path, variant=variant)
             except Exception as e:
                 import traceback
                 traceback.print_exc()
@@ -463,6 +527,7 @@ async def main() -> None:
                     model_id=cfg.model.model_id,
                     model_provider=cfg.model.provider,
                     model_temperature=cfg.model.temperature,
+                    variant=variant or "baseline",
                     error=str(e),
                 )
                 append_result(results_path, res)

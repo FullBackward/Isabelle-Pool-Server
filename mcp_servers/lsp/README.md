@@ -151,5 +151,7 @@ and the job's `queue_position` (−1 = not queued). The tool waits `ISABELLE_MCP
 `continuing: true`; the job keeps running server-side until `max_total_s` —
 `isabelle_fill_status(file_path)` collects it (each poll counts as activity on the session) and
 `isabelle_fill_cancel(file_path)` stops it. While a step runs, other tools on the same file
-answer `busy`. The ATP processes a step spawns are attributed to the file's session
-(`sledgehammer_mb` in `isabelle_list_sessions` / the server's `/api/v1/memory`).
+answer `busy`. The ATP processes a step spawns are attributed to the file's session as
+`sledgehammer_mb` (the server's `/api/v1/memory` rows; `isabelle_list_sessions` shows it once a
+refresh has merged the rows, and `isabelle_memory_status` counts what other clients' running
+sledgehammers hold).

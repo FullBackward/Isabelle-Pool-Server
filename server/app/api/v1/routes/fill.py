@@ -98,13 +98,19 @@ async def fill_sorries(
 @router.get("/api/v1/sessions/{session_id}/fill_sorries")
 async def fill_status(
     session: LeasedSession, session_manager: SessionManagerDep
-) -> Dict[str, Any]:
+) -> Any:
     """Current job state (plan §3.2). Polling counts as activity so the idle
     sweep does not reap a session whose only traffic is the poll (review B2)."""
     session.update_activity()  # type: ignore[no-untyped-call]
     body = session_manager.fill_status(session.session_id)
-    if body is None:
-        raise HTTPException(status_code=404, detail={"error": "no_fill_job"})
+    if body is None:  # top-level `error` like the 409/503 bodies (review aa96c6d S3)
+        return JSONResponse(
+            status_code=404,
+            content={
+                "error": "no_fill_job",
+                "detail": "no fill_sorries job on this session",
+            },
+        )
     return body
 
 

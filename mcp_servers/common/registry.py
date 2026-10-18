@@ -42,6 +42,9 @@ class Entry:  # pylint: disable=too-many-instance-attributes
     lease_expires_at: Optional[float] = None
     rss_mb: Optional[float] = None
     heap_mb: Optional[float] = None
+    sledgehammer_mb: Optional[float] = (
+        None  # solvers of a running sledgehammer/fill step
+    )
     state: str = "active"  # active | gone (no longer listed by the server)
 
     @property
@@ -71,6 +74,7 @@ class Entry:  # pylint: disable=too-many-instance-attributes
             "expires_in_s": self.expires_in_s,
             "rss_mb": self.rss_mb,
             "heap_mb": self.heap_mb,
+            "sledgehammer_mb": self.sledgehammer_mb,
             "state": self.state,
         }
 
@@ -166,7 +170,13 @@ class SessionRegistry:
             entry = self._entries.get(str(row.get("session_id", "")))
             if entry is None:
                 continue
-            for key in ("expires_in_s", "lease_expires_at", "rss_mb", "heap_mb"):
+            for key in (
+                "expires_in_s",
+                "lease_expires_at",
+                "rss_mb",
+                "heap_mb",
+                "sledgehammer_mb",
+            ):
                 if key in row:
                     setattr(entry, key, row[key])
             if "idle_s" in row:

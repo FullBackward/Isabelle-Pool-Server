@@ -136,7 +136,9 @@ curl http://localhost:8000/            # version, gateway_alive, active/busy ses
   `method` (the first suggestion, timing cut); "No proof found" used to count as success. `POST …/fill_sorries`
   starts the server-side sledgehammer job on every `sorry` of a submitted proof (poll `GET`, cancel
   `DELETE`): sequential per session, tier-aware slots (2 at ok, 1 at warning, parked at critical), a
-  deterministic ETA, and the patched proof text in the result.
+  deterministic ETA, and the patched proof text in the result. The LSP MCP wraps it as
+  `isabelle_fill_sorries` / `isabelle_fill_status` / `isabelle_fill_cancel` (mcp_servers/lsp/README.md), and
+  `GET /api/v1/memory` rows attribute the solvers a step spawns to its session (`sledgehammer_mb`).
 
 ### 2. The HTTP API in four calls
 

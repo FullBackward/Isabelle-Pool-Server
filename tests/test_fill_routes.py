@@ -210,12 +210,9 @@ def test_no_sorry_returns_200_done(api):
 def test_status_404_without_job(api):
     client, _ = api(_Session())
     with client:
-        assert (
-            client.get(
-                f"/api/v1/sessions/{SID}/fill_sorries", headers=LEASE
-            ).status_code
-            == 404
-        )
+        r = client.get(f"/api/v1/sessions/{SID}/fill_sorries", headers=LEASE)
+        assert r.status_code == 404
+        assert r.json()["error"] == "no_fill_job"  # top-level key (review aa96c6d S3)
 
 
 def test_provers_pattern_validated(api):

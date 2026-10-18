@@ -15,9 +15,22 @@ from typing import Any
 
 
 class SessionLogger:
-    def __init__(self, system: str, problem: str, repeat: int, runs_dir: Path, console: bool = True):
+
+    def __init__(
+        self,
+        system: str,
+        problem: str,
+        repeat: int,
+        runs_dir: Path,
+        console: bool = True,
+        variant: str | None = None,
+    ):
         self.console = console
-        self.log_dir = runs_dir / system / "logs"
+        # a prompt variant keeps its own results/logs folder under the system
+        # (runs/<system>/<variant>/…), which analyze.py reports as a variant row
+        self.log_dir = (
+            runs_dir / system / variant if variant else runs_dir / system
+        ) / "logs"
         self.log_dir.mkdir(parents=True, exist_ok=True)
         self.log_path = self.log_dir / f"{problem}_rep{repeat}.log"
         self._fh = open(self.log_path, "w", encoding="utf-8")

@@ -100,14 +100,18 @@ def _fill_error(exc: httpx.HTTPStatusError) -> Optional[Dict[str, Any]]:
                 "isabelle_fill_cancel(file_path) to stop it."
             ],
         }
-    if info["status"] == 404 and "no_fill_job" in str(info["detail"]):
-        return {
-            "error": "no_fill_job",
-            "advice": [
-                "No fill job on this file; call isabelle_fill_sorries(file_path) first."
-            ],
-        }
+    if info["status"] == 404 and info["error"] == "no_fill_job":
+        return _no_fill_job()
     return None
+
+
+def _no_fill_job() -> Dict[str, Any]:
+    return {
+        "error": "no_fill_job",
+        "advice": [
+            "No fill job on this file; call isabelle_fill_sorries(file_path) first."
+        ],
+    }
 
 
 async def _status(binding: Any) -> Dict[str, Any]:
@@ -183,7 +187,9 @@ async def isabelle_fill_status(file_path: str) -> str:
     the job runs (queue_position, parked, eta_s tell why), false once it is
     done/cancelled/error, then write `patched_text` to the file and verify.
     Polling keeps the file session alive. Does not re-sync the file."""
-    binding = await pool.get_binding(file_path)
+    binding = pool.peek_binding(file_path)  # never opens (review aa96c6d S1)
+    if binding is None:
+        return _j(_no_fill_job())
     try:
         body = await _status(binding)
     except httpx.HTTPStatusError as exc:
@@ -200,9 +206,10 @@ async def isabelle_fill_cancel(file_path: str) -> str:
     timeout_s, later `sorry`s are reported `skipped`, and the partial
     `patched_text` (the proofs found so far) is returned in the same shape.
     Also the way to free the session when the job is parked at critical."""
-    binding = await pool.get_binding(file_path)
+    binding = pool.peek_binding(file_path)  # never opens (review aa96c6d S1)
+    if binding is None:
+        return _j(_no_fill_job())
     c = await pool.client()
-    pool.registry.touch(binding.session_id)
     try:
         body = await c.fill_cancel(binding.session_id, lease_id=binding.lease_id)
     except httpx.HTTPStatusError as exc:
@@ -211,17 +218,10 @@ async def isabelle_fill_cancel(file_path: str) -> str:
             raise
         return _j(known)
     if body.get("status") == "none":
-        return _j(_fill_error_none())
+        return _j(_no_fill_job())
     out = shape(body, continuing=body.get("status") not in _TERMINAL)
     out["cancelled"] = bool(body.get("cancelled"))
     return _j(out)
-
-
-def _fill_error_none() -> Dict[str, Any]:
-    return {
-        "error": "no_fill_job",
-        "advice": ["No fill job on this file; nothing to cancel."],
-    }
 
 
 __all__ = [

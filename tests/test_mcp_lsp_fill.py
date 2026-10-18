@@ -205,7 +205,7 @@ def test_no_fill_job_404_does_not_rebind(tmp_path, monkeypatch):
     app, fake, path = _app(tmp_path, monkeypatch)
     _call(app.isabelle_open(file_path=path))
     n_acquired = len(fake.acquired)
-    fake.status_error = _http_error(404, {"detail": {"error": "no_fill_job"}})
+    fake.status_error = _http_error(404, {"error": "no_fill_job", "detail": "no job"})
     out = _call(app.isabelle_fill_status(file_path=path))
     assert out["error"] == "no_fill_job" and out["advice"]
     assert len(fake.acquired) == n_acquired  # no rebind: the session is fine
@@ -269,3 +269,15 @@ def test_polls_touch_the_registry(tmp_path, monkeypatch):
     asyncio.run(asyncio.sleep(0.01))
     _call(app.isabelle_fill_sorries(file_path=path))
     assert entry.last_used_at > before
+
+
+def test_status_and_cancel_on_an_unopened_file_never_open_a_session(
+    tmp_path, monkeypatch
+):
+    """Review aa96c6d S1: after an MCP restart / on a mistyped path the status
+    and cancel tools answer no_fill_job without acquiring a session."""
+    app, fake, path = _app(tmp_path, monkeypatch)
+    st = _call(app.isabelle_fill_status(file_path=path))
+    cn = _call(app.isabelle_fill_cancel(file_path=str(tmp_path / "Nope.thy")))
+    assert st["error"] == "no_fill_job" and cn["error"] == "no_fill_job"
+    assert fake.acquired == [] and fake.status_calls == 0 and fake.cancelled == []
