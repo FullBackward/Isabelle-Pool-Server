@@ -269,10 +269,18 @@ class SledgehammerRequest(BaseModel):
 
 
 class SledgehammerResponse(BaseModel):
-    success: bool
+    success: bool = Field(
+        description="True only when a proof was found (a 'Try this:' line)."
+    )
     suggestions: List[str]
     raw_output: str
     execution_time: float
+    outcome: Optional[str] = Field(
+        default=None, description="proved | none | timeout | error"
+    )
+    method: Optional[str] = Field(
+        default=None, description="The first 'Try this:' method text, timing cut."
+    )
 
 
 class DiagnosticRequest(BaseModel):
@@ -404,10 +412,18 @@ class SledgehammerAtRequest(BaseModel):
 
 
 class SledgehammerAtResponse(BaseModel):
-    found: bool
+    found: bool = Field(
+        description="True only when a proof was found (a 'Try this:' line)."
+    )
     results: List[str] = Field(default_factory=list)
     error: Optional[str] = None
     execution_time: float = 0.0
+    outcome: Optional[str] = Field(
+        default=None, description="proved | none | timeout | error"
+    )
+    method: Optional[str] = Field(
+        default=None, description="The first 'Try this:' method text, timing cut."
+    )
 
 
 class ChunkVerifyRequest(BaseModel):

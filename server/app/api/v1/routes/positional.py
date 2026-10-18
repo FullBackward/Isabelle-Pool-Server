@@ -7,6 +7,7 @@ import time
 from fastapi import APIRouter, Query
 
 from server.app.core.logging import get_logger
+from server.app.services.success_checker import SH_PROVED, classify_sledgehammer
 
 from ..deps import LeasedSession, SessionManagerDep, sledgehammer_slot
 from ..schemas.API_models import (
@@ -97,9 +98,17 @@ async def sledgehammer_at(
     async with sledgehammer_slot(session_manager):
         result = await asyncio.to_thread(
             session.sledgehammer_at, request.line, request.subgoal, request.timeout_s)
+    results = [to_ascii(str(r)) for r in (result.get("results") or [])]
+    # `found` used to copy the backend's flag, which is true whenever the overlay
+    # answered — including "No proof found". A proof is found only on "Try this:".
+    outcome, method = classify_sledgehammer(results)
+    if result.get("error"):
+        outcome = "error"
     return SledgehammerAtResponse(
-        found=bool(result.get("found", False)),
-        results=[to_ascii(str(r)) for r in (result.get("results") or [])],
+        found=outcome == SH_PROVED,
+        results=results,
         error=result.get("error"),
         execution_time=time.time() - start,
+        outcome=outcome,
+        method=method,
     )

@@ -7,6 +7,7 @@ from fastapi import APIRouter
 
 from server.app.core import metrics
 from server.app.core.logging import get_logger
+from server.app.services.success_checker import SH_PROVED, classify_sledgehammer
 
 from ..deps import LeasedSession, SessionManagerDep, sledgehammer_slot
 from ..memory_hooks import PROVER_DIED_TEXT, run_with_memory_hooks
@@ -43,7 +44,10 @@ async def sledgehammer(
         override or suggestions is None
     ):  # dead prover: nothing trustworthy; session discarded
         suggestions = []
-    found = len(suggestions) > 0
+    # success means a proof was found ("Try this: ..."), not merely that
+    # sledgehammer printed something: "No proof found" used to count as success.
+    outcome, method = classify_sledgehammer(suggestions)
+    found = outcome == SH_PROVED
     metrics.sledgehammer_total.labels("success" if found else "failure").inc()
     logger.info(
         "sledgehammer finished found=%s suggestions=%s elapsed=%.2f",
@@ -58,4 +62,6 @@ async def sledgehammer(
             else "\n".join(to_ascii(str(s)) for s in suggestions)
         ),
         execution_time=elapsed,
+        outcome=outcome,
+        method=method,
     )

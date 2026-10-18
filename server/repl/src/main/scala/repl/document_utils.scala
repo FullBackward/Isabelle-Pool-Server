@@ -681,6 +681,59 @@ object Document_Utils {
           JSON.Format(JSON.Object("found" -> true, "results" -> content))
     }
 
+  /** Sledgehammer for the server-side `fill_sorries` job: hosted on the command with
+   *  the given INDEX in `command_iterator()` order — the same numbering the chunk
+   *  report emits as `i` — so the goal BEFORE a `sorry` can be targeted even when
+   *  `lemma … sorry` share one line (a line-based lookup resolves to the `sorry`).
+   *  Runs the `isabelle_pool_server_sledgehammer_fill` op (max_proofs, provers, and a
+   *  leading "subgoals=N" line). JSON: {found, subgoals, results:[str]} or
+   *  {found:false, subgoals, error}. */
+  def sledgehammer_at_command_json(
+      session: Headless.Session,
+      node_name: Document.Node.Name,
+      index: Int,
+      subgoal: Int,
+      timeout_s: Int,
+      max_proofs: Int,
+      provers: String
+  ): String = {
+    val snapshot = node_snapshot(session, node_name)
+    val commands = snapshot.node.command_iterator().toList
+    if (index < 0 || index >= commands.length)
+      Json_Reports.line_query_not_found(s"no command with index $index")
+    else {
+      val (command, _) = commands(index)
+      if (command.is_ignored)
+        JSON.Format(JSON.Object("found" -> false, "subgoals" -> 0,
+          "error" -> s"command $index is not a proper command"))
+      else {
+        val (done, content, errors) = overlay_query(
+          session, node_name, command,
+          "isabelle_pool_server_sledgehammer_fill_query",
+          List(timeout_s.toString, subgoal.toString, max_proofs.toString, provers),
+          (timeout_s + 30).toLong * 1000L)
+        val (subgoals, results) = content match {
+          case head :: rest if head.startsWith("subgoals=") =>
+            (head.stripPrefix("subgoals=").filter(_.isDigit).toIntOption.getOrElse(0), rest)  // explicit nulls: no trim
+          case other => (-1, other)  // header missing: the op did not get to run
+        }
+        val error_line = results.collectFirst { case l if l.startsWith("error=") => l.stripPrefix("error=") }
+        if (!done)
+          JSON.Format(JSON.Object("found" -> false, "subgoals" -> subgoals,
+            "error" -> s"sledgehammer timed out (budget ${timeout_s}s + grace)"))
+        else if (errors.nonEmpty)
+          JSON.Format(JSON.Object("found" -> false, "subgoals" -> subgoals,
+            "error" -> (if (errors.head.contains("Unknown proof context"))
+                          s"no open goal at command $index"
+                        else errors.head)))
+        else if (error_line.isDefined)
+          JSON.Format(JSON.Object("found" -> false, "subgoals" -> subgoals, "error" -> error_line.get))
+        else
+          JSON.Format(JSON.Object("found" -> true, "subgoals" -> subgoals, "results" -> results))
+      }
+    }
+  }
+
   def node_source(session: Headless.Session, node_name: Document.Node.Name): String =
     node_snapshot(session, node_name).node.source
 }

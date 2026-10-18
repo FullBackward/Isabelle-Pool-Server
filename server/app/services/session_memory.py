@@ -22,6 +22,7 @@ Field semantics (plan-review 501a1ba S1/S2):
 
 from __future__ import annotations
 
+import json
 import time
 from typing import Any, Callable, Dict, Mapping, Optional
 
@@ -184,7 +185,68 @@ class SessionMemoryMixin:  # pylint: disable=too-many-instance-attributes
         }
 
 
-class MemoryAwareSession(SessionMemoryMixin, _Isabelle_Session):
+class SessionFillMixin:  # pylint: disable=too-few-public-methods
+    """The backend call of the server-side ``fill_sorries`` job (plan 2026-10-18
+    §1.1/§1.2): sledgehammer hosted on the command with a chunk-report INDEX —
+    the command before a ``sorry`` — with ``max_proofs`` and an optional prover
+    list. Lives here, not in session.py (at the size gate; plan review B1); same
+    busy/activity accounting and worker timeout as ``sledgehammer_at``."""
+
+    backend: Any
+    _call_backend: Callable[..., Any]
+    _acquire_request: Callable[[], None]
+    _release_request: Callable[[], None]
+    update_activity: Callable[[], None]
+
+    def sledgehammer_at_command(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+        self,
+        index: int,
+        subgoal: int = 1,
+        timeout_s: int = 30,
+        max_proofs: int = 1,
+        provers: str = "",
+        http_timeout: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """``{found, subgoals, results}`` or ``{found: False, subgoals, error}``
+        from the backend (JSON parsed); ``subgoals`` is the number of goals the
+        ``sorry`` at that position would close (-1 when the op never ran)."""
+        self.update_activity()
+        self._acquire_request()
+        try:
+            logger.info(
+                "running sledgehammer_at_command index=%s subgoal=%s timeout_s=%s max_proofs=%s",
+                index,
+                subgoal,
+                timeout_s,
+                max_proofs,
+            )
+            result = self._call_backend(
+                lambda: self.backend.raw.sledgehammer_at_command(
+                    int(index),
+                    int(subgoal),
+                    int(timeout_s),
+                    int(max_proofs),
+                    str(provers or ""),
+                ),
+                timeout=http_timeout or (timeout_s + 40.0),
+            )
+            try:
+                parsed = json.loads(result) if result else None
+            except (ValueError, TypeError):
+                parsed = None
+            if not isinstance(parsed, dict):
+                return {
+                    "found": False,
+                    "subgoals": -1,
+                    "error": "unparseable backend reply",
+                }
+            parsed.setdefault("subgoals", -1)
+            return parsed
+        finally:
+            self._release_request()
+
+
+class MemoryAwareSession(SessionMemoryMixin, SessionFillMixin, _Isabelle_Session):
     """The session class the manager creates: a plain session + memory facts."""
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
