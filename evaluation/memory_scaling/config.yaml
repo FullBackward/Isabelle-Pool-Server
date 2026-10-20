@@ -26,6 +26,8 @@ tools:
     root_patterns: ["pide_mcp"]
     start_timeout_s: 900                  # start_session is synchronous; a cold HOL-Analysis start can take minutes
     no_build: true                        # heaps are built by scripts/01_build_heaps.sh; a missing heap is an error, not a build
+    extra_args: []                        # e.g. ["-w"] to log MCP requests/responses into the stderr log, ["-o", "NAME=VAL"]
+    log_dir: results/pide-logs            # one stderr log per MCP process (pide_mcp-<heap>-<topology><j>.stderr.log)
 
 heaps:
   HOL:          {ks: [1, 2, 4, 8, 16, 32], workload: workloads/CTL.thy}
