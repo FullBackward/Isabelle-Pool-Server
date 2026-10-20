@@ -45,6 +45,7 @@ class ProcRow:  # pylint: disable=too-many-instance-attributes
     pss: int
     uss: int
     shared: int
+    pss_estimated: bool = False  # no Pss line: pss = rss (review 2e1935e S2)
 
     def as_dict(self) -> Dict[str, object]:
         """JSON row."""
@@ -57,6 +58,7 @@ class ProcRow:  # pylint: disable=too-many-instance-attributes
             "pss": self.pss,
             "uss": self.uss,
             "shared": self.shared,
+            "pss_estimated": self.pss_estimated,
         }
 
 
@@ -107,16 +109,36 @@ def cmdline(pid: int) -> str:
     return raw.replace("\0", " ").strip()
 
 
-def find_roots(
-    patterns: Iterable[str], table: Optional[Dict[int, Tuple[int, str, str]]] = None
+def self_chain(
+    table: Dict[int, Tuple[int, str, str]], pid: Optional[int] = None
 ) -> Set[int]:
-    """Pids whose command line contains any of ``patterns`` (substring match)."""
+    """This process and its ancestors (never part of a tool's tree)."""
+    pid = os.getpid() if pid is None else pid
+    chain: Set[int] = set()
+    while pid in table and pid not in chain and pid > 0:
+        chain.add(pid)
+        pid = table[pid][0]
+    return chain
+
+
+def find_roots(
+    patterns: Iterable[str],
+    table: Optional[Dict[int, Tuple[int, str, str]]] = None,
+    exclude: Optional[Set[int]] = None,
+) -> Set[int]:
+    """Pids whose command line contains any of ``patterns`` (substring match),
+    never this process or its ancestors — a driver that spawned the tool or a
+    shell whose argv names the pattern (review 2e1935e S1). Drivers pass the
+    pids they spawned; patterns are the fallback for an external tool."""
     pats = [p for p in patterns if p]
     if not pats:
         return set()
     table = table if table is not None else process_table()
+    skip = self_chain(table) | (exclude or set())
     roots: Set[int] = set()
     for pid in table:
+        if pid in skip:
+            continue
         line = cmdline(pid)
         if line and any(p in line for p in pats):
             roots.add(pid)
@@ -166,6 +188,7 @@ def smaps_rollup(pid: int) -> Optional[Dict[str, int]]:
         "pss": vals.get("Pss", vals["Rss"]),
         "uss": private,
         "shared": shared,
+        "pss_estimated": 0 if "Pss" in vals else 1,  # review 2e1935e S2
     }
 
 
@@ -175,10 +198,14 @@ def role_of(comm: str) -> str:
 
 
 def snapshot(
-    roots: Iterable[int], table: Optional[Dict[int, Tuple[int, str, str]]] = None
+    roots: Iterable[int],
+    table: Optional[Dict[int, Tuple[int, str, str]]] = None,
+    skipped: Optional[List[int]] = None,
 ) -> List[ProcRow]:
-    """RSS/PSS/USS of every process under ``roots`` (zombies and unreadable
-    processes are skipped: a zombie has no memory)."""
+    """RSS/PSS/USS of every process under ``roots``. Zombies are skipped (no
+    memory); a live process whose ``smaps_rollup`` is unreadable (another
+    user's, or gone between scan and read) is appended to ``skipped`` so the
+    row shows the gap (review 2e1935e S3)."""
     table = table if table is not None else process_table()
     rows: List[ProcRow] = []
     for pid in sorted(descendants(roots, table)):
@@ -187,6 +214,8 @@ def snapshot(
             continue
         mem = smaps_rollup(pid)
         if mem is None:
+            if skipped is not None:
+                skipped.append(pid)
             continue
         rows.append(
             ProcRow(
@@ -198,6 +227,7 @@ def snapshot(
                 mem["pss"],
                 mem["uss"],
                 mem["shared"],
+                bool(mem.get("pss_estimated")),
             )
         )
     return rows

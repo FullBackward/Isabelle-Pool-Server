@@ -165,3 +165,33 @@ def test_workload_helpers(tmp_path):
     assert "theory W_3\n" in renamed and workload.parse_header(renamed)[0] == "W_3"
     body = workload.body_before_end(w.text)
     assert body.rstrip().endswith("by simp") and "\nend" not in body
+
+
+def test_find_roots_never_matches_the_sampler_chain_and_flags_gaps(fake, monkeypatch):
+    """Review 2e1935e S1–S3: the sampler's own chain is never a root even when
+    its argv names the pattern; an unreadable live process is listed in
+    skipped_pids; a missing Pss line is flagged, not silently used."""
+    table = procs.process_table()
+    (fake / "1" / "cmdline").write_text(
+        "bash -c python -m memscale --pattern server.app.main\0"
+    )
+    monkeypatch.setattr(procs.os, "getpid", lambda: 300)  # we ARE pid 300, child of 1
+    assert procs.self_chain(table) == {300, 1}
+    assert procs.find_roots(["server.app.main"], table) == {
+        100
+    }  # pid 1 matches but is our ancestor
+    (fake / "101" / "smaps_rollup").unlink()
+    skipped = []
+    rows = procs.snapshot([100], table, skipped)
+    assert skipped == [101] and 101 not in {r.pid for r in rows}
+    (fake / "103" / "smaps_rollup").write_text("Rss: 1000 kB\nPrivate_Dirty: 200 kB\n")
+    row = next(r for r in procs.snapshot([100], table) if r.pid == 103)
+    assert row.pss == row.rss == 1000 * 1024 and row.pss_estimated is True
+    s = sampler.Sampler(str(fake.parent / "x.jsonl"), root_pids=[100])
+    r = s.sample_once()
+    assert (
+        r["skipped_pids"] == [101]
+        and r["pss_estimated"] == 1
+        and r["errors"] == 0
+        and r["cgroup_dir"]
+    )

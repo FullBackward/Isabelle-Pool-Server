@@ -25,7 +25,7 @@ class Sampler:  # pylint: disable=too-many-instance-attributes
         patterns: Iterable[str] = (),
         interval_s: float = 1.0,
         cgroup_dir: Optional[str] = None,
-        snapshot_fn: Optional[Callable[[Set[int]], List[procs.ProcRow]]] = None,
+        snapshot_fn: Optional[Callable[..., List[procs.ProcRow]]] = None,
     ) -> None:
         self.out_path = out_path
         self.root_pids: Set[int] = {int(p) for p in root_pids}
@@ -38,6 +38,8 @@ class Sampler:  # pylint: disable=too-many-instance-attributes
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self.rows_written = 0
+        self.errors = 0  # sampling exceptions, visible in every row (review 2e1935e S3)
+        self.last_error: Optional[str] = None
         self.last_row: Optional[Dict[str, Any]] = None
 
     # ----------------------------------------------------------- control
@@ -84,7 +86,8 @@ class Sampler:  # pylint: disable=too-many-instance-attributes
             phase = self._phase
         if patterns:
             roots |= procs.find_roots(patterns, table)
-        rows = self._snapshot(roots) if roots else []
+        skipped: List[int] = []
+        rows = self._snapshot(roots, table, skipped) if roots else []
         sums = procs.sum_rows(rows)
         row: Dict[str, Any] = {
             "t": round(time.time(), 3),
@@ -94,6 +97,10 @@ class Sampler:  # pylint: disable=too-many-instance-attributes
             "cgroup": procs.cgroup_memory(self.cgroup_dir),
             "sum": sums,
             "procs": [r.as_dict() for r in rows],
+            "cgroup_dir": self.cgroup_dir or procs.own_cgroup_dir(),
+            "skipped_pids": skipped,
+            "pss_estimated": sum(1 for r in rows if r.pss_estimated),
+            "errors": self.errors,
         }
         with self._lock:
             with open(self.out_path, "a", encoding="utf-8") as fh:
@@ -107,8 +114,9 @@ class Sampler:  # pylint: disable=too-many-instance-attributes
             t0 = time.time()
             try:
                 self.sample_once()
-            except Exception:  # pylint: disable=broad-exception-caught
-                pass  # a vanished process between scan and read; next tick
+            except Exception as exc:  # pylint: disable=broad-exception-caught
+                self.errors += 1  # counted, visible in the next row (S3)
+                self.last_error = f"{type(exc).__name__}: {exc}"[:200]
             self._stop.wait(max(0.05, self.interval_s - (time.time() - t0)))
 
 

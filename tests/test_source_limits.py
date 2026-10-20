@@ -13,7 +13,7 @@ import pytest
 
 MAX_LINES = 600
 ROOT = Path(__file__).resolve().parent.parent
-SCANNED = ("server", "client", "mcp_servers")
+SCANNED = ("server", "client", "mcp_servers", "evaluation/memory_scaling")
 
 # path (posix, repo-relative) -> ceiling. Ratchet down as they are split.
 ALLOWED_OVER = {

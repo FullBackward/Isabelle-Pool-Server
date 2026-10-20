@@ -78,3 +78,25 @@ def body_before_end(text: str) -> str:
     """Text up to (not including) the final ``end``; where P5's lemma goes."""
     idx = text.rstrip().rfind("\nend")
     return text if idx < 0 else text[: idx + 1]
+
+
+def insert_after_first_paragraph(text: str, snippet: str) -> str:
+    """``snippet`` after the first paragraph that follows the header's
+    ``begin`` (P5). Not right after ``begin``: the whitespace after ``begin``
+    belongs to the header span, so IPS's incremental sync declines an edit
+    there as ``header_changed`` and falls back to a reset (live probe
+    2026-10-20); one paragraph later the same edit re-checks every later
+    command on the incremental path (287 commands of CTL in 1.3 s)."""
+    m = re.search(r"\bbegin\b[ \t]*\n?", text)
+    if not m:
+        return text
+    rest = text[m.end() :]
+    # skip blank lines, then the first paragraph (up to the next blank line)
+    p = re.search(r"\S", rest)
+    if not p:
+        return text
+    q = rest.find("\n\n", p.start())
+    if q < 0:
+        return text
+    cut = m.end() + q
+    return text[:cut] + "\n\n" + snippet + text[cut:]
