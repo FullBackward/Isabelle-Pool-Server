@@ -288,3 +288,10 @@ server/repl/thys/wrap_*.thy
 **/MCP-comparison/iq_token.txt
 
 **/MCP-comparison/deepseek_api.txt
+
+# memory-scaling experiment outputs (samples are large; the .gitkeep keeps the folder)
+evaluation/memory_scaling/results/*
+!evaluation/memory_scaling/results/.gitkeep
+evaluation/memory_scaling/results/runner-logs/
+evaluation/memory_scaling/results/ips-logs/
+evaluation/memory_scaling/results/pide-logs/

@@ -201,11 +201,13 @@ def test_cells_series_and_outputs(tmp_path):
         abs(ips["pss_settled_marginal_mb"] - 920) < 0.5
         and abs(ips["pss_settled_fixed_mb"] - 500) < 0.5
     )
-    assert (
+    assert (  # host fit on the DELTA over the cell's P0: fixed ≈ 0 for a synthetic host
         abs(ips["host_settled_marginal_mb"] - 900) < 0.5
-        and abs(ips["host_settled_fixed_mb"] - 2000) < 0.5
+        and abs(ips["host_settled_fixed_mb"]) < 0.5
     )
-    assert ips["sessions_per_100gb"] == int((100 * 1024 - 2000) // 900)
+    assert r["host_delta_settled_mb"] == 2 * 900 and r["host_delta_idle_mb"] == 2 * 800
+    assert r["cgroup_cell_peak_mb"] == 0.0 and r["cgroup_peak_rose"] is None
+    assert ips["sessions_per_100gb"] == int((100 * 1024 - 0) // 900)
     pide = next(s for s in series if s["tool"] == "pide-b")
     assert (
         abs(pide["pss_settled_marginal_mb"] - (200 + 1000 + 20)) < 0.5

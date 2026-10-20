@@ -246,6 +246,21 @@ class IPSDriver:  # pylint: disable=too-many-instance-attributes
                 report=True,
                 lease_id=s["lease_id"],
             )
+        except (
+            httpx.HTTPStatusError
+        ) as exc:  # a refusal/404 on the load: keep the body (review facc4c9 S4)
+            resp = exc.response
+            try:
+                body: Any = resp.json() if resp is not None else {}
+            except ValueError:
+                body = {"text": (resp.text[:300] if resp is not None else "")}
+            return {
+                "ok": False,
+                "error": f"http {resp.status_code if resp is not None else '?'}: "
+                + str(body.get("error") if isinstance(body, dict) else body)[:200],
+                "status": resp.status_code if resp is not None else None,
+                "body": body,
+            }
         except httpx.HTTPError as exc:
             return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
         report = res.get("report") or {}

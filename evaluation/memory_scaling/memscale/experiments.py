@@ -149,6 +149,10 @@ async def pressure(  # pylint: disable=too-many-locals,too-many-statements,too-m
                     )
                     step["load_ok"] = bool(res.get("ok"))
                     step["load_error"] = res.get("error")
+                    if (
+                        res.get("status") is not None
+                    ):  # refusal body on the load (facc4c9 S4)
+                        step["http"], step["body"] = res.get("status"), res.get("body")
                     if not res.get("ok"):
                         stop_reason = f"load failed: {res.get('error')}"
                 except (

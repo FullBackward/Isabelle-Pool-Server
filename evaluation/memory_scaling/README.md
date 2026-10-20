@@ -29,7 +29,7 @@ Outputs: `results/<tool>/<heap>/k<k>/rep<r>/{manifest.json, samples.jsonl}` (too
 ## 1. Install (once, ~30 min + heap builds)
 
 ```bash
-# Isabelle + IPS (native): this clones nothing — run from a checkout of this repo on the server
+# Isabelle + IPS (native), from a fresh clone of this repository on the server
 git clone <this repo> ~/Isabelle-Pool-Server && cd ~/Isabelle-Pool-Server && git checkout <branch>
 ./deploy/native_setup.sh --system          # Isabelle2026-RC2 to /opt/isabelle, .venv, IPS component, ML heap cap
 source .venv/bin/activate && pip install -e ".[mcp,eval]" -e ./client
@@ -37,7 +37,7 @@ export PATH=/opt/isabelle/bin:$PATH
 # PIDE MCP as an Isabelle component (same install, same user)
 git clone https://github.com/kappelmann/isabelle-pide-mcp ~/isabelle-pide-mcp   # branch main (RC2)
 isabelle components -u ~/isabelle-pide-mcp
-isabelle pide_mcp -?                        # builds the jar once, prints its usage
+isabelle pide_mcp -?                        # builds the jar once, prints its usage (exits non-zero by design)
 ```
 
 The ML heap cap IPS writes into `~/.isabelle/Isabelle2026-RC2/etc/settings` (`ML_OPTIONS … --maxheap`)
@@ -62,7 +62,9 @@ scripts/01_build_heaps.sh        # records results/heap_build_times.txt
 scripts/02_smoke.sh              # k = 1, 2 on HOL for all three tools; prints the E1 wall-time estimate
 ```
 
-## 5. E1 — the capacity matrix (hours; resumable)
+## 5. E1 — the capacity matrix (≈ 17 h from the smoke's estimate, plus a few hours for E2–E4; resumable)
+
+Run it inside `tmux` or under `nohup`: the shell may disconnect, the runner must not.
 
 ```bash
 nohup scripts/10_run_e1.sh > results/e1.log 2>&1 &     # or inside tmux

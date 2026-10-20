@@ -113,10 +113,24 @@ def summarize_cell(cell: Dict[str, Any], tail_s: float = 30.0) -> Dict[str, Any]
         "host_idle_mb": _mb(_median(_host_used(r) or 0 for r in p2)),
         "host_settled_mb": _mb(_median(_host_used(r) or 0 for r in p4)),
         "host_peak_mb": _mb(max(((_host_used(r) or 0) for r in p5all), default=None)),
-        "cgroup_peak_mb": _mb(
-            max(((r.get("cgroup") or {}).get("peak") or 0 for r in p5all), default=None)
+        # the cell's own cgroup peak = max sampled `current` over P5; the kernel's
+        # `memory.peak` is a lifetime value (review facc4c9 S2): reported only when it rose
+        "cgroup_cell_peak_mb": _mb(
+            max(
+                ((r.get("cgroup") or {}).get("current") or 0 for r in p5all),
+                default=None,
+            )
         ),
+        "cgroup_peak_rose": _peak_rose(p0, p5all),
     }
+    # host used as a DELTA over the cell's own P0 (review facc4c9 S1): the
+    # intercept of the fit is then the tool's fixed cost, not the host's baseline
+    base = out["host_baseline_mb"]
+    for state in ("idle", "settled", "peak"):
+        v = out.get(f"host_{state}_mb")
+        out[f"host_delta_{state}_mb"] = (
+            None if v is None or base is None else round(v - base, 1)
+        )
     sessions = cell.get("sessions") or []
     for key in ("start_s", "load_s", "recheck_s"):
         vals = [float(s[key]) for s in sessions if s.get(key) is not None]
@@ -124,6 +138,15 @@ def summarize_cell(cell: Dict[str, Any], tail_s: float = 30.0) -> Dict[str, Any]
         out[f"{key}_p95"] = _p95(vals)
     out["warm_hits"] = sum(1 for s in sessions if s.get("warm_hit"))
     return out
+
+
+def _peak_rose(p0: List[Dict[str, Any]], p5: List[Dict[str, Any]]) -> Optional[bool]:
+    """Did the cgroup's lifetime ``memory.peak`` rise during the cell?"""
+    first = next(((r.get("cgroup") or {}).get("peak") for r in p0), None)
+    last = next(((r.get("cgroup") or {}).get("peak") for r in reversed(p5)), None)
+    if first is None or last is None:
+        return None
+    return bool(last > first)
 
 
 def _mb(v: Optional[float]) -> Optional[float]:
@@ -156,7 +179,9 @@ def series_table(  # pylint: disable=too-many-locals
     rows: List[Dict[str, Any]], budget_gb: float = 100.0
 ) -> List[Dict[str, Any]]:
     """Per (tool, topology, heap): marginal MB per session and fixed MB from
-    the settled (P4) and idle (P2) states, on PSS and on host used; sessions
+    the settled (P4) and idle (P2) states, on PSS and on host used as a delta
+    over each cell's own baseline (the intercept is then the tool's fixed
+    cost, not the host's standing load); sessions
     per ``budget_gb`` on the host-used slope; the JVM's growth over the series.
     Refuses to mix scoped and unscoped IPS cells (review ac32954 S2)."""
     groups: Dict[Tuple[str, str, str], List[Dict[str, Any]]] = {}
@@ -183,7 +208,7 @@ def series_table(  # pylint: disable=too-many-locals
         for state in ("idle", "settled"):
             for metric, key in (
                 ("pss", f"pss_{state}_mb"),
-                ("host", f"host_{state}_mb"),
+                ("host", f"host_delta_{state}_mb"),  # delta over the cell's P0 (S1)
             ):
                 pts = [
                     (float(r["k"]), float(r[key])) for r in rs if r.get(key) is not None
@@ -260,12 +285,16 @@ def plots(rows: List[Dict[str, Any]], out: Path) -> List[str]:
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt  # pylint: disable=import-outside-toplevel
     except ImportError:
+        print("plots skipped: matplotlib is not installed (pip install -e '.[eval]')")
         return []
     made: List[str] = []
     heaps = sorted({str(r["heap"]) for r in rows})
     for metric, title in (
         ("pss_settled_mb", "tool PSS after the loads"),
-        ("host_settled_mb", "host used after the loads"),
+        (
+            "host_delta_settled_mb",
+            "host used after the loads (delta over the cell's baseline)",
+        ),
         ("pss_peak_mb", "tool PSS peak (concurrent re-check)"),
     ):
         fig, axes = plt.subplots(
