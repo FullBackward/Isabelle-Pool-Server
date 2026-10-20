@@ -1,0 +1,46 @@
+# Memory-scaling experiments: IPS vs PIDE MCP (plan claude-work/2026-10-20-plan-memory-scaling-experiments).
+# Owner decisions 2026-10-20: both tools native on one Ubuntu host as one user, Isabelle2026-RC2,
+# heaps HOL / HOL-Library / HOL-Analysis, k up to 32 (16 for HOL-Analysis), both PIDE MCP topologies.
+
+isabelle:
+  home: /opt/isabelle            # ISABELLE_HOME; `isabelle` must be this build for BOTH tools
+  expected_version: Isabelle2026-RC2
+
+tools:
+  ips:
+    url: http://127.0.0.1:8000   # the runner starts the server itself unless `external: true`
+    external: false
+    start_cmd: [python, -m, server.app.main]
+    env:                          # pool large enough for k, no pre-warming, memory management ON (it is part of IPS)
+      ISABELLE_POOL_SIZE: "40"
+      ISABELLE_INITIAL_SESSIONS: "0"
+      ISABELLE_IDLE_TIMEOUT: "7200"
+      ISABELLE_ENABLE_MEMORY_MANAGEMENT: "true"
+      ISABELLE_SERVER_LOG_DIR: results/ips-logs
+    root_patterns: ["server.app.main"]   # the sampler finds the server by command line; the tree below it is IPS
+    ready_timeout_s: 300
+  pide_mcp:
+    command: [isabelle, pide_mcp]         # topology A: one process, `start_session` per k; B: k processes with `-l HEAP`
+    root_patterns: ["pide_mcp"]
+    start_timeout_s: 900                  # start_session is synchronous; a cold HOL-Analysis start can take minutes
+    no_build: true                        # heaps are built by scripts/01_build_heaps.sh; a missing heap is an error, not a build
+
+heaps:
+  HOL:          {ks: [1, 2, 4, 8, 16, 32], workload: workloads/CTL.thy}
+  HOL-Library:  {ks: [1, 2, 4, 8, 16, 32], workload: workloads/Termination.thy}
+  HOL-Analysis: {ks: [1, 2, 4, 8, 16],     workload: workloads/Sum_Topology.thy}
+
+# the P5 marker: appended after the last command of the renamed theory; its status tells "re-check done"
+trailing_lemma: 'lemma memscale_p5_done: "True" by simp'
+
+phases:
+  baseline_s: 60
+  idle_s: 60          # P2 and P4
+  settle_tail_s: 30   # steady state = median of the last 30 s of a phase
+  load_timeout_s: 900 # per session, P3 and P5
+  sample_interval_s: 1.0
+
+repeats: 3
+stop_when_host_used_gb_exceeds: 110   # the runner ends a heap's series (ascending k) past this
+
+results_dir: results
