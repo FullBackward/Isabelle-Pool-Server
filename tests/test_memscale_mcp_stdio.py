@@ -156,3 +156,49 @@ def test_pide_driver_against_a_fake_server(tmp_path, monkeypatch):
 
     asyncio.run(go("A"))
     asyncio.run(go("B"))
+
+
+def test_dead_server_write_and_no_commands(tmp_path, monkeypatch):
+    """13c06cf S2: writing to a crashed server raises MCPError (not a raw
+    BrokenPipeError); S1: the stderr log handle is closed by close();
+    S4: a theory reporting zero commands stops the settle poll early."""
+    from memscale import drive_pide
+
+    async def go():
+        m = StdioMCP(
+            [sys.executable, "-c", "import sys; sys.stdin.readline(); sys.exit(0)"],
+            stderr_path=str(tmp_path / "e.log"),
+        )
+        (
+            await m.start(init_timeout_s=5) if False else None
+        )  # the fake exits after one line: initialize cannot complete
+        return m
+
+    async def go2():
+        m = StdioMCP(
+            [sys.executable, "-u", str(tmp_path / "fake_pide.py")],
+            stderr_path=str(tmp_path / "e.log"),
+        )
+        await m.start()
+        assert m._stderr_fh is not None and not m._stderr_fh.closed
+        m.proc.kill()
+        await m.proc.wait()
+        with pytest.raises(MCPError):
+            await m.call("edit", {})
+        await m.close()
+        assert m._stderr_fh is None
+
+    (tmp_path / "fake_pide.py").write_text(FAKE_PIDE)
+    asyncio.run(go2())
+
+    class EmptyMCP:
+        async def call(self, name, args, timeout_s=0):
+            return {"commands": {"count": 0}}
+
+    d = drive_pide.PIDEDriver(heap="HOL", topology="A", k=1, command=["x"])
+    d.poll_s = 0.0
+    d.procs = [EmptyMCP()]  # type: ignore[list-item]
+    d.session_ids = {0: "s"}
+    d.scratch = {0: "/tmp/x.thy"}
+    state, polls = asyncio.run(d._settled(0, 10**9))
+    assert state.get("no_commands") and polls == d.empty_polls

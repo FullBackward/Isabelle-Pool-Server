@@ -5,7 +5,7 @@ the smoke script calls it directly):
         [--config config.yaml] [--out results] [--baseline-s 60] [--idle-s 60]
         [--ips-url http://127.0.0.1:8000 --ips-external]
 
-Writes ``<out>/<tool>-<topology>/<heap>/k<k>/rep<rep>/{samples.jsonl,manifest.json}``.
+Writes ``<out>/<tool>/<heap>/k<k>/rep<rep>/{samples.jsonl,manifest.json}``.
 Run it from the repo root (the IPS server is started with cwd = repo root).
 """
 
@@ -65,10 +65,12 @@ def make_driver(
 
 
 def out_dir_for(args: argparse.Namespace, topology: str) -> Path:
-    """``<out>/<tool>-<topology>/<heap>/k<k>/rep<rep>``."""
+    """``<out>/<tool>/<heap>/k<k>/rep<rep>`` — the tool name carries its topology
+    (ips, pide-a, pide-b), one spelling everywhere (review 13c06cf S5)."""
+    del topology
     out: Path = (
         Path(str(args.out))
-        / f"{args.tool}-{topology}"
+        / str(args.tool)
         / str(args.heap)
         / f"k{args.k}"
         / f"rep{args.rep}"

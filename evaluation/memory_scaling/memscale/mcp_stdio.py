@@ -48,6 +48,7 @@ class StdioMCP:  # pylint: disable=too-many-instance-attributes
         self.notifications: List[Dict[str, Any]] = []
         self.started_at: Optional[float] = None
         self.server_info: Dict[str, Any] = {}
+        self._stderr_fh: Any = None  # closed in close() (review 13c06cf S1)
 
     @property
     def pid(self) -> Optional[int]:
@@ -58,8 +59,9 @@ class StdioMCP:  # pylint: disable=too-many-instance-attributes
     async def start(self, init_timeout_s: float = 300.0) -> "StdioMCP":
         """Spawn the server and complete the initialize handshake."""
         err = None
-        if self.stderr_path:  # lives as long as the process; closed with it
+        if self.stderr_path:  # lives as long as the process; closed in close()
             err = open(self.stderr_path, "ab")  # pylint: disable=consider-using-with
+            self._stderr_fh = err
         self.started_at = time.time()
         self.proc = await asyncio.create_subprocess_exec(
             *self.command,
@@ -108,6 +110,12 @@ class StdioMCP:  # pylint: disable=too-many-instance-attributes
                 except ProcessLookupError:
                     pass
         self.proc = None
+        if self._stderr_fh is not None:
+            try:
+                self._stderr_fh.close()
+            except OSError:
+                pass
+            self._stderr_fh = None
 
     # ------------------------------------------------------------ protocol
     def _fail_pending(self, why: str) -> None:
@@ -142,9 +150,15 @@ class StdioMCP:  # pylint: disable=too-many-instance-attributes
                 self.notifications.append(msg)
 
     async def _send(self, msg: Dict[str, Any]) -> None:
-        assert self.proc is not None and self.proc.stdin is not None
-        self.proc.stdin.write((json.dumps(msg) + "\n").encode("utf-8"))
-        await self.proc.stdin.drain()
+        if self.proc is None or self.proc.stdin is None:
+            raise MCPError("server not started")
+        try:
+            self.proc.stdin.write((json.dumps(msg) + "\n").encode("utf-8"))
+            await self.proc.stdin.drain()
+        except (BrokenPipeError, ConnectionResetError, OSError) as exc:
+            # a crashed MCP process (E3's expected PIDE outcome): the driver's
+            # {ok: False, error} path, not a raw exception (review 13c06cf S2)
+            raise MCPError(f"server gone: {type(exc).__name__}: {exc}") from exc
 
     async def notify(self, method: str, params: Dict[str, Any]) -> None:
         """A JSON-RPC notification (no reply)."""

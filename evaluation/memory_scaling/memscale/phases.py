@@ -254,6 +254,13 @@ async def run_cell(  # pylint: disable=too-many-arguments,too-many-locals,too-ma
         cell.environment["scope_mismatch"] = bool(
             getattr(driver, "scope_mismatch", False)
         )
+        if cell.environment["scope_mismatch"] and getattr(driver, "scope", "") == "yes":
+            raise RuntimeError(  # review fa0d550 S2: E3's numbers would come from the wrong cgroup
+                "scope: yes but the server did not land in its own cgroup"
+            )
+        cell.environment["session_options"] = getattr(
+            driver, "session_options", lambda: {}
+        )()
         sampler.sample_once()
         await asyncio.sleep(baseline_s)
 

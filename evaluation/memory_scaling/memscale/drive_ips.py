@@ -133,6 +133,19 @@ class IPSDriver:  # pylint: disable=too-many-instance-attributes
                 )
             await asyncio.sleep(2.0)
 
+    def session_options(self) -> Dict[str, Any]:
+        """The session options IPS's Scala session manager applies (from the
+        server's environment; Isabelle defaults when unset) — recorded next to
+        PIDE MCP's, which uses Isabelle's defaults (review 13c06cf S3)."""
+        env = {**os.environ, **self.env}
+        return {
+            "parallel_proofs": env.get("ISABELLE_PARALLEL_PROOFS", "2 (IPS default)"),
+            "threads": env.get(
+                "ISABELLE_SESSION_THREADS",
+                "4 (IPS default; the ML farm is sized from hardware)",
+            ),
+        }
+
     def _read_cgroup(self) -> None:
         """The server's cgroup directory (review ac32954 B1): read after
         readiness — right after Popen the child is still `systemd-run`, whose
@@ -273,6 +286,27 @@ class IPSDriver:  # pylint: disable=too-many-instance-attributes
             "reused": bool(again.get("reused")),
             "same_session": again["session_id"] == s["session_id"],
         }
+
+    async def release_half(self) -> None:
+        """E3 recovery: release every second session (leased sessions are
+        never evicted; released idle ones are what the gate can reclaim)."""
+        for i in sorted(self.sessions)[::2]:
+            s = self.sessions.pop(i)
+            try:
+                await self._c().release_session(s["session_id"], lease_id=s["lease_id"])
+            except httpx.HTTPError:
+                pass
+
+    async def probe(self, i: int) -> bool:
+        """E4: does session i still answer a small verify_chunk?"""
+        s = self.sessions[i]
+        res = await self._c().verify_chunk(
+            s["session_id"],
+            'lemma memscale_probe: "True" by simp',
+            timeout=30.0,
+            lease_id=s["lease_id"],
+        )
+        return bool(res.get("success"))
 
     async def memory_rows(self) -> Dict[str, Any]:
         """IPS's own view (/api/v1/memory) for cross-checking the sampler."""

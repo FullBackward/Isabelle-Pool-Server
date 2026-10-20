@@ -38,13 +38,16 @@ heaps:
 trailing_lemma: 'lemma memscale_p5_done: "True" by simp'
 
 phases:
-  baseline_s: 60
+  baseline_s: 60      # P0 in full for the first cell of a (tool, heap) series ...
+  baseline_short_s: 10  # ... and this for the later cells (plan review S1)
   idle_s: 60          # P2 and P4
   settle_tail_s: 30   # steady state = median of the last 30 s of a phase
   load_timeout_s: 900 # per session, P3 and P5
   sample_interval_s: 1.0
 
 repeats: 3
-stop_when_host_used_gb_exceeds: 110   # the runner ends a heap's series (ascending k) past this
+large_k: 16            # cells with k >= large_k get repeats_large_k repeats (plan review S1: the budget)
+repeats_large_k: 1
+stop_when_host_used_gb_exceeds: 110   # the runner ends a (tool, heap) series (ascending k) past this
 
 results_dir: results

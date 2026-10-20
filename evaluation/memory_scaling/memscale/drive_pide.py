@@ -31,6 +31,9 @@ class PIDEDriver:  # pylint: disable=too-many-instance-attributes
 
     name = "pide"
     poll_s = 1.0  # get_state poll interval while a load settles
+    empty_polls = (
+        5  # give up when get_state still reports zero commands after this many polls
+    )
 
     def __init__(  # pylint: disable=too-many-arguments
         self,
@@ -143,13 +146,17 @@ class PIDEDriver:  # pylint: disable=too-many-instance-attributes
         counts = _counts(state)
         counts["polls"] = polls
         bad = _sum_matching(counts, ("bad", "failed"))
-        if bad or state.get("timed_out"):
+        if bad or state.get("timed_out") or state.get("no_commands"):
             return {
                 "ok": False,
                 "error": (
                     f"{bad} bad/failed command(s)"
                     if bad
-                    else "not settled within load_timeout_s"
+                    else (
+                        "no commands (header failed?)"
+                        if state.get("no_commands")
+                        else "not settled within load_timeout_s"
+                    )
                 ),
                 "execution_time": time.monotonic() - t0,
                 "commands": counts,
@@ -180,6 +187,11 @@ class PIDEDriver:  # pylint: disable=too-many-instance-attributes
             busy = _sum_matching(c, ("unprocessed", "running"))
             if c.get("count", 0) > 0 and busy == 0:
                 return state, polls
+            if c.get("count", 0) == 0 and polls >= self.empty_polls:
+                state["no_commands"] = (
+                    True  # the header failed outright (review 13c06cf S4)
+                )
+                return state, polls
             if time.monotonic() > deadline:
                 state["timed_out"] = True
                 return state, polls
@@ -202,6 +214,11 @@ class PIDEDriver:  # pylint: disable=too-many-instance-attributes
         """``get_state`` of session i's scratch (E4's "keeps answering" probe)."""
         return await self._mcp(i).call("get_state", self._state_args(i), timeout_s=60.0)
 
+    async def probe(self, i: int) -> bool:
+        """E4: does session i still answer ``get_state``?"""
+        state = await self.state(i)
+        return bool(_counts(state).get("count", 0) > 0)
+
     async def stop_all(self) -> None:
         """``stop_session`` for every session, then terminate the processes."""
         for i, sid in list(self.session_ids.items()):
@@ -215,6 +232,15 @@ class PIDEDriver:  # pylint: disable=too-many-instance-attributes
         for m in self.procs:
             await m.close()
         self.procs.clear()
+
+    def session_options(self) -> Dict[str, Any]:
+        """PIDE MCP starts sessions with Isabelle's defaults unless `-o` options
+        are passed (config `extra_args`); recorded for fairness (13c06cf S3)."""
+        opts = [a for a in self.command if "=" in a]
+        return {
+            "isabelle_options": opts
+            or "defaults (parallel_proofs 1, threads = hardware)"
+        }
 
     def root_pids(self) -> List[int]:
         """The spawned MCP processes (their JVMs and provers are below them)."""
