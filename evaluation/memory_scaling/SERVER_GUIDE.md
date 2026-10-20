@@ -2,6 +2,8 @@
 
 ## 1. Scope
 
+NOTE: `README.md` in the same folder is the source of truth for the commands. If this guide and the README differ, use the README.
+
 This guide tells you how to run the memory-scaling experiments on the Ubuntu server. The experiments
 compare IPS and PIDE MCP when one host serves many Isabelle sessions. The scripts are in the folder
 `evaluation/memory_scaling/` of the repository. Do the steps in the order given. Do not start a step

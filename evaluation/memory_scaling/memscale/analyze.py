@@ -99,6 +99,9 @@ def summarize_cell(cell: Dict[str, Any], tail_s: float = 30.0) -> Dict[str, Any]
         "rep": int(cell.get("rep", 0)),
         "outcome": cell.get("outcome"),
         "scope_used": (cell.get("environment") or {}).get("scope_used"),
+        "external": bool(
+            (cell.get("driver") or {}).get("external", False)
+        ),  # smoke on a running server
         "cgroup_dir": (cell.get("environment") or {}).get("cgroup_dir"),
         "host_baseline_mb": _mb(_median(_host_used(r) or 0 for r in p0[:5])),
         "pss_baseline_mb": _mb(_median(_pss_total(r) for r in p0[:5])),
@@ -198,12 +201,14 @@ def series_table(  # pylint: disable=too-many-locals
             raise ValueError(
                 f"{tool}/{heap}: scoped and unscoped IPS cells in one series — analyse them apart"
             )
+        smoke_only = any(r.get("external") for r in rs)  # review c17ec04 S1
         row: Dict[str, Any] = {
             "tool": tool,
             "topology": topo,
             "heap": heap,
             "cells": len(rs),
             "ks": sorted({r["k"] for r in rs}),
+            "smoke_only": smoke_only,  # an external (long-lived) server: its history is in the deltas; no fit
         }
         for state in ("idle", "settled"):
             for metric, key in (
@@ -213,7 +218,7 @@ def series_table(  # pylint: disable=too-many-locals
                 pts = [
                     (float(r["k"]), float(r[key])) for r in rs if r.get(key) is not None
                 ]
-                f = fit(pts)
+                f = None if smoke_only else fit(pts)
                 row[f"{metric}_{state}_marginal_mb"] = (
                     None if f is None else round(f[0], 1)
                 )
@@ -225,7 +230,7 @@ def series_table(  # pylint: disable=too-many-locals
             for r in rs
             if r.get("pss_peak_mb") is not None
         ]
-        f = fit(peak)
+        f = None if smoke_only else fit(peak)
         row["pss_peak_marginal_mb"] = None if f is None else round(f[0], 1)
         marg, fixed = row.get("host_settled_marginal_mb"), row.get(
             "host_settled_fixed_mb"
@@ -346,6 +351,11 @@ def snippet(
     )
     lines.append("|---|---|---|---|---|---|---|---|---|---|---|---|")
     for s in series:
+        if s.get("smoke_only"):
+            lines.append(
+                f"| {s['tool']}/{s['topology']} | {s['heap']} | {','.join(map(str, s['ks']))} | smoke only (external server) | | | | | | | | |"
+            )
+            continue
         lines.append(
             f"| {s['tool']}/{s['topology']} | {s['heap']} | {','.join(map(str, s['ks']))} | {s.get('host_settled_marginal_mb')} | {s.get('host_settled_fixed_mb')} | "
             f"{s.get('pss_settled_marginal_mb')} | {s.get('pss_settled_fixed_mb')} | {s.get('pss_peak_marginal_mb')} | {s.get(f'sessions_per_{int(budget_gb)}gb')} | "

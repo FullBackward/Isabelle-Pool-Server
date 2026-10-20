@@ -226,6 +226,37 @@ def test_cells_series_and_outputs(tmp_path):
     assert (root / "REPORT_SNIPPET.md").exists()
 
 
+def test_external_server_cells_are_smoke_only(tmp_path):
+    """Review c17ec04 S1: a series run against a long-lived external server
+    carries that server's history in its deltas — no fit, no capacity number."""
+    root = tmp_path / "results"
+    for k in (1, 2):
+        _cell(
+            root,
+            "ips",
+            "pool",
+            "HOL",
+            k,
+            0,
+            fixed_mb=500,
+            per_session_mb=800,
+            host_fixed_mb=2000,
+        )
+        m = root / "ips-pool" / "HOL" / f"k{k}" / "rep0" / "manifest.json"
+        d = json.loads(m.read_text())
+        d["driver"] = {"external": True}
+        m.write_text(json.dumps(d))
+    rows = [analyze.summarize_cell(c) for c in analyze.load_cells(root)]
+    assert all(r["external"] for r in rows)
+    (s,) = analyze.series_table(rows)
+    assert (
+        s["smoke_only"] is True
+        and s["host_settled_marginal_mb"] is None
+        and s["sessions_per_100gb"] is None
+    )
+    assert "smoke only (external server)" in analyze.snippet([s], rows, 100)
+
+
 def test_mixed_scopes_are_refused(tmp_path):
     root = tmp_path / "results"
     _cell(
