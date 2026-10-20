@@ -136,7 +136,6 @@ class _Isabelle_Session(BigStepMixin):
         with self._active_requests_lock:
             self._active_requests = max(0, self._active_requests - 1)
 
-
     @property
     def leased(self) -> bool:
         with self._lease_lock:
@@ -364,6 +363,9 @@ class _Isabelle_Session(BigStepMixin):
         self.entered_thy = ""
         self.last_chunk_report = None
         self._loaded_text = None
+        forget = getattr(self, "forget_prover", None)  # new ML process after reset
+        if forget is not None:
+            forget()
 
     @staticmethod
     def _ends_with_theory_end(text: str) -> bool:

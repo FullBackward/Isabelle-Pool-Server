@@ -149,6 +149,15 @@ class SessionMemoryMixin:  # pylint: disable=too-many-instance-attributes
         self.rss_bytes = rss_bytes
         self.rss_sampled_at = time.time() if now is None else now
 
+    def forget_prover(self) -> None:
+        """After a backend document reset the session has a NEW ML process:
+        drop the pid so the next death check asks the session phase and the
+        next probe records the new pid — a stale pid read as "prover died"
+        and the reset session was discarded (memory-scaling smoke 2026-10-20)."""
+        self.ml_pid = None
+        self.ml_starttime = None
+        self.mem_sampled_at = 0.0  # probe at the next call
+
     def prover_alive(self) -> Optional[bool]:
         """None until the pid is known; else whether THAT process still exists
         (pid present and, when recorded, the same start time — a reused pid
