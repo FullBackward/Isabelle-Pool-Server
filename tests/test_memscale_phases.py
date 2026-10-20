@@ -20,15 +20,19 @@ class FakeSampler:
         self.phases = []
         self.roots = set()
         self.samples = 0
+        self.cgroup_dir = None
+        self.rows = []  # (phase, cgroup_dir) per sample
 
     def phase(self, name):
         self.phases.append(name)
+        self.sample_once()
 
     def add_roots(self, pids):
         self.roots.update(pids)
 
     def sample_once(self):
         self.samples += 1
+        self.rows.append((self.phases[-1] if self.phases else None, self.cgroup_dir))
         return {}
 
 
@@ -230,3 +234,73 @@ def test_ips_driver_scope_wrapper(monkeypatch):
     with pytest.raises(RuntimeError):
         drive_ips.IPSDriver(heap="HOL", imports=[], scope="yes")._scoped(["x"])
     assert drive_ips.cgroup_dir_of(10**9) is None  # unreadable pid -> None
+
+
+def test_phase_boundaries_record_the_tools_own_view(tmp_path):
+    """Review c209e6c S3: a driver with memory_rows() is asked at every phase
+    boundary; the rows land in the manifest."""
+    w = _workload(tmp_path)
+    drv = FakeDriver()
+    drv.warm_hits = {1: True}
+
+    async def memory_rows():
+        return {"sessions": [{"session_id": "s", "rss_mb": 1.0}]}
+
+    drv.memory_rows = memory_rows
+    cell = asyncio.run(
+        phases.run_cell(
+            _cell(tmp_path, 2),
+            drv,
+            w,
+            FakeSampler(),
+            baseline_s=0,
+            idle_s=0,
+            settle_after_stop_s=0,
+        )
+    )
+    assert set(cell.memory_rows) == {"P1", "P2", "P3", "P4", "P5"}
+    assert cell.memory_rows["P3"]["sessions"][0]["rss_mb"] == 1.0
+    assert cell.sessions[1].warm_hit is True and cell.sessions[0].warm_hit is False
+    m = json.loads((tmp_path / "manifest.json").read_text())
+    assert m["memory_rows"]["P5"]["sessions"] and m["sessions"][1]["warm_hit"] is True
+
+
+def test_the_tools_scope_cgroup_reaches_the_sampler_and_the_manifest(tmp_path):
+    """Review ac32954 B1: a driver that learns its cgroup directory in setup()
+    hands it to the sampler; every row after P0's first sample and the
+    manifest carry it."""
+    w = _workload(tmp_path)
+    drv = FakeDriver()
+    drv.scope_used = True
+
+    async def setup():
+        drv.calls.append("setup")
+        drv.cgroup_dir = "/sys/fs/cgroup/user.slice/exp.scope"
+
+    drv.setup = setup
+    smp = FakeSampler()
+    cell = asyncio.run(
+        phases.run_cell(
+            _cell(tmp_path, 1),
+            drv,
+            w,
+            smp,
+            baseline_s=0,
+            idle_s=0,
+            settle_after_stop_s=0,
+        )
+    )
+    assert cell.config["cgroup_dir"] == "/sys/fs/cgroup/user.slice/exp.scope"
+    assert (
+        cell.environment["scope_used"] is True
+        and cell.environment["scope_mismatch"] is False
+    )
+    assert smp.rows[0] == ("P0", None)  # before setup: no tool cgroup yet
+    later = [cg for ph, cg in smp.rows[1:]]
+    assert later and all(cg == "/sys/fs/cgroup/user.slice/exp.scope" for cg in later)
+    m = json.loads((tmp_path / "manifest.json").read_text())
+    assert (
+        m["config"]["cgroup_dir"]
+        == m["environment"]["cgroup_dir"]
+        == "/sys/fs/cgroup/user.slice/exp.scope"
+    )

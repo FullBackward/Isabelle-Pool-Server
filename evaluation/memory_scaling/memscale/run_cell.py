@@ -106,9 +106,9 @@ async def amain(args: argparse.Namespace) -> int:
         environment={
             **environment_block(cfg.get("isabelle", {}).get("home")),
             # review 2e1935e S5 / plan review S6: the IPS memory env E1 runs under
-            "ips_memory_env": {
-                k: os.environ.get(
-                    k, (cfg["tools"]["ips"].get("env") or {}).get(k, "default")
+            "ips_memory_env": {  # what the server got: config env OVER os.environ (c209e6c S4)
+                k: (cfg["tools"]["ips"].get("env") or {}).get(
+                    k, os.environ.get(k, "default")
                 )
                 for k in (
                     "ISABELLE_ENABLE_MEMORY_MANAGEMENT",

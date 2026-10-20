@@ -51,7 +51,7 @@ class Driver(Protocol):
 
 
 @dataclass
-class SessionTiming:
+class SessionTiming:  # pylint: disable=too-many-instance-attributes
     """Per-session timings (seconds) and status."""
 
     index: int
@@ -60,7 +60,12 @@ class SessionTiming:
     recheck_s: Optional[float] = None
     load_ok: Optional[bool] = None
     recheck_ok: Optional[bool] = None
+    warm_hit: bool = False  # P1 handed back an idle session instead of starting one
     error: Optional[str] = None
+    load_detail: Dict[str, Any] = field(
+        default_factory=dict
+    )  # driver scalars (counts, polls)
+    recheck_detail: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -79,6 +84,9 @@ class Cell:  # pylint: disable=too-many-instance-attributes
     sessions: List[SessionTiming] = field(default_factory=list)
     outcome: str = "running"
     error: Optional[str] = None
+    memory_rows: Dict[str, Any] = field(
+        default_factory=dict
+    )  # the tool's own view per phase
     environment: Dict[str, Any] = field(default_factory=dict)
     driver: Dict[str, Any] = field(default_factory=dict)
     started_at: float = field(default_factory=time.time)
@@ -155,6 +163,21 @@ def environment_block(isabelle_home: Optional[str] = None) -> Dict[str, Any]:
     return env
 
 
+def _scalars(res: Dict[str, Any]) -> Dict[str, Any]:
+    """Scalars and one level of dict scalars of a driver result (no text)."""
+    out: Dict[str, Any] = {}
+    for k, v in res.items():
+        if isinstance(v, (int, float, bool)) and k != "ok":
+            out[k] = v
+        elif isinstance(v, dict):
+            out[k] = {
+                kk: vv
+                for kk, vv in v.items()
+                if isinstance(vv, (int, float, bool, str))
+            }
+    return out
+
+
 async def _timed(coro: Any) -> Tuple[float, Any]:
     t0 = time.monotonic()
     result = await coro
@@ -185,6 +208,16 @@ async def run_cell(  # pylint: disable=too-many-arguments,too-many-locals,too-ma
     """Walk P0–P6 for one cell. The sampler is already started by the caller
     (its roots/patterns configured); this function only tags phases."""
 
+    async def own_view(name: str) -> None:
+        """The tool's own memory report at a phase boundary (c209e6c S3)."""
+        rows_fn = getattr(driver, "memory_rows", None)
+        if rows_fn is None:
+            return
+        try:
+            cell.memory_rows[name] = await rows_fn()
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            cell.memory_rows[name] = {"error": f"{type(exc).__name__}: {exc}"[:200]}
+
     def mark(name: str) -> None:
         now = time.time()
         for ph in cell.phases.values():
@@ -209,41 +242,63 @@ async def run_cell(  # pylint: disable=too-many-arguments,too-many-locals,too-ma
             driver.describe()
         )  # now with the spawned pids / start time (plan review B2)
         cell.config["roots"] = sorted(set(driver.root_pids()))
+        # the tool's own cgroup (a systemd scope) is what the sampler's cgroup
+        # columns must read from now on (review ac32954 B1); hard facts in the
+        # environment block (S2)
+        tool_cg = getattr(driver, "cgroup_dir", None)
+        if tool_cg:
+            sampler.cgroup_dir = tool_cg
+        cell.config["cgroup_dir"] = getattr(sampler, "cgroup_dir", None)
+        cell.environment["cgroup_dir"] = cell.config["cgroup_dir"]
+        cell.environment["scope_used"] = bool(getattr(driver, "scope_used", False))
+        cell.environment["scope_mismatch"] = bool(
+            getattr(driver, "scope_mismatch", False)
+        )
+        sampler.sample_once()
         await asyncio.sleep(baseline_s)
 
         mark("P1")
         for i in range(cell.k):
             dt, _ = await _timed(driver.start_session(i))
             cell.sessions[i].start_s = round(dt, 3)
+            cell.sessions[i].warm_hit = bool(
+                getattr(driver, "warm_hits", {}).get(i, False)
+            )
             sampler.add_roots(driver.root_pids())
             sampler.sample_once()
             cell.write()
             log(f"  session {i} started in {dt:.1f}s")
 
+        await own_view("P1")
         mark("P2")
         await asyncio.sleep(idle_s)
 
+        await own_view("P2")
         mark("P3")
         for i in range(cell.k):
             text = with_theory_name(workload.text, f"{workload.theory_name}_{i}")
             dt, res = await _timed(driver.load(i, text))
             cell.sessions[i].load_s = round(dt, 3)
             cell.sessions[i].load_ok = bool(res.get("ok"))
+            cell.sessions[i].load_detail = _scalars(res)
             if not res.get("ok"):
                 cell.sessions[i].error = str(res.get("error"))[:300]
             sampler.sample_once()
             cell.write()
             log(f"  session {i} loaded in {dt:.1f}s ok={res.get('ok')}")
 
+        await own_view("P3")
         mark("P4")
         await asyncio.sleep(idle_s)
 
+        await own_view("P4")
         mark("P5")
 
         async def one(i: int) -> None:
             dt, res = await _timed(driver.recheck(i, p5_text(workload, i)))
             cell.sessions[i].recheck_s = round(dt, 3)
             cell.sessions[i].recheck_ok = bool(res.get("ok"))
+            cell.sessions[i].recheck_detail = _scalars(res)
             if not res.get("ok"):
                 cell.sessions[i].error = str(res.get("error"))[:300]
 
@@ -253,7 +308,8 @@ async def run_cell(  # pylint: disable=too-many-arguments,too-many-locals,too-ma
             "  concurrent re-check done: "
             + ", ".join(f"{s.recheck_s}s" for s in cell.sessions)
         )
-        await asyncio.sleep(min(idle_s, 30.0))
+        await asyncio.sleep(idle_s)  # settle after the burst (design §3)
+        await own_view("P5")
 
         mark("P6")
         await driver.stop_all()

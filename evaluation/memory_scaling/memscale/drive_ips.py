@@ -1,12 +1,16 @@
-"""IPS driver: one server process (started here, or an external URL), k
-leased sessions on the requested heap, loads through ``load_document``.
+"""IPS driver: one server process (started here in its own systemd scope, or
+an external URL), k leased sessions on the requested heap, loads through
+``load_document``.
 
-Session i = one lease. P1 ``acquire_session(theories=imports, field=heap,
-reuse_dirty=False)`` (cold starts: the pool is empty and ``reuse_dirty`` is
-off, so every acquire creates a session); P3 ``load_document(text,
-report=True)``; P5 the same with the renamed text (header change = full
-re-check); P6 ``close_session`` for every lease, then the server is stopped.
-``warm_hit`` (E2) releases one session and re-acquires with the same imports.
+Session i = one lease. P1: a fresh server's pool is empty, so
+``acquire_session(reuse_dirty=False)`` creates a session (cold start); on an
+external server ``create_session`` is used instead, so a P1 latency is a cold
+start on both paths (review c209e6c S2) — the warm hit is measured by
+``warm_hit`` (E2). P3 ``load_document(text, report=True)``; P5 the same theory
+name with the marker lemma after the first paragraph, which takes the
+INCREMENTAL path and re-checks every later command — a header change would
+make the server reset (restart) the session's ML process (docs/ISSUES.md,
+2026-10-20). P6 ``close_session`` for every lease, then the server is stopped.
 """
 
 from __future__ import annotations
@@ -72,6 +76,10 @@ class IPSDriver:  # pylint: disable=too-many-instance-attributes
         self.proc: Optional[subprocess.Popen[bytes]] = None
         self.client: Optional[PoolAsyncClient] = None
         self.sessions: Dict[int, Dict[str, str]] = {}
+        self.warm_hits: Dict[int, bool] = (
+            {}
+        )  # P1 handed back an idle session? (c209e6c S2)
+        self.server_report: Dict[str, Any] = {}
         self.log_path: Optional[str] = None
         self.server_started_at: Optional[float] = None
         # own transient cgroup via `systemd-run --user --scope` (review 62c7262 S1):
@@ -82,6 +90,7 @@ class IPSDriver:  # pylint: disable=too-many-instance-attributes
         self.memory_max = memory_max  # e.g. "48G" for E3
         self.cgroup_dir: Optional[str] = None
         self.scope_used = False
+        self.scope_mismatch = False
 
     # ------------------------------------------------------------ server
     async def setup(self) -> None:
@@ -103,7 +112,6 @@ class IPSDriver:  # pylint: disable=too-many-instance-attributes
                     stderr=subprocess.STDOUT,
                     start_new_session=True,
                 )
-            self.cgroup_dir = cgroup_dir_of(self.proc.pid)
         self.client = PoolAsyncClient(self.url, timeout=self.load_timeout_s + 120.0)
         deadline = time.monotonic() + self.ready_timeout_s
         while True:
@@ -111,6 +119,11 @@ class IPSDriver:  # pylint: disable=too-many-instance-attributes
                 async with httpx.AsyncClient(timeout=5.0) as c:
                     r = await c.get(self.url + "/readyz")
                 if r.status_code == 200:
+                    try:  # the server's own view of its limits (c209e6c S4)
+                        self.server_report = await self._c().health()
+                    except httpx.HTTPError:
+                        self.server_report = {}
+                    self._read_cgroup()  # after readiness: systemd-run has exec'd by now
                     return
             except httpx.HTTPError:
                 pass
@@ -119,6 +132,20 @@ class IPSDriver:  # pylint: disable=too-many-instance-attributes
                     f"IPS not ready at {self.url} after {self.ready_timeout_s}s"
                 )
             await asyncio.sleep(2.0)
+
+    def _read_cgroup(self) -> None:
+        """The server's cgroup directory (review ac32954 B1): read after
+        readiness — right after Popen the child is still `systemd-run`, whose
+        cgroup is the runner's. When a scope was requested but the directory
+        equals the runner's own, the scope did not take: recorded as
+        ``scope_mismatch`` (a cell result, not hidden)."""
+        if self.proc is None:
+            return
+        self.cgroup_dir = cgroup_dir_of(self.proc.pid)
+        own = cgroup_dir_of(os.getpid())
+        self.scope_mismatch = bool(
+            self.scope_used and (self.cgroup_dir is None or self.cgroup_dir == own)
+        )
 
     def _scoped(self, cmd: List[str]) -> List[str]:
         """Wrap ``cmd`` in a transient user scope when wanted and available."""
@@ -140,7 +167,9 @@ class IPSDriver:  # pylint: disable=too-many-instance-attributes
         return [self.proc.pid] if self.proc is not None else []
 
     def describe(self) -> Dict[str, Any]:
-        """Driver facts for the manifest."""
+        """Driver facts for the manifest (the cgroup re-read each time)."""
+        if self.proc is not None and self.proc.poll() is None:
+            self._read_cgroup()
         return {
             "name": self.name,
             "topology": self.topology,
@@ -150,9 +179,22 @@ class IPSDriver:  # pylint: disable=too-many-instance-attributes
             "heap": self.heap,
             "imports": self.imports,
             "server_pid": self.proc.pid if self.proc is not None else None,
+            "sessions": {str(i): dict(v) for i, v in self.sessions.items()},
+            "warm_hits": {str(i): v for i, v in self.warm_hits.items()},
+            "server_report": {
+                k: self.server_report.get(k)
+                for k in (
+                    "memory_management_enabled",
+                    "memory_limit_mb",
+                    "memory_source",
+                    "max_pool_size",
+                    "memory_state",
+                )
+            },
             "scope_used": self.scope_used,
             "memory_max": self.memory_max,
             "cgroup_dir": self.cgroup_dir,
+            "scope_mismatch": self.scope_mismatch,
             "server_started_at": self.server_started_at,  # fresh per cell (plan review B2)
         }
 
@@ -162,18 +204,23 @@ class IPSDriver:  # pylint: disable=too-many-instance-attributes
         return self.client
 
     async def start_session(self, i: int) -> None:
-        """Cold start: an empty pool with reuse_dirty=False creates a session."""
-        s = await self._c().acquire_session(
-            self.imports,
-            self.heap,
-            reuse_dirty=False,
-            label=f"memscale-{self.heap}-{i}",
-        )
+        """Cold start: a fresh server's empty pool creates a session on acquire;
+        an external server gets ``create_session`` (never a warm hit)."""
+        label = f"memscale-{self.heap}-{i}"
+        if self.external:
+            s = await self._c().create_session(self.imports, self.heap, label=label)
+            reused = False
+        else:
+            s = await self._c().acquire_session(
+                self.imports, self.heap, reuse_dirty=False, label=label
+            )
+            reused = bool(s.get("reused"))
         self.sessions[i] = {
             "session_id": s["session_id"],
-            "lease_id": s["lease_id"],
-            "reused": str(s.get("reused")),
+            "lease_id": s.get("lease_id") or "",
+            "reused": str(reused),
         }
+        self.warm_hits[i] = reused
 
     async def load(self, i: int, text: str) -> Dict[str, Any]:
         """Whole-document load with the per-command report."""
@@ -201,7 +248,9 @@ class IPSDriver:  # pylint: disable=too-many-instance-attributes
         }
 
     async def recheck(self, i: int, text: str) -> Dict[str, Any]:
-        """P5: the renamed text with the marker lemma; a header change re-checks all."""
+        """P5: the same theory name with the marker after the first paragraph —
+        the incremental path re-checks every later command (no header change,
+        which would reset the prover; docs/ISSUES.md 2026-10-20)."""
         return await self.load(i, text)
 
     async def warm_hit(self, i: int) -> Dict[str, Any]:
