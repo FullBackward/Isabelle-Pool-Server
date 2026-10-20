@@ -471,3 +471,43 @@ def test_concurrent_creates_reserve_before_the_backend_exists(monkeypatch):
     for r in results:
         if not isinstance(r, Exception):
             r.close()
+
+
+def test_monitor_reads_its_own_cgroup_when_not_root(tmp_path, monkeypatch):
+    """Memory-scaling plan review B1: natively the root cgroup has no
+    memory.current/max; a `systemd-run --scope -p MemoryMax=…` limit lives in
+    the server's own cgroup directory, which the monitor must read."""
+    import os
+
+    cg_root = tmp_path / "cgroup"
+    own = cg_root / "user.slice" / "exp.scope"
+    own.mkdir(parents=True)
+    (own / "memory.current").write_text(str(3 * 2**30) + "\n")
+    (own / "memory.max").write_text(str(48 * 2**30) + "\n")
+    (own / "memory.stat").write_text("anon 1\ninactive_file 1073741824\n")
+    self_cg = tmp_path / "self_cgroup"
+    self_cg.write_text("0::/user.slice/exp.scope\n")
+    monkeypatch.setattr(mm, "_CG_ROOT", str(cg_root))
+    monkeypatch.setattr(mm, "_PROC_SELF_CGROUP", str(self_cg))
+    # the fixed root paths point at files that do NOT exist (native host)
+    monkeypatch.setattr(mm, "_CG_V2_CURRENT", str(cg_root / "memory.current"))
+    monkeypatch.setattr(mm, "_CG_V2_MAX", str(cg_root / "memory.max"))
+    monkeypatch.setattr(mm, "_CG_V2_STAT", str(cg_root / "memory.stat"))
+    for name in ("_CG_V1_USAGE", "_CG_V1_LIMIT", "_CG_V1_STAT"):
+        monkeypatch.setattr(mm, name, str(tmp_path / "missing"))
+    mon = mm.MemoryMonitor()
+    assert mon.cgroup_dir == str(own)
+    snap = mon.read()
+    assert snap.source == "cgroup_v2"
+    assert (
+        snap.limit_bytes == 48 * 2**30 and snap.used_bytes == 2 * 2**30
+    )  # current minus inactive_file
+    # the root cgroup (container): nothing changes, the fixed paths are used
+    self_cg.write_text("0::/\n")
+    (cg_root / "memory.current").write_text(str(5 * 2**30) + "\n")
+    (cg_root / "memory.max").write_text("max\n")
+    mon2 = mm.MemoryMonitor()
+    assert (
+        mon2.cgroup_dir is None and mon2._read_used() == 5 * 2**30 - 0
+    )  # no stat file at root here
+    assert os.path.basename(mm._in_own_cgroup(mm._CG_V2_MAX, None)) == "memory.max"

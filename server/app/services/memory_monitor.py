@@ -31,6 +31,15 @@ _CG_V1_USAGE = "/sys/fs/cgroup/memory/memory.usage_in_bytes"
 _CG_V1_LIMIT = "/sys/fs/cgroup/memory/memory.limit_in_bytes"
 _CG_V1_STAT = "/sys/fs/cgroup/memory/memory.stat"
 _PROC_MEMINFO = "/proc/meminfo"
+# The server's OWN cgroup (cgroup v2: `0::/path` in /proc/self/cgroup). Inside a
+# container that is the root (`/`), where the fixed paths above are the
+# container's files. On a native host the root cgroup has no memory.current /
+# memory.max, so a limit set with `systemd-run --scope -p MemoryMax=…` (or a
+# systemd unit's MemoryMax) lives in the server's own cgroup directory — the
+# gate must read that one or it is blind to the limit (memory-scaling plan
+# review B1, 2026-10-20). Resolved once at monitor start.
+_CG_ROOT = "/sys/fs/cgroup"
+_PROC_SELF_CGROUP = "/proc/self/cgroup"
 
 # cgroup v1 reports "unlimited" as a near-int64 sentinel; anything this large
 # means "no limit", so we fall back to host memory.
@@ -96,6 +105,34 @@ class MemorySnapshot:
     @property
     def available_mb(self) -> float:
         return self.available_bytes / (1024.0 * 1024.0)
+
+
+def _own_cgroup_dir() -> Optional[str]:
+    """``/sys/fs/cgroup<path>`` of this process's cgroup v2 membership, or None
+    for the root cgroup (the container case) and when unreadable."""
+    try:
+        with open(_PROC_SELF_CGROUP, "r", encoding="utf-8") as fh:
+            lines = fh.read().splitlines()
+    except OSError:
+        return None
+    for line in lines:
+        if line.startswith("0::"):
+            rel = line[3:].strip()
+            if rel and rel != "/":
+                return _CG_ROOT.rstrip("/") + rel
+            return None
+    return None
+
+
+def _in_own_cgroup(path: str, cg_dir: Optional[str]) -> str:
+    """Map a fixed cgroup-v2 root path onto the server's own cgroup directory
+    when that directory has the file; otherwise the path unchanged (tests
+    point the constants at temp files, which never start with the root)."""
+    if cg_dir and path.startswith(_CG_ROOT + "/"):
+        candidate = os.path.join(cg_dir, os.path.basename(path))
+        if os.path.exists(candidate):
+            return candidate
+    return path
 
 
 def _read_int_file(path: str) -> Optional[int]:
@@ -252,7 +289,7 @@ def rss_tree(root_pids: Iterable[int]) -> Dict[int, Optional[int]]:
     return out
 
 
-class MemoryMonitor:
+class MemoryMonitor:  # pylint: disable=too-many-instance-attributes
     """Reads container memory pressure and decides whether new sessions fit."""
 
     def __init__(self) -> None:
@@ -266,9 +303,10 @@ class MemoryMonitor:
         # the cleanup sweep report without touching the files again.
         self.last_snapshot: Optional[MemorySnapshot] = None
         self.last_state: str = STATE_UNKNOWN
+        # Own cgroup v2 directory (None = root / container); see _CG_ROOT.
+        self.cgroup_dir: Optional[str] = _own_cgroup_dir()
 
-    @staticmethod
-    def _read_inactive_file() -> int:
+    def _read_inactive_file(self) -> int:
         """Reclaimable page cache (inactive_file) from memory.stat, 0 on failure.
 
         memory.current/usage_in_bytes INCLUDE page cache — Isabelle heap images
@@ -279,7 +317,9 @@ class MemoryMonitor:
         """
         for path, key in ((_CG_V2_STAT, "inactive_file"), (_CG_V1_STAT, "total_inactive_file")):
             try:
-                with open(path, "r", encoding="utf-8") as fh:
+                with open(
+                    _in_own_cgroup(path, self.cgroup_dir), "r", encoding="utf-8"
+                ) as fh:
                     for line in fh:
                         if line.startswith(key + " "):
                             return int(line.split()[1])
@@ -291,7 +331,7 @@ class MemoryMonitor:
         """Container cgroup usage (minus reclaimable cache), else host usage
         from /proc/meminfo, else 0. Records where the figure came from in
         ``last_source``."""
-        used = _read_int_file(_CG_V2_CURRENT)
+        used = _read_int_file(_in_own_cgroup(_CG_V2_CURRENT, self.cgroup_dir))
         if used is not None:
             self.last_source = SOURCE_CGROUP_V2
         else:
@@ -310,7 +350,7 @@ class MemoryMonitor:
     def _read_limit(self) -> int:
         # cgroup v2 numeric limit, else v1 limit (unless sentinel "unlimited"),
         # else host MemTotal, else the configured fallback.
-        limit = _read_cgroup_max(_CG_V2_MAX)
+        limit = _read_cgroup_max(_in_own_cgroup(_CG_V2_MAX, self.cgroup_dir))
         if limit is None:
             v1 = _read_int_file(_CG_V1_LIMIT)
             if v1 is not None and v1 < _V1_UNLIMITED_FLOOR:
