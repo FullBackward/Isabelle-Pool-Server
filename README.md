@@ -125,7 +125,9 @@ curl http://localhost:8000/            # version, gateway_alive, active/busy ses
   Destructive actions need `ISABELLE_ADMIN_TOKEN` from `.env` (without it they render
   locked). The console page itself is unauthenticated — one more reason to firewall the port.
 - Prometheus metrics: `/metrics`.
-- Memory facts: `GET /api/v1/memory` — tier (`ok` / `warning` / `critical`), the cgroup snapshot,
+- Memory facts: `GET /api/v1/memory` — tier (`ok` / `warning` / `critical`), the cgroup snapshot
+  (the container's cgroup, or on a native host the server's own cgroup v2 directory, so a systemd
+  `MemoryMax` limit is what the gate enforces),
   builds in flight, and every session's expiry and attributed memory (`rss_mb` of its ML process,
   `heap_mb`). Every response also carries an `X-Memory-State` header; every 503 body has an
   `error` key (`memory_pressure` with the same facts, `pool_full`, `gateway_unavailable`); step /

@@ -200,3 +200,33 @@ def test_environment_block_has_the_appendix_fields():
         "isabelle_id",
         "ips_commit",
     } <= set(env)
+
+
+def test_ips_driver_scope_wrapper(monkeypatch):
+    """Review 62c7262 S1: the server runs in its own transient scope when
+    systemd-run exists (auto), is required with yes, never with no."""
+    from memscale import drive_ips
+
+    d = drive_ips.IPSDriver(heap="HOL", imports=["Main"], scope="auto")
+    monkeypatch.setattr(drive_ips.shutil, "which", lambda name: "/usr/bin/systemd-run")
+    assert (
+        d._scoped(["python", "-m", "x"])[:4]
+        == ["systemd-run", "--user", "--scope", "--quiet"]
+        and d.scope_used
+    )
+    d2 = drive_ips.IPSDriver(
+        heap="HOL", imports=["Main"], scope="auto", memory_max="48G"
+    )
+    assert "-p" in d2._scoped(["x"]) and "MemoryMax=48G" in d2._scoped(["x"])
+    monkeypatch.setattr(drive_ips.shutil, "which", lambda name: None)
+    assert drive_ips.IPSDriver(heap="HOL", imports=[], scope="auto")._scoped(["x"]) == [
+        "x"
+    ]
+    assert drive_ips.IPSDriver(heap="HOL", imports=[], scope="no")._scoped(["x"]) == [
+        "x"
+    ]
+    import pytest
+
+    with pytest.raises(RuntimeError):
+        drive_ips.IPSDriver(heap="HOL", imports=[], scope="yes")._scoped(["x"])
+    assert drive_ips.cgroup_dir_of(10**9) is None  # unreadable pid -> None

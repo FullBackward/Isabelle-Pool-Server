@@ -51,6 +51,8 @@ def make_driver(
             ready_timeout_s=float(ips.get("ready_timeout_s", 300)),
             load_timeout_s=float(cfg["phases"].get("load_timeout_s", 900)),
             repo_root=str(REPO_ROOT),
+            scope=str(ips.get("scope", "auto")),
+            memory_max=args.memory_max,
         )
     try:
         from .drive_pide import (  # pylint: disable=import-outside-toplevel
@@ -153,6 +155,9 @@ def main(argv: Any = None) -> int:
     ap.add_argument("--idle-s", type=float, default=None)
     ap.add_argument("--ips-url", default=None)
     ap.add_argument("--ips-external", action="store_true")
+    ap.add_argument(
+        "--memory-max", default=None, help="E3: MemoryMax of the IPS scope, e.g. 48G"
+    )
     ap.add_argument("--force", action="store_true")
     args = ap.parse_args(argv)
     os.chdir(REPO_ROOT)

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import shutil
 import signal
 import subprocess
 import time
@@ -21,6 +22,21 @@ from typing import Any, Dict, List, Optional
 import httpx
 
 from client.async_client import PoolAsyncClient
+
+
+def cgroup_dir_of(pid: int) -> Optional[str]:
+    """``/sys/fs/cgroup<path>`` of a process's cgroup v2 membership (None for
+    the root or when unreadable) — the directory the sampler should read for
+    the server's own `memory.current` / `memory.peak`."""
+    try:
+        with open(f"/proc/{pid}/cgroup", "r", encoding="utf-8") as fh:
+            for line in fh:
+                if line.startswith("0::"):
+                    rel = line[3:].strip()
+                    return "/sys/fs/cgroup" + rel if rel and rel != "/" else None
+    except OSError:
+        return None
+    return None
 
 
 class IPSDriver:  # pylint: disable=too-many-instance-attributes
@@ -41,6 +57,8 @@ class IPSDriver:  # pylint: disable=too-many-instance-attributes
         ready_timeout_s: float = 300.0,
         load_timeout_s: float = 900.0,
         repo_root: Optional[str] = None,
+        scope: str = "auto",
+        memory_max: Optional[str] = None,
     ) -> None:
         self.heap = heap
         self.imports = list(imports)
@@ -56,6 +74,14 @@ class IPSDriver:  # pylint: disable=too-many-instance-attributes
         self.sessions: Dict[int, Dict[str, str]] = {}
         self.log_path: Optional[str] = None
         self.server_started_at: Optional[float] = None
+        # own transient cgroup via `systemd-run --user --scope` (review 62c7262 S1):
+        # natively the server would otherwise share the user's session scope with
+        # the PIDE MCP processes and the runner, and its `used` would count them.
+        # "auto" uses it when available, "yes" requires it, "no" never.
+        self.scope = scope
+        self.memory_max = memory_max  # e.g. "48G" for E3
+        self.cgroup_dir: Optional[str] = None
+        self.scope_used = False
 
     # ------------------------------------------------------------ server
     async def setup(self) -> None:
@@ -67,15 +93,17 @@ class IPSDriver:  # pylint: disable=too-many-instance-attributes
             os.makedirs(log_dir, exist_ok=True)
             self.log_path = os.path.join(log_dir, "server.stdout.log")
             self.server_started_at = time.time()
+            cmd = self._scoped(self.start_cmd)
             with open(self.log_path, "ab") as out:
                 self.proc = subprocess.Popen(  # pylint: disable=consider-using-with
-                    self.start_cmd,
+                    cmd,
                     cwd=self.repo_root,
                     env=env,
                     stdout=out,
                     stderr=subprocess.STDOUT,
                     start_new_session=True,
                 )
+            self.cgroup_dir = cgroup_dir_of(self.proc.pid)
         self.client = PoolAsyncClient(self.url, timeout=self.load_timeout_s + 120.0)
         deadline = time.monotonic() + self.ready_timeout_s
         while True:
@@ -92,6 +120,21 @@ class IPSDriver:  # pylint: disable=too-many-instance-attributes
                 )
             await asyncio.sleep(2.0)
 
+    def _scoped(self, cmd: List[str]) -> List[str]:
+        """Wrap ``cmd`` in a transient user scope when wanted and available."""
+        if self.scope == "no":
+            return cmd
+        available = shutil.which("systemd-run") is not None
+        if not available:
+            if self.scope == "yes":
+                raise RuntimeError("scope=yes but systemd-run is not available")
+            return cmd
+        wrapper = ["systemd-run", "--user", "--scope", "--quiet"]
+        if self.memory_max:
+            wrapper += ["-p", f"MemoryMax={self.memory_max}"]
+        self.scope_used = True
+        return wrapper + cmd
+
     def root_pids(self) -> List[int]:
         """The server we started (an external server is found by pattern)."""
         return [self.proc.pid] if self.proc is not None else []
@@ -107,6 +150,9 @@ class IPSDriver:  # pylint: disable=too-many-instance-attributes
             "heap": self.heap,
             "imports": self.imports,
             "server_pid": self.proc.pid if self.proc is not None else None,
+            "scope_used": self.scope_used,
+            "memory_max": self.memory_max,
+            "cgroup_dir": self.cgroup_dir,
             "server_started_at": self.server_started_at,  # fresh per cell (plan review B2)
         }
 

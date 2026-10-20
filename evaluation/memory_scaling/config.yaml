@@ -17,8 +17,10 @@ tools:
       ISABELLE_IDLE_TIMEOUT: "7200"
       ISABELLE_ENABLE_MEMORY_MANAGEMENT: "true"
       ISABELLE_SERVER_LOG_DIR: results/ips-logs
-    root_patterns: ["server.app.main"]   # the sampler finds the server by command line; the tree below it is IPS
+    root_patterns: ["server.app.main"]   # fallback for external: true; a started server is found by its pid
     ready_timeout_s: 300
+    scope: auto                   # start the server in its own `systemd-run --user --scope` (its memory.current is
+                                  # then IPS-only, not the user's whole session): auto = when available, yes, no
   pide_mcp:
     command: [isabelle, pide_mcp]         # topology A: one process, `start_session` per k; B: k processes with `-l HEAP`
     root_patterns: ["pide_mcp"]

@@ -123,7 +123,9 @@ PIDE-level sharing of one session between backends was never made safe enough to
 that were never actually wired to anything — and measured the wrong thing anyway (each
 session's memory lives in a separate `poly` OS process the JVM cannot see).
 **Chosen:** a Python `MemoryMonitor` reading the **container cgroup** (the number the OOM
-killer actually uses), corrected by subtracting reclaimable `inactive_file` page cache;
+killer actually uses) — or, on a native cgroup-v2 host, the server's **own cgroup directory**
+(`/proc/self/cgroup`), so a systemd `MemoryMax` on the unit or a `systemd-run --scope` applies
+to the gate (2026-10-20) — corrected by subtracting reclaimable `inactive_file` page cache;
 admission control before session creation; under pressure, evict idle LRU sessions (never
 busy/leased ones), settle between evictions, retry admission briefly before refusing with 503.
 
