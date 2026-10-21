@@ -304,6 +304,40 @@ def test_mixed_scopes_form_separate_series(tmp_path):
     assert next(s for s in series if s["topology"] == "pool-unscoped")["ks"] == [4]
 
 
+def test_experiment_outputs_are_not_cells(tmp_path):
+    """A pressure/warm/kill manifest under results/ (with its own samples)
+    must not be read as a cell (it made the server analysis see an
+    'unscoped' ips/HOL-Analysis member)."""
+    root = tmp_path / "results"
+    _cell(
+        root,
+        "ips",
+        "pool",
+        "HOL",
+        1,
+        0,
+        fixed_mb=500,
+        per_session_mb=800,
+        host_fixed_mb=2000,
+    )
+    d = root / "pressure-ips-HOL"
+    d.mkdir()
+    (d / "manifest.json").write_text(
+        json.dumps(
+            {
+                "experiment": "pressure",
+                "tool": "ips",
+                "topology": "pool",
+                "heap": "HOL",
+                "outcome": "ok",
+            }
+        )
+    )
+    (d / "samples.jsonl").write_text("")
+    cells = analyze.load_cells(root)
+    assert len(cells) == 1 and cells[0]["k"] == 1
+
+
 def test_fit_and_p95():
     assert analyze.fit([(1, 3), (2, 5), (3, 7)]) == (2.0, 1.0)
     assert analyze.fit([(1, 3), (1, 5)]) is None
