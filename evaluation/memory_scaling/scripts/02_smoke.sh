@@ -5,6 +5,12 @@
 # running IPS at IPS_URL instead of starting one (the local container case).
 set -u
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
+# python: the repo's .venv when it exists, else python3 (a bare Ubuntu has no `python`);
+# an active virtualenv or PYTHON=... in the environment wins
+PY="${PYTHON:-}"
+[ -z "$PY" ] && [ -n "${VIRTUAL_ENV:-}" ] && PY="$VIRTUAL_ENV/bin/python"
+[ -z "$PY" ] && [ -x "$HERE/../../.venv/bin/python" ] && PY="$HERE/../../.venv/bin/python"
+[ -z "$PY" ] && PY="$(command -v python3 || command -v python)"
 cd "$HERE"
 OUT="${OUT:-$HERE/results/smoke}"
 EXTRA=()
@@ -13,14 +19,14 @@ rc=0; declare -A T
 for tool in ips pide-a pide-b; do
   for k in 1 2; do
     t0=$(date +%s)
-    python -u -m memscale.run_cell --tool "$tool" --heap HOL --k "$k" --rep 0 --out "$OUT" --baseline-s 5 --idle-s 10 --force "${EXTRA[@]}" 2>&1 | grep -E 'phase|started in|loaded in|re-check|outcome|ERROR'
+    "$PY" -u -m memscale.run_cell --tool "$tool" --heap HOL --k "$k" --rep 0 --out "$OUT" --baseline-s 5 --idle-s 10 --force "${EXTRA[@]}" 2>&1 | grep -E 'phase|started in|loaded in|re-check|outcome|ERROR'
     T["$tool-$k"]=$(( $(date +%s) - t0 ))
     m="$OUT/$tool/HOL/k$k/rep0/manifest.json"
-    o=$(python -c "import json,sys; print(json.load(open(sys.argv[1]))['outcome'])" "$m" 2>/dev/null || echo missing)
+    o=$("$PY" -c "import json,sys; print(json.load(open(sys.argv[1]))['outcome'])" "$m" 2>/dev/null || echo missing)
     echo "== $tool k=$k: outcome $o in ${T[$tool-$k]}s"; [ "$o" = "ok" ] || rc=1
   done
 done
-python - "$HERE/config.yaml" "${T[ips-2]:-0}" "${T[pide-a-2]:-0}" "${T[pide-b-2]:-0}" <<'PY'
+"$PY" - "$HERE/config.yaml" "${T[ips-2]:-0}" "${T[pide-a-2]:-0}" "${T[pide-b-2]:-0}" <<'PY'
 import sys, yaml
 cfg = yaml.safe_load(open(sys.argv[1])); t = [float(x) for x in sys.argv[2:5]]
 ph = cfg["phases"]; fixed = ph["baseline_s"] + 2 * ph["idle_s"] + ph["idle_s"] + 10 - (5 + 3 * 10 + 10)  # vs the smoke's 5/10 s phases

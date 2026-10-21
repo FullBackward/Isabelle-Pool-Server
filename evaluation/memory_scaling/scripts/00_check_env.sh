@@ -3,8 +3,13 @@
 # or from evaluation/memory_scaling). Prints the Appendix D block and fails on a missing piece.
 set -u
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
+# python: the repo's .venv when it exists, else python3 (a bare Ubuntu has no `python`);
+# an active virtualenv or PYTHON=... in the environment wins
+PY="${PYTHON:-}"
+[ -z "$PY" ] && [ -n "${VIRTUAL_ENV:-}" ] && PY="$VIRTUAL_ENV/bin/python"
+[ -z "$PY" ] && [ -x "$HERE/../../.venv/bin/python" ] && PY="$HERE/../../.venv/bin/python"
+[ -z "$PY" ] && PY="$(command -v python3 || command -v python)"
 REPO="$(cd "$HERE/../.." && pwd)"
-PYTHON="${PYTHON:-python}"
 ok=0; bad=0
 pass() { echo "  PASS $1"; ok=$((ok+1)); }
 fail() { echo "  FAIL $1"; bad=$((bad+1)); }
@@ -30,7 +35,7 @@ for h in $(grep -E '^\s{2}[A-Za-z-]+:\s*\{ks' "$HERE/config.yaml" | sed -E 's/^\
   if ls "$HEAPS_DIR"/*/"$h" >/dev/null 2>&1 || ls "$(isabelle getenv -b ISABELLE_HOME 2>/dev/null)"/heaps/*/"$h" >/dev/null 2>&1; then pass "heap $h present"; else fail "heap $h missing (scripts/01_build_heaps.sh)"; fi
 done
 # python side
-$PYTHON -c "import yaml, httpx, client.async_client" 2>/dev/null && pass "python deps (pyyaml, httpx, client)" || fail "python deps: pip install -e '.[eval]' -e ./client (PYTHON=$PYTHON)"
+"$PY" -c "import yaml, httpx, client.async_client" 2>/dev/null && pass "python deps (pyyaml, httpx, client)" || fail "python deps: pip install -e '.[eval]' -e ./client (PYTHON=$PYTHON)"
 # kernel facts
 [ -r /proc/self/smaps_rollup ] && pass "smaps_rollup readable" || fail "no /proc/self/smaps_rollup (kernel too old?)"
 [ -f /sys/fs/cgroup/cgroup.controllers ] && pass "cgroup v2" || fail "cgroup v2 not mounted at /sys/fs/cgroup"
