@@ -32,7 +32,7 @@ tools:
 heaps:
   HOL:          {ks: [1, 2, 4, 8, 16, 32], workload: workloads/CTL.thy}
   HOL-Library:  {ks: [1, 2, 4, 8, 16, 32], workload: workloads/Termination.thy}
-  HOL-Analysis: {ks: [1, 2, 4, 8, 16],     workload: workloads/Sum_Topology.thy}
+  HOL-Analysis: {ks: [1, 2, 4, 8, 16, 32], workload: workloads/Sum_Topology.thy}
 
 # the P5 marker: appended after the last command of the renamed theory; its status tells "re-check done"
 trailing_lemma: 'lemma memscale_p5_done: "True" by simp'
@@ -47,7 +47,7 @@ phases:
 
 repeats: 3
 large_k: 16            # cells with k >= large_k get repeats_large_k repeats (plan review S1: the budget)
-repeats_large_k: 1
+repeats_large_k: 3
 stop_when_host_used_gb_exceeds: 110   # the runner ends a (tool, heap) series (ascending k) past this
 
 results_dir: results
