@@ -29,6 +29,9 @@ _SESSION_FIELDS = (
     "heap_mb",
     "mem_sampled_at",
     "mem_probe_error",
+    "sledgehammer_mb",
+    "sledgehammer_peak_mb",
+    "sledgehammer_shared_with",
 )
 
 

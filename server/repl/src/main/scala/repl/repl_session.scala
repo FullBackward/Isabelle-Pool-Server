@@ -166,6 +166,14 @@ class Repl_Session(session_manager: Session_Manager, initial_thys: List[String] 
       case None    => Json_Reports.line_query_not_found("no theory entered")
     }
 
+  /** Sledgehammer hosted on the command with the given report index (fill_sorries). */
+  def sledgehammer_at_command(index: Int, subgoal: Int, timeout_s: Int, max_proofs: Int, provers: String): String =
+    current_thy_info match {
+      case Some(_) =>
+        Document_Utils.sledgehammer_at_command_json(session, current_thy_node_name, index, subgoal, timeout_s, max_proofs, provers)
+      case None    => Json_Reports.line_query_not_found("no theory entered")
+    }
+
   def sledgehammer_at(line: Int, subgoal: Int, timeout_s: Int): String =
     current_thy_info match {
       case Some(_) =>

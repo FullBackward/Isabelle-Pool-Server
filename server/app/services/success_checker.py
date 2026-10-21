@@ -2,10 +2,54 @@
 classifier for small-step / bigstep results; formerly server_gym/, moved into
 the server package 2026-09-27 so the server has no dependency outside itself).
 """
+import re
 from typing import List, Optional, Tuple
 
 from server.app.core.config import Memory
 from server.repl.src.python.repl_backend_gateway import ReplResult
+
+# --- sledgehammer outcome (one classifier for both routes and the fill job) -------
+
+SH_PROVED = "proved"
+SH_NONE = "none"
+SH_TIMEOUT = "timeout"
+SH_ERROR = "error"
+
+# "Try this: by (metis foo) (12 ms)" / "(0.4 ms)" / "(1.2 s)": the trailing timing
+# is not part of the method text that gets pasted into a proof.
+_TRY_THIS_RE = re.compile(r"Try this:\s*(.+?)\s*(?:\(\s*[\d.]+\s*(?:ms|s)\s*\))?\s*$")
+
+
+def classify_sledgehammer(
+    lines: Optional[List[str]], error: Optional[str] = None
+) -> Tuple[str, Optional[str]]:
+    """``(outcome, method)`` of the lines a sledgehammer run printed.
+
+    ``proved`` with the first ``Try this:`` method text (timing suffix cut);
+    else ``none`` when sledgehammer said "No proof found"; else ``timeout`` when
+    only "Timed out" remains; ``error`` for a line starting with "error=" or an
+    empty answer that carried an error. An empty list is ``none``.
+    Note: a false goal prints BOTH "No proof found" and "Timed out" — that is
+    ``none`` (sledgehammer's own verdict), not ``timeout``.
+    """
+    rows = [str(l).strip() for l in (lines or []) if str(l).strip()]
+    if error and not rows:
+        # a backend-level error (plan review d1fc90e S2): the overlay budget
+        # expiring is a timeout, anything else an error
+        return (SH_TIMEOUT if "timed out" in error.lower() else SH_ERROR), None
+    for row in rows:
+        m = _TRY_THIS_RE.search(row)
+        if m:
+            return SH_PROVED, m.group(1).strip()
+    lowered = [r.lower() for r in rows]
+    if any(r.startswith("error=") for r in rows):
+        return SH_ERROR, None
+    if any("no proof found" in r for r in lowered):
+        return SH_NONE, None
+    if any("timed out" in r or "timeout" in r for r in lowered):
+        return SH_TIMEOUT, None
+    return SH_NONE, None
+
 
 ERROR_KIND_MEMORY = "memory"
 ERROR_KIND_PROVER_DIED = "prover_died"

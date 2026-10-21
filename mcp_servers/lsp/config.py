@@ -41,6 +41,16 @@ class Config:
     # The per-call `destroy` argument on isabelle_close overrides this.
     CLOSE_DESTROYS: bool = env_bool(_P, "CLOSE_DESTROYS", False)
 
+    # fill_sorries (plan 2026-10-18 §1.5): per-sorry sledgehammer budget and the
+    # job's wall budget (server-side defaults ISABELLE_FILL_TIMEOUT_S / _MAX_TOTAL_S);
+    # how long isabelle_fill_sorries waits before returning the partial state with
+    # `continuing: true` — keep PATIENCE_S <= the MCP client's tool timeout - 60 —
+    # and the poll interval (each poll touches the registry).
+    FILL_TIMEOUT_S: int = env_int(_P, "FILL_TIMEOUT_S", 30)
+    FILL_MAX_TOTAL_S: float = env_float(_P, "FILL_MAX_TOTAL_S", 600.0)
+    FILL_PATIENCE_S: float = env_float(_P, "FILL_PATIENCE_S", 240.0)
+    FILL_POLL_S: float = env_float(_P, "FILL_POLL_S", 3.0)
+
     # Transport: "stdio" (local) or "streamable-http" (remote).
     TRANSPORT: str = env_str(_P, "TRANSPORT", "stdio")
     HOST: str = env_str(_P, "HOST", "127.0.0.1")

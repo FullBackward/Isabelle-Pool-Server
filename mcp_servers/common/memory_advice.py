@@ -79,6 +79,9 @@ def others_summary(facts: Dict[str, Any], owned_ids: set[str]) -> Dict[str, Any]
         "sessions": len(others),
         "rss_mb": round(sum(float(r.get("rss_mb") or 0.0) for r in measured), 1),
         "unmeasured": len(others) - len(measured),
+        "sledgehammer_mb": round(
+            sum(float(r.get("sledgehammer_mb") or 0.0) for r in others), 1
+        ),
         "task_groups": sorted(
             {str(r["task_group"]) for r in others if r.get("task_group")}
         ),
@@ -123,6 +126,9 @@ def _others_text(others: Dict[str, Any]) -> str:
             amount = f">= {others['rss_mb']} MB measured, {unmeasured} not yet measured"
         else:
             amount = f"~{others['rss_mb']} MB"
+        sh = float(others.get("sledgehammer_mb") or 0.0)
+        if sh:
+            amount += f" plus ~{sh} MB of running sledgehammers"
         parts.append(
             f"{others['sessions']} session(s) of other clients{groups} hold {amount}"
         )

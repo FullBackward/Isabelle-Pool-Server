@@ -22,6 +22,7 @@ Field semantics (plan-review 501a1ba S1/S2):
 
 from __future__ import annotations
 
+import json
 import time
 from typing import Any, Callable, Dict, Mapping, Optional
 
@@ -58,6 +59,10 @@ class SessionMemoryMixin:  # pylint: disable=too-many-instance-attributes
     rss_sampled_at: float
     mem_sampled_at: float
     mem_probe_error: Optional[str]
+    sledgehammer_rss_bytes: int
+    sledgehammer_peak_bytes: int
+    sledgehammer_shared_with: int
+    sledgehammer_sampled_at: float
 
     def _init_memory(self) -> None:
         self.ml_pid = None
@@ -68,6 +73,10 @@ class SessionMemoryMixin:  # pylint: disable=too-many-instance-attributes
         self.rss_sampled_at = 0.0
         self.mem_sampled_at = 0.0
         self.mem_probe_error = None
+        self.sledgehammer_rss_bytes = 0
+        self.sledgehammer_peak_bytes = 0
+        self.sledgehammer_shared_with = 0
+        self.sledgehammer_sampled_at = 0.0
 
     @property
     def heap_bytes(self) -> Optional[int]:
@@ -158,6 +167,23 @@ class SessionMemoryMixin:  # pylint: disable=too-many-instance-attributes
         self.ml_starttime = None
         self.mem_sampled_at = 0.0  # probe at the next call
 
+    def note_sledgehammer_rss(
+        self, rss_bytes: int, shared_with: int = 0, now: Optional[float] = None
+    ) -> None:
+        """A sample of the ATP processes while this session's sledgehammer runs
+        (fill_sorries §1.6). With other steps in flight the children cannot be
+        told apart, so the whole sum is attributed to each and ``shared_with``
+        says how many other steps share it (review B4)."""
+        self.sledgehammer_rss_bytes = int(rss_bytes)
+        self.sledgehammer_peak_bytes = max(self.sledgehammer_peak_bytes, int(rss_bytes))
+        self.sledgehammer_shared_with = int(shared_with)
+        self.sledgehammer_sampled_at = time.time() if now is None else now
+
+    def clear_sledgehammer_rss(self) -> None:
+        """The step ended: nothing of the ATPs is attributed any more (peak stays)."""
+        self.sledgehammer_rss_bytes = 0
+        self.sledgehammer_shared_with = 0
+
     def prover_alive(self) -> Optional[bool]:
         """None until the pid is known; else whether THAT process still exists
         (pid present and, when recorded, the same start time — a reused pid
@@ -190,10 +216,76 @@ class SessionMemoryMixin:  # pylint: disable=too-many-instance-attributes
             "heap_mb": self.heap_mb,
             "mem_sampled_at": self.mem_sampled_at or None,
             "mem_probe_error": self.mem_probe_error,
+            "sledgehammer_mb": (
+                _mb(self.sledgehammer_rss_bytes) if self.sledgehammer_rss_bytes else 0.0
+            ),
+            "sledgehammer_peak_mb": _mb(self.sledgehammer_peak_bytes) or 0.0,
+            "sledgehammer_shared_with": self.sledgehammer_shared_with,
         }
 
 
-class MemoryAwareSession(SessionMemoryMixin, _Isabelle_Session):
+class SessionFillMixin:  # pylint: disable=too-few-public-methods
+    """The backend call of the server-side ``fill_sorries`` job (plan 2026-10-18
+    §1.1/§1.2): sledgehammer hosted on the command with a chunk-report INDEX —
+    the command before a ``sorry`` — with ``max_proofs`` and an optional prover
+    list. Lives here, not in session.py (at the size gate; plan review B1); same
+    busy/activity accounting and worker timeout as ``sledgehammer_at``."""
+
+    backend: Any
+    _call_backend: Callable[..., Any]
+    _acquire_request: Callable[[], None]
+    _release_request: Callable[[], None]
+    update_activity: Callable[[], None]
+
+    def sledgehammer_at_command(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+        self,
+        index: int,
+        subgoal: int = 1,
+        timeout_s: int = 30,
+        max_proofs: int = 1,
+        provers: str = "",
+        http_timeout: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """``{found, subgoals, results}`` or ``{found: False, subgoals, error}``
+        from the backend (JSON parsed); ``subgoals`` is the number of goals the
+        ``sorry`` at that position would close (-1 when the op never ran)."""
+        self.update_activity()
+        self._acquire_request()
+        try:
+            logger.info(
+                "running sledgehammer_at_command index=%s subgoal=%s timeout_s=%s max_proofs=%s",
+                index,
+                subgoal,
+                timeout_s,
+                max_proofs,
+            )
+            result = self._call_backend(
+                lambda: self.backend.raw.sledgehammer_at_command(
+                    int(index),
+                    int(subgoal),
+                    int(timeout_s),
+                    int(max_proofs),
+                    str(provers or ""),
+                ),
+                timeout=http_timeout or (timeout_s + 40.0),
+            )
+            try:
+                parsed = json.loads(result) if result else None
+            except (ValueError, TypeError):
+                parsed = None
+            if not isinstance(parsed, dict):
+                return {
+                    "found": False,
+                    "subgoals": -1,
+                    "error": "unparseable backend reply",
+                }
+            parsed.setdefault("subgoals", -1)
+            return parsed
+        finally:
+            self._release_request()
+
+
+class MemoryAwareSession(SessionMemoryMixin, SessionFillMixin, _Isabelle_Session):
     """The session class the manager creates: a plain session + memory facts."""
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
@@ -250,4 +342,7 @@ def memory_fields(session: Any) -> Dict[str, Any]:
         "heap_mb": None,
         "mem_sampled_at": None,
         "mem_probe_error": None,
+        "sledgehammer_mb": None,
+        "sledgehammer_peak_mb": None,
+        "sledgehammer_shared_with": None,
     }

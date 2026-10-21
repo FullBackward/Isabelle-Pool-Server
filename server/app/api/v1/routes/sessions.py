@@ -2,7 +2,7 @@
 import asyncio
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException
 
@@ -167,6 +167,13 @@ async def acquire_session(
         )
 
 
+async def _cancel_fill_job(session_manager: Any, session_id: str) -> None:
+    """Cancel + await the session's fill job (fill_sorries B2); no-op for managers without jobs."""
+    cancel = getattr(session_manager, "cancel_job", None)
+    if cancel is not None:
+        await cancel(session_id)
+
+
 @router.post("/api/v1/sessions/{session_id}/release")
 async def release_session(
     session_id: str,
@@ -177,6 +184,12 @@ async def release_session(
     for reuse.  Unlike DELETE, the backend stays alive."""
     with logging_context(session_id=session_id):
         lease_id = require_lease_id(x_lease_id)
+        # Validate the lease BEFORE touching the job (fill_sorries review 4c253fe B1):
+        # a caller without the lease must not be able to cancel another client's job.
+        session_manager.get_session(session_id, lease_id=lease_id, require_lease=True)
+        cancel = getattr(session_manager, "cancel_job", None)
+        if cancel is not None:  # a fill job ends with the lease (fill_sorries B2)
+            await cancel(session_id)
         logger.info("releasing session lease")
         session_manager.release_session(session_id, lease_id)
         logger.info("session lease released")
@@ -225,9 +238,17 @@ async def close_session(
                     detail="Missing X-Lease-Id header (or X-Admin-Token for unleased sessions)",
                 )
             logger.info("force-closing unleased session via admin token")
+            await _cancel_fill_job(
+                session_manager, session_id
+            )  # authorised: cancel BEFORE the backend stops (B2)
             await asyncio.to_thread(session_manager.close_session, session_id, require_lease=False)
         else:
             logger.info("closing session")
+            # Validate the lease BEFORE the job is touched (review 4c253fe B1).
+            session_manager.get_session(
+                session_id, lease_id=lease_id, require_lease=True
+            )
+            await _cancel_fill_job(session_manager, session_id)
             await asyncio.to_thread(session_manager.close_session, session_id, lease_id=lease_id)
         # Destroy is unrecoverable for in-flight work: audit every one.
         metrics.sessions_force_closed.inc()

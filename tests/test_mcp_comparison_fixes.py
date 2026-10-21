@@ -239,3 +239,147 @@ def test_parse_evaluation_snapshot_errors():
     settled, errors = im.parse_evaluation_snapshot(
         "work/t.thy:\n  errors: 3-5, 7\n  warnings: 1")
     assert settled and errors
+
+
+# --- fill_sorries stage 3 (plan 2026-10-18 §2, review S4): --prompt-variant ---
+
+
+def _lsp_runner():
+    import importlib
+
+    sys.path.insert(
+        0, str(Path(__file__).resolve().parents[1] / "evaluation" / "MCP-comparison")
+    )
+    return importlib.import_module("run_isabelle_pool_server_lsp")
+
+
+def test_prompt_variant_baseline_is_the_builtin_prompt(tmp_path):
+    """Without --prompt-variant the user prompt is the built-in body, byte for byte."""
+    r = _lsp_runner()
+    assert r._variant_prompt(None, tmp_path / "P.thy") is None
+    body = r._lsp_prompt_body(None, tmp_path / "P.thy")
+    assert (
+        body.startswith("You are an expert interactive theorem prover assistant")
+        and "isabelle_fill_sorries" not in body
+    )
+
+
+def test_prompt_variant_from_config_substitutes_the_path(tmp_path):
+    r = _lsp_runner()
+    text = r._variant_prompt("fill_sorries", tmp_path / "P.thy")
+    assert (
+        str(tmp_path / "P.thy") in text and "isabelle_fill_sorries(file_path)" in text
+    )
+    assert "{file_path}" not in text
+    with pytest.raises(SystemExit):
+        r._variant_prompt("no_such_variant", tmp_path / "P.thy")
+
+
+def test_variant_mcp_env_caps_patience_below_the_tool_timeout():
+    from common.config import BudgetsConfig, MCPServerConfig
+
+    r = _lsp_runner()
+
+    class Cfg:
+        budgets = BudgetsConfig(
+            max_rounds=1,
+            problem_wall_cap_seconds=1,
+            tool_timeout_seconds=300,
+            repeats=1,
+        )
+        mcp_servers = {
+            r.SYSTEM: MCPServerConfig(command=["x"], env={"PYTHONPATH": "."})
+        }
+
+    assert (
+        r._variant_mcp_config(Cfg, None) is Cfg.mcp_servers[r.SYSTEM]
+    )  # baseline: untouched
+    env = r._variant_mcp_config(Cfg, "fill_sorries").env
+    assert env["ISABELLE_MCP_LSP_FILL_PATIENCE_S"] == "240" and env["PYTHONPATH"] == "."
+    Cfg.budgets = BudgetsConfig(
+        max_rounds=1, problem_wall_cap_seconds=1, tool_timeout_seconds=120, repeats=1
+    )
+    assert (
+        r._variant_mcp_config(Cfg, "fill_sorries").env[
+            "ISABELLE_MCP_LSP_FILL_PATIENCE_S"
+        ]
+        == "60"
+    )
+
+
+def test_variant_rows_and_logs_live_under_the_variant_folder(tmp_path):
+    from common.metrics import AttemptResult, append_result, load_results
+    from common.session_logger import SessionLogger
+
+    path = tmp_path / "isabelle_pool_server_lsp" / "fill_sorries" / "results.jsonl"
+    path.parent.mkdir(parents=True)
+    append_result(
+        path,
+        AttemptResult(
+            system="isabelle_pool_server_lsp",
+            problem="p",
+            repeat=0,
+            variant="fill_sorries",
+        ),
+    )
+    (row,) = load_results(path)
+    assert row.variant == "fill_sorries"
+    assert AttemptResult(system="s", problem="p", repeat=0).variant == "baseline"
+    log = SessionLogger(
+        "isabelle_pool_server_lsp",
+        "p",
+        0,
+        tmp_path,
+        console=False,
+        variant="fill_sorries",
+    )
+    log.close()
+    assert (
+        log.log_path
+        == tmp_path
+        / "isabelle_pool_server_lsp"
+        / "fill_sorries"
+        / "logs"
+        / "p_rep0.log"
+    )
+    log2 = SessionLogger("isabelle_pool_server_lsp", "p", 0, tmp_path, console=False)
+    log2.close()
+    assert (
+        log2.log_path == tmp_path / "isabelle_pool_server_lsp" / "logs" / "p_rep0.log"
+    )
+
+
+def test_arbiter_retries_a_memory_503_until_it_clears(monkeypatch):
+    """Review ed2d751 S5: right after the attempt's session is destroyed the
+    bigstep admission can refuse; the runner retries the arbiter."""
+    import asyncio
+
+    r = _lsp_runner()
+    monkeypatch.setattr(r, "ARBITER_RETRY_S", 0.0)
+    answers = [
+        {
+            "solved": False,
+            "error": "gym arbiter: HTTPStatusError: Server error '503 Service Unavailable'",
+            "build_log": "",
+        },
+        {"solved": True, "error": None, "build_log": "ok"},
+    ]
+    calls = []
+
+    async def fake_check(problem, path, gym_url):
+        calls.append(gym_url)
+        return answers.pop(0)
+
+    monkeypatch.setattr(r, "check", fake_check)
+
+    class Log:
+        def log_text(self, *a):
+            pass
+
+    out = asyncio.run(r._check_with_headroom(None, Path("x.thy"), "http://x", Log()))
+    assert out["solved"] is True and len(calls) == 2
+    answers.extend(
+        [{"solved": False, "error": "file still contains sorry/oops", "build_log": ""}]
+    )
+    out = asyncio.run(r._check_with_headroom(None, Path("x.thy"), "http://x", Log()))
+    assert out["solved"] is False and len(calls) == 3  # a non-503 verdict is final

@@ -133,6 +133,14 @@ curl http://localhost:8000/            # version, gateway_alive, active/busy ses
   `error` key (`memory_pressure` with the same facts, `pool_full`, `gateway_unavailable`); step /
   chunk / document results carry `error_kind` (`memory` | `prover_died` | null). Leased sessions
   are never evicted — clients are reminded instead (see §4).
+- Sledgehammer: `POST …/sledgehammer` and `…/sledgehammer_at` report `success` / `found` only when a
+  proof was found (a `Try this:` line) and expose `outcome` (`proved` | `none` | `timeout` | `error`) and
+  `method` (the first suggestion, timing cut); "No proof found" used to count as success. `POST …/fill_sorries`
+  starts the server-side sledgehammer job on every `sorry` of a submitted proof (poll `GET`, cancel
+  `DELETE`): sequential per session, tier-aware slots (2 at ok, 1 at warning, parked at critical), a
+  deterministic ETA, and the patched proof text in the result. The LSP MCP wraps it as
+  `isabelle_fill_sorries` / `isabelle_fill_status` / `isabelle_fill_cancel` (mcp_servers/lsp/README.md), and
+  `GET /api/v1/memory` rows attribute the solvers a step spawns to its session (`sledgehammer_mb`).
 
 ### 2. The HTTP API in four calls
 

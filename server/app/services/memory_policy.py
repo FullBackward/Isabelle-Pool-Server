@@ -46,6 +46,11 @@ def session_facts_row(session: Any, now: float) -> Dict[str, Any]:
         "idle_s": round(max(0.0, now - float(session.last_activity)), 1),
         "rss_mb": _mb(getattr(session, "rss_bytes", None)),
         "heap_mb": _mb(getattr(session, "heap_bytes", None)),
+        "sledgehammer_mb": _mb(getattr(session, "sledgehammer_rss_bytes", 0) or 0)
+        or 0.0,
+        "sledgehammer_shared_with": int(
+            getattr(session, "sledgehammer_shared_with", 0) or 0
+        ),
     }
 
 
@@ -178,10 +183,16 @@ class MemoryPolicyMixin:
         pool slot. Pops under the lock, closes outside it (best effort — the
         backend has nothing to talk to), counts the eviction. Returns False
         when the id is unknown (already gone)."""
+        cancel = getattr(self, "cancel_job_nowait", None)
+        if cancel is not None:  # a dead prover's fill job stops (B2)
+            cancel(session_id)
         with self._lock:
             session = self._lru.pop(session_id, None)
         if session is None:
             return False
+        forget = getattr(self, "forget_job", None)
+        if forget is not None:  # registry pruned with the session (review S4)
+            forget(session_id)
         logger.error(
             "discarding dead session session_id=%s reason=%s pid=%s",
             session_id,

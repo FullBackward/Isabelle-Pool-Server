@@ -25,6 +25,7 @@ from ..common import translate_http_error
 from .config import Config
 from .pool import attempt_prefix, header_imports
 
+from . import fill_tools  # noqa: F401  (registers the fill_sorries tools on `mcp`)
 from . import memory_tools  # noqa: F401  (registers the memory tools on `mcp`)
 from .server import TOOLS, _bound_synced, mcp, pool, synced_tool, tool  # noqa: F401
 
