@@ -29,7 +29,15 @@ LOG_FILE="logs/native_setup.log"
 DO_SYSTEM=0 DO_VENV=1 DO_SYSTEMD=0 DO_VERIFY=0
 # Isabelle version: flag > environment > .env > .env.example (same key the
 # docker-compose build arg reads, so both paths track one setting).
-env_version() { grep -hE '^ISABELLE_VERSION=' "$@" 2>/dev/null | tail -1 | cut -d= -f2; }
+# Only the files that exist: a missing .env made grep exit 2 and, under
+# `set -euo pipefail`, the script died silently with status 2 before its first
+# step line (fresh checkout on the Ubuntu server, 2026-10-21).
+env_version() {
+  local f
+  for f in "$@"; do
+    [[ -f "$f" ]] && grep -hE '^ISABELLE_VERSION=' "$f" || true
+  done | tail -1 | cut -d= -f2
+}
 ISABELLE_VERSION="${ISABELLE_VERSION:-$(env_version .env .env.example)}"
 
 while [[ $# -gt 0 ]]; do
