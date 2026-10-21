@@ -134,6 +134,27 @@ async def pressure(  # pylint: disable=too-many-locals,too-many-statements,too-m
         body["cgroup_at_start"] = cg0
         stop_reason = None
         i = 0
+        task, loop = asyncio.current_task(), asyncio.get_running_loop()
+
+        def _terminated() -> None:
+            # systemd stops the WHOLE scope after a kernel OOM kill (OOMPolicy=stop):
+            # the experiment got SIGTERM with its victim (server run 2026-10-21,
+            # "Terminated", no manifest). Record it and let the cleanup write.
+            body["outcome"] = "terminated"
+            body["stop_reason"] = body.get("stop_reason") or (
+                "SIGTERM: systemd stopped the scope (OOMPolicy=stop; "
+                "the script passes OOMPolicy=continue on systemd >= 253)"
+            )
+            body["sessions_before_stop"] = sum(
+                1 for s in body["steps"] if s.get("load_ok")
+            )
+            if task is not None:
+                task.cancel()
+
+        try:
+            loop.add_signal_handler(signal.SIGTERM, _terminated)
+        except (NotImplementedError, RuntimeError, ValueError):
+            pass
         try:
             while i < max_sessions and stop_reason is None:
                 sampler.phase(f"add{i}")
@@ -214,12 +235,19 @@ async def pressure(  # pylint: disable=too-many-locals,too-many-statements,too-m
                     await asyncio.sleep(5.0)
             body["recovery_s"] = recovered
             body["outcome"] = "ok"
+        except asyncio.CancelledError:
+            if body.get("outcome") != "terminated":
+                raise  # somebody else's cancel
         except Exception as exc:  # pylint: disable=broad-exception-caught
             body["outcome"], body["error"] = (
                 "error",
                 f"{type(exc).__name__}: {exc}"[:300],
             )
         finally:
+            try:
+                loop.remove_signal_handler(signal.SIGTERM)
+            except (NotImplementedError, RuntimeError, ValueError):
+                pass
             sampler.phase("stop")
             try:
                 await driver.stop_all()

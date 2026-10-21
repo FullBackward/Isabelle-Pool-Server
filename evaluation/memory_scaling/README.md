@@ -86,6 +86,8 @@ resume like a done one: `--rerun-partial` (or deleting its folder) runs it again
 ```bash
 scripts/11_run_e2_latency.sh                 # IPS warm hit vs cold start, per heap
 LIMIT=48G HEAP=HOL-Analysis scripts/12_run_e3_pressure.sh   # refusal (IPS) vs kernel kill (PIDE B) under a cgroup limit
+#   TOOLS=pide-b runs one part only. The PIDE B scope gets OOMPolicy=continue (systemd >= 253): without it
+#   systemd stops the whole scope at the first kernel kill, the experiment included (manifest: terminated).
 scripts/13_run_e4_kill.sh                    # kill one prover among 8; do the others answer?
 ```
 

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import signal
 import sys
 from pathlib import Path
 
@@ -128,6 +130,31 @@ def test_pressure_samples_the_tools_own_scope(tmp_path, monkeypatch):
     )
     assert body["cgroup_dir"] == "/sys/fs/cgroup/run-ips.scope"
     assert seen[-1] == "/sys/fs/cgroup/run-ips.scope"
+
+
+def test_pressure_survives_sigterm_with_a_manifest(tmp_path, monkeypatch):
+    """systemd stops the whole scope after a kernel OOM kill (OOMPolicy=stop),
+    so the experiment got SIGTERM with its victim (server run 2026-10-21:
+    'Terminated', no result). The handler records it and the manifest is
+    still written, with the tool stopped."""
+    w = _workload(tmp_path)
+    monkeypatch.setattr(experiments, "_dmesg_oom", lambda: [])
+
+    class Terminating(FakeIPS):
+        async def load(self, i, text):
+            if i == 1:
+                os.kill(os.getpid(), signal.SIGTERM)
+                await asyncio.sleep(2.0)  # the handler cancels us here
+            return await super().load(i, text)
+
+    drv = Terminating()
+    body = asyncio.run(
+        experiments.pressure(drv, w, tmp_path / "p", max_sessions=5, recover_wait_s=5)
+    )
+    m = json.load(open(tmp_path / "p" / "manifest.json"))
+    assert body["outcome"] == "terminated" and m["outcome"] == "terminated"
+    assert "SIGTERM" in body["stop_reason"] and body["sessions_before_stop"] == 1
+    assert drv.stopped and "cgroup_at_end" in m
 
 
 def test_pide_b_spawns_a_process_per_session_on_demand(monkeypatch):

@@ -135,6 +135,9 @@ server. Do not increase this limit.
    LIMIT=48G HEAP=HOL-Analysis scripts/12_run_e3_pressure.sh
    ```
    IPS runs in its own scope with the limit. PIDE MCP runs under a scope around the whole experiment.
+   The PIDE MCP part needs systemd 253 or later. With an older systemd, the run ends at the first
+   kernel kill and the manifest shows `terminated`. To run one part only, set `TOOLS=pide-b` or
+   `TOOLS=ips` before the command.
    Expect IPS to refuse new sessions. Expect the kernel to stop a PIDE MCP process.
 3. E4, the isolation test:
    ```bash
