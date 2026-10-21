@@ -192,7 +192,7 @@ Are agents isolated from each other? & isolation & crash containment: do the oth
 \section{Using IPS}
 \label{sec:arch}
 
-\begin{figure}[t]
+\begin{figure}[!htb]
 \centering
 \begin{tikzpicture}[
   x=1cm, y=1cm, font=\small,
@@ -358,7 +358,7 @@ out across the pool and return their verdicts together.
 
 Figure~\ref{fig:rollout} shows the loop as a client sees it.
 
-\begin{figure}[t]
+\begin{figure}[!htb]
 \centering
 \todo{rollout-loop figure: acquire, checkpoint, verify\_chunk, restore or
 continue, release; one box per call, with the budget on the verify call}
@@ -493,7 +493,7 @@ holds 110 HOL, 90 HOL-Library or 77 HOL-Analysis sessions. The concurrent
 re-check of all k theories adds 1--3\,\% to the settled footprint,
 because it runs inside each prover's existing heap.
 
-\begin{figure}[t]
+\begin{figure}[!htb]
 \centering
 \includegraphics[width=\textwidth]{figures/host_delta_settled_mb.png}
 \caption{Host memory used by the tool's processes, above the host's
@@ -504,7 +504,7 @@ because it runs inside each prover's existing heap.
 \label{fig:capacity}
 \end{figure}
 
-\begin{table}[t]
+\begin{table}[!htb]
 \centering\small
 \begin{tabular}{@{}llrrrrr@{}}
 \toprule
@@ -542,7 +542,7 @@ HOL-Analysis from the distribution sources on this host, and a project
 heap is of the same order. The three cases differ by three orders of
 magnitude, which is why the pool and the heap cache exist.
 
-\begin{table}[t]
+\begin{table}[!htb]
 \centering\small
 \begin{tabular}{@{}lrrr@{}}
 \toprule
@@ -700,19 +700,19 @@ sessions answered under all three arrangements. IPS names the cause
 as no longer running. Under topology B the eight MCP processes all
 survived their provers. On this test the tools are equal.
 
-\begin{table}[t]
+\begin{table}[!htb]
 \centering\small
-\begin{tabular}{@{}lrr@{}}
+\begin{tabularx}{\textwidth}{@{}>{\raggedright\arraybackslash}p{4.3cm} >{\raggedright\arraybackslash}X >{\raggedright\arraybackslash}X@{}}
 \toprule
  & IPS (pool) & PIDE MCP B (one process per session) \\
 \midrule
 Sessions admitted before the stop & 27 & 13 \\
-How it stopped & 28th refused, HTTP 503 \code{memory\_pressure} & kernel OOM kill inside the scope \\
-Scope memory at the stop & 38.4\,GB (78\,\%), peak 38.4\,GB & 48.0\,GB (the limit), peak 48.0\,GB \\
+How it stopped & 28th refused: HTTP 503, \code{memory\_pressure} & kernel OOM kill inside the scope \\
+Scope memory at the stop & 38.4\,GB (78\,\%); peak 38.4\,GB & 48.0\,GB (the limit); peak 48.0\,GB \\
 Processes lost & none & 4 MCP JVMs and 3 provers: 4 of 13 sessions \\
 Recovery after releasing half & 8.4\,s & 8.6\,s \\
 \bottomrule
-\end{tabular}
+\end{tabularx}
 \caption{E3: HOL-Analysis sessions added under a 48\,GB systemd scope
   until the tool refused or a process died.}
 \label{tab:pressure}
@@ -812,7 +812,7 @@ inherits the sequential cost, while its chunk call submits a block as one
 PIDE edit with parallel proofs on and its whole-file check is a batch
 build.
 
-\begin{table}[t]
+\begin{table}[!htb]
 \centering\small
 \begin{tabular}{@{}lccc@{}}
 \toprule
@@ -1036,7 +1036,7 @@ tools ran as one unprivileged user with nothing else on the host.
 session: \code{CTL.thy} (HOL, 288 commands), \code{Termination.thy}
 (HOL-Library), \code{Sum\_Topology.thy} (HOL-Analysis, 163 lines,
 importing \code{HOL-Analysis.Abstract\_Topology}). The re-check inserts
-\code{lemma memscale\_p5\_done: "True" by simp} after the first paragraph
+\texttt{lemma memscale\_p5\_done: "True" by simp} after the first paragraph
 under the same theory name, so every later command is re-checked on the
 incremental path.
 
@@ -1147,14 +1147,14 @@ PIDE MCP B & HOL-Analysis & 32 & 117851 & 116454 & 120589 & 71663 & 6.6 & 1.3 & 
 
 \paragraph{Raw results, E3.} Table~\ref{tab:raw-e3} gives the scope's
 \code{memory.current} after each session loaded. IPS: 27 admitted,
-1.2--1.3\,GB per step, the 28th refused at 38.4\,GB with
-\code{state: warning, used 38382\,MB of 49152, available 10770\,MB}.
+1.2--1.3\,GB per step, the 28th refused at 38.4\,GB with state \texttt{warning}, 38\,382\,MB
+used of 49\,152 and 10\,770\,MB available.
 PIDE MCP B: 3.4--5.1\,GB per step; at the 12th and 13th sessions the
 prover count fell (11, then 9) as the kernel began killing inside the
 scope, and the 14th load succeeded with \code{oom\_kill} at 4 and 7
 provers left.
 
-\begin{table}[t]
+\begin{table}[!htb]
 \centering\scriptsize
 \setlength{\tabcolsep}{3.5pt}
 \begin{tabular}{@{}l rrrrrrrrrrrrrr@{}}
