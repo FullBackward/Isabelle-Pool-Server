@@ -179,7 +179,7 @@ Can one bad step stall a worker? & bounded step & calls exceeding budget; time f
 \multicolumn{4}{@{}l}{\emph{Operator} (Section~\ref{sec:serving})} \\
 How many sessions fit in a host? & capacity & memory per session at steady state, by heap; sessions per 100\,GB & measured \\
 How long until a client gets a session? & acquire latency & warm hit, cold start and heap build, separately & measured \\
-How often is a heap rebuilt? & cache hit rate & heap cache hits and misses over a project mix & pending \\
+How often is a heap rebuilt? & cache hit rate & heap cache hits and misses over a project mix & not measured \\
 What happens when memory runs out? & pressure & admission refusals, evictions, kernel kills, recovery time & measured \\
 Are agents isolated from each other? & isolation & crash containment: do the other sessions answer? & measured \\
 \bottomrule
@@ -561,9 +561,11 @@ Heap build from sources (once) & 4\,s\footnotemark & 114\,s & 360\,s \\
 \footnotetext{HOL was already built by the Isabelle installation; the
 figure is the check, not a build.}
 
-\paragraph{Cache hit rate.} \todo{on a workload replaying N agents across
-M projects, the fraction of acquires served warm, cold, and by build; the
-total build time saved by the heap pool.}
+\paragraph{Cache hit rate.} Not measured: it needs a mix of projects with
+their own heaps and a replayed agent workload, which this round did not
+have. What Table~\ref{tab:acquire} does fix is the size of each miss: a
+cold start costs 2 to 6 seconds and a heap build minutes, so one build
+avoided per project pays for hundreds of cold starts.
 
 \paragraph{Pressure.} The server was started in a systemd scope with
 \code{MemoryMax=48G} and HOL-Analysis sessions were added one at a time,
