@@ -154,6 +154,16 @@ trait Backend_File_Ops { this: ReplBackend =>
    *  edits, no channel probes. JSON: {found, results: [str]} or
    *  {found:false, error} (no open goal / timeout). Consumed via
    *  POST /api/v1/sessions/{id}/sledgehammer_at (semaphore-bounded server-side). */
+  /** Sledgehammer on the goal of the command with report index `index` (the
+   *  server-side `fill_sorries` job: host = the command before a `sorry`), with
+   *  `max_proofs` and an optional space-separated `provers` list. JSON:
+   *  {found, subgoals, results} or {found:false, subgoals, error}. Semaphore-bounded
+   *  server-side like the other sledgehammer entry points. */
+  def sledgehammer_at_command(index: Int, subgoal: Int, timeout_s: Int, max_proofs: Int, provers: String): String = {
+    Repl_Output.reset()
+    repl_session.sledgehammer_at_command(index, subgoal, timeout_s, max_proofs, provers)
+  }
+
   def sledgehammer_at(line: Int, subgoal: Int, timeout_s: Int): String = {
     Repl_Output.reset()
     repl_session.sledgehammer_at(line, subgoal, timeout_s)

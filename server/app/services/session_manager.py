@@ -13,9 +13,11 @@ from server.app.core.logging import get_logger, logging_context
 from server.app.core import metrics
 from server.app.errors import GatewayUnavailable, PoolExhausted, SessionBusyError, SessionNotFound, SessionStartError
 from server.app.services.memory_monitor import MemoryMonitor
+from server.app.services.fill_sorries import FillJobMixin
 from server.app.services.memory_policy import MemoryPolicyMixin
 from server.app.services.session import SessionStatus, _Isabelle_Session
 from server.app.services.session_memory import MemoryAwareSession
+from server.app.services.sledgehammer_slots import SledgehammerSlots
 from server.app.services.threaded_backend import ThreadedBackend
 
 from pathlib import Path
@@ -28,7 +30,7 @@ from server.app.services.session_manager_helpers import (
 logger = get_logger(__name__)
 
 
-class SessionManager(SessionManagerHelpersMixin, MemoryPolicyMixin):
+class SessionManager(SessionManagerHelpersMixin, MemoryPolicyMixin, FillJobMixin):
 
     def __init__(
         self,
@@ -62,6 +64,7 @@ class SessionManager(SessionManagerHelpersMixin, MemoryPolicyMixin):
         # running loop on first use.
         self.sledgehammer_sem = asyncio.Semaphore(Server.MAX_CONCURRENT_SLEDGEHAMMER)
         self.max_concurrent_sledgehammer = Server.MAX_CONCURRENT_SLEDGEHAMMER
+        self.slots = SledgehammerSlots(self, Server.MAX_CONCURRENT_SLEDGEHAMMER)
 
         # Big-step builds: bounded by their own knob (default 1) and gated by
         # memory in verify_big_step_build — not derived from the session pool.
@@ -534,6 +537,7 @@ class SessionManager(SessionManagerHelpersMixin, MemoryPolicyMixin):
             session.require_lease(lease_id)
             if session.in_use:
                 raise SessionBusyError(f"Session {sid} is busy and cannot be released")
+            self.cancel_job_nowait(sid)  # after lease + busy checks (reviews B1, S1)
             session.release_lease()
             self._lru.move_to_end(sid, last=True)
         with logging_context(session_id=sid, field=session.field):
@@ -579,7 +583,9 @@ class SessionManager(SessionManagerHelpersMixin, MemoryPolicyMixin):
                 session.require_lease(lease_id)
             if session.in_use:
                 raise SessionBusyError(f"Session {sid} is busy and cannot be closed")
+            self.cancel_job_nowait(sid)  # after lease + busy checks (reviews B1, S1)
             self._lru.pop(sid, None)
+            self.forget_job(sid)  # S4: registry pruned with the session
             if session.in_use:
                 self._lru[sid] = session
                 self._lru.move_to_end(sid)

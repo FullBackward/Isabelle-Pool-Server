@@ -221,6 +221,62 @@ class ExecutionMixin(ClientBase):
         response.raise_for_status()
         return response.json()
 
+    async def fill_sorries(  # pylint: disable=too-many-arguments
+        self,
+        session_id: str,
+        text: str,
+        *,
+        mode: str = "document",
+        timeout_s: int = 30,
+        max_total_s: float = 600.0,
+        provers: str | None = None,
+        load_timeout: float = 120.0,
+        lease_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Start the server-side sledgehammer job on every ``sorry`` of ``text``
+        (``POST …/fill_sorries``, 202). Returns the initial job state: ``status``,
+        ``n``, ``eta_s``, ``queue_position``; poll with :meth:`fill_status`.
+        409 ``fill_in_flight`` while a job runs on the session."""
+        body: dict[str, Any] = {
+            "text": text,
+            "mode": mode,
+            "timeout_s": int(timeout_s),
+            "max_total_s": float(max_total_s),
+            "load_timeout": float(load_timeout),
+        }
+        if provers:
+            body["provers"] = provers
+        response = await self._request(
+            "POST",
+            f"{BASE_URL}/{session_id}/fill_sorries",
+            json_body=body,
+            headers=self._lease_headers(lease_id),
+            timeout=load_timeout + 60.0,
+        )
+        response.raise_for_status()
+        return response.json()
+
+    async def fill_status(
+        self, session_id: str, *, lease_id: str | None = None
+    ) -> dict[str, Any]:
+        """The job state (``GET …/fill_sorries``): status, per-sorry results,
+        ``patched_text``, ``eta_s``, ``queue_position``, parked flags."""
+        return await self._get_json(
+            f"{BASE_URL}/{session_id}/fill_sorries", lease_id=lease_id
+        )
+
+    async def fill_cancel(
+        self, session_id: str, *, lease_id: str | None = None
+    ) -> dict[str, Any]:
+        """Cancel the session's job (``DELETE …/fill_sorries``)."""
+        response = await self._request(
+            "DELETE",
+            f"{BASE_URL}/{session_id}/fill_sorries",
+            headers=self._lease_headers(lease_id),
+        )
+        response.raise_for_status()
+        return response.json()
+
     async def verify_bigstep_text(
         self,
         theory_name: str,

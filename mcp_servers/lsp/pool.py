@@ -161,6 +161,15 @@ class LspPool(GymClientMixin):
             await self._safe_release(old)
         return binding
 
+    def peek_binding(self, file_path: str) -> Optional[FileBinding]:
+        """The binding for a file if this process holds one — NEVER opens
+        (fill_status / fill_cancel after an MCP restart or on a mistyped path
+        must answer `no_fill_job`, not acquire a session; review aa96c6d S1)."""
+        binding = self._bindings.get(canonical_path(file_path))
+        if binding is not None:
+            self.registry.touch(binding.session_id)
+        return binding
+
     async def get_binding(
         self, file_path: str, task_group: Optional[str] = None,
         heap_session: Optional[str] = None, label: Optional[str] = None,

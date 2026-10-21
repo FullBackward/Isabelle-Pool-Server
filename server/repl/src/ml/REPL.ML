@@ -34,6 +34,7 @@ sig
   val global_facts: Toplevel.state -> int -> string list
   val proof_state: Toplevel.state -> string list
   val sledgehammer_results: int -> int -> Toplevel.state -> string list
+  val sledgehammer_fill: int -> int -> int -> string -> Toplevel.state -> string list
   val mem_stats: unit -> string list
 end;
 
@@ -144,6 +145,44 @@ fun sledgehammer_results timeout_s i state =
         val extra = if message = "" then [] else [clean_string message];
       in ! collected @ extra end);
 
+(* === Sledgehammer for the server-side `fill_sorries` job (plan 2026-10-18 §1.1):
+   like sledgehammer_results, hosted on the command BEFORE a `sorry`, but with
+   `max_proofs` (1 = stop as soon as one proof is in; provers run concurrently,
+   so a second "Try this" line may still arrive — the server takes the first)
+   and an optional space-separated
+   `provers` list passed through to default_params, and a first line
+   "subgoals=N" (N = premises of the goal the sorry would close) so the server
+   knows how many subgoals to attack. Outside a proof, or for a subgoal index
+   beyond N, it answers "subgoals=0"/"subgoals=N" plus an "error=..." line
+   instead of raising, so the server reports `error` rather than a timeout. === *)
+
+fun sledgehammer_fill timeout_s i max_proofs provers state =
+  (case try Toplevel.proof_of state of
+    NONE => ["subgoals=0", "error=Unknown proof context"]
+  | SOME proof_state =>
+      let
+        val bwd_state = Proof.enter_backward proof_state;
+        val n = Thm.nprems_of (#goal (Proof.goal bwd_state));
+      in
+        if i < 1 orelse i > n then
+          ["subgoals=" ^ string_of_int n, "error=No subgoal " ^ string_of_int i]
+        else
+          let
+            val ctxt = Proof.context_of bwd_state;
+            val thy = Proof_Context.theory_of ctxt;
+            val extra =
+              [("timeout", string_of_int timeout_s), ("max_proofs", string_of_int max_proofs)] @
+              (if provers = "" then [] else [("provers", provers)]);
+            val params = Sledgehammer_Commands.default_params thy extra;
+            val collected = Unsynchronized.ref ([] : string list);
+            fun on_output s = collected := ! collected @ [clean_string s];
+            val (_, (_, message)) =
+              Sledgehammer.run_sledgehammer params Sledgehammer_Prover.Normal
+                (SOME on_output) i Sledgehammer_Fact.no_fact_override bwd_state;
+            val extra_lines = if message = "" then [] else [clean_string message];
+          in ("subgoals=" ^ string_of_int n) :: (! collected @ extra_lines) end
+      end);
+
 (* === Memory facts of THIS ML process, one "key=value" line each: its OS pid
    and the Poly/ML runtime statistics (size_heap, size_heap_free_last_GC,
    size_heap_free_last_full_GC, ...; the same source Isabelle's own
@@ -220,3 +259,13 @@ val _ =
 val _ =
   Query_Operation.register {name = "isabelle_pool_server_mem", pri = 0}
     (fn {writeln_result, ...} => List.app writeln_result (Repl.mem_stats ()));
+
+val _ =
+  Query_Operation.register {name = "isabelle_pool_server_sledgehammer_fill", pri = 0}
+    (fn {state = st, args, writeln_result, ...} =>
+      let
+        val timeout_s = the_default 30 (Int.fromString (nth args 0));
+        val i = the_default 1 (Int.fromString (nth args 1));
+        val max_proofs = the_default 1 (Int.fromString (nth args 2));
+        val provers = (case drop 3 args of [] => "" | p :: _ => p);
+      in List.app writeln_result (Repl.sledgehammer_fill timeout_s i max_proofs provers st) end);

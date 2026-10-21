@@ -48,6 +48,16 @@ memory_failures = Counter(
     "Requests that failed for lack of memory, by kind",
     ["kind"],  # memory (ML runtime out of memory) | prover_died
 )
+fill_jobs_total = Counter(
+    "isabelle_pool_server_fill_jobs_total",
+    "fill_sorries jobs by final status",
+    ["outcome"],  # done | cancelled | error
+)
+fill_steps_total = Counter(
+    "isabelle_pool_server_fill_steps_total",
+    "fill_sorries sledgehammer steps by outcome",
+    ["outcome"],  # proved | none | timeout | error | skipped
+)
 gateway_restarts = Counter(
     "isabelle_pool_server_gateway_restarts_total", "Dead REPL gateway recoveries"
 )

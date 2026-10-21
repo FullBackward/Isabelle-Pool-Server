@@ -181,6 +181,25 @@ python -m server.app.main   # the LSP MCP talks to the same HTTP server
 python evaluation/MCP-comparison/run_isabelle_pool_server_lsp.py --thy-dir evaluation/MCP-comparison/problems --repeats 10
 ```
 
+#### Prompt variants (`--prompt-variant`)
+
+```bash
+# baseline (the built-in prompt, byte for byte — comparable with every earlier run)
+python evaluation/MCP-comparison/run_isabelle_pool_server_lsp.py --thy-dir evaluation/MCP-comparison/problems --repeats 5
+# the fill_sorries variant: the prompt tells the agent to leave `sorry`s and call isabelle_fill_sorries
+python evaluation/MCP-comparison/run_isabelle_pool_server_lsp.py --thy-dir evaluation/MCP-comparison/problems --repeats 5 --prompt-variant fill_sorries
+```
+
+A variant is a named entry under `prompts:` in `config.yaml` (or `config.local.yaml`) that REPLACES
+the user prompt body (`{file_path}` is substituted). Its results and logs go to
+`runs/isabelle_pool_server_lsp/<variant>/` and every row carries `variant: <name>`, so
+`analyze.py` reports it as a separate variant row next to the baseline. For a variant the runner
+also caps the MCP's `ISABELLE_MCP_LSP_FILL_PATIENCE_S` at `tool_timeout_seconds − 60`, so
+`isabelle_fill_sorries` returns `continuing: true` instead of the harness timing the call out.
+Rerun recipe for the paper's fill_sorries comparison: start the server (`docker compose up -d`),
+`export DEEPSEEK_API_KEY=…`, run the two commands above (same `--repeats`), then
+`python evaluation/MCP-comparison/analyze.py`.
+
 Results land in `runs/isabelle_pool_server_lsp/` (same results.jsonl schema;
 `analyze.py` picks it up as a fourth system row).
 

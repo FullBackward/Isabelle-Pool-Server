@@ -20,6 +20,9 @@ class AttemptResult:
     model_id: str = ""
     model_provider: str = ""
     model_temperature: float = 0.0
+    variant: str = (
+        "baseline"  # prompt/tool variant (--prompt-variant); "baseline" = the fixed prompt
+    )
 
     # Outcome
     arbiter_solved: bool = False         # ground truth — used in headline numbers
@@ -30,12 +33,12 @@ class AttemptResult:
     n_tool_calls: int = 0
     n_truncated_rounds: int = 0          # rounds cut at max_tokens (finish_reason=length)
     n_nudge_rounds: int = 0              # no-tool-call rounds answered with a harness nudge
-                                         # (productive rounds = rounds - n_nudge_rounds)
+    # (productive rounds = rounds - n_nudge_rounds)
 
     # Latency
     wall_s: float = 0.0                  # PRIMARY: full attempt wall-clock
     setup_s: float | None = None         # attempt start → timer start (excluded from wall_s;
-                                         # makes the warm/cold setup asymmetry visible)
+    # makes the warm/cold setup asymmetry visible)
     first_tool_s: float | None = None    # duration of the first MCP tool call (warmup proxy)
     prover_s: float | None = None        # SECONDARY: summed MCP tool/eval time
     round_latencies: list[float] = field(default_factory=list)

@@ -52,6 +52,8 @@ Read-only (each syncs first):
 | `isabelle_hover_info(file_path, line, column)` | Entity kind + type/statement |
 | `isabelle_definition(file_path, line, column)` | Def positions: file targets (heap/distribution sources) or in-node line ranges (entities defined in the file itself) |
 | `isabelle_sledgehammer(file_path, line?, subgoal?, timeout_s?)` | Tip goal (no `line`) or positioned at `line` (+subgoal) |
+| `isabelle_fill_sorries(file_path, timeout_s?, max_total_s?, patience_s?)` | The server runs sledgehammer on every `sorry` of the file (one job per file, `timeout_s` per sorry, `max_total_s` per job) and returns `patched_text` + per-sorry results, ETA and queue position; after `patience_s` (default 240) it returns the partial state with `continuing: true` while the job keeps running server-side |
+| `isabelle_fill_status(file_path)` / `isabelle_fill_cancel(file_path)` | Collect a continuing job (same result shape; polling keeps the session alive) / stop it (the step in flight ends within its own budget; proofs found so far stay in `patched_text`) |
 | `isabelle_checkpoint(file_path)` / `isabelle_restore(file_path, checkpoint_id)` / `isabelle_rollback(file_path)` | Snapshot machinery on the file session |
 | `isabelle_history(file_path)` / `isabelle_last_report(file_path)` | Command history / retained last report |
 
@@ -87,6 +89,8 @@ parser (client wrapper: `async_client.parse_theory_header`).
 | `..._MAX_PARALLEL` | 4 | multi_attempt fan-out cap |
 | `..._SCRATCH_POOL_SIZE` | 4 | warm scratch sessions per context |
 | `..._CLOSE_DESTROYS` | false | `isabelle_close` destroys (teardown) instead of warm-releasing |
+| `..._FILL_TIMEOUT_S` / `..._FILL_MAX_TOTAL_S` | 30 / 600 | fill_sorries: sledgehammer budget per `sorry` / wall budget per job (server defaults `ISABELLE_FILL_*`) |
+| `..._FILL_PATIENCE_S` / `..._FILL_POLL_S` | 240 / 3 | how long `isabelle_fill_sorries` waits before returning `continuing: true` (keep ≤ the MCP client's tool timeout − 60) / poll interval |
 | `..._TRANSPORT` | `stdio` | `stdio` or `streamable-http` |
 | `..._HOST` / `..._PORT` | `127.0.0.1` / `8849` | streamable-http bind |
 
@@ -111,7 +115,7 @@ ISABELLE_MCP_LSP_TRANSPORT=streamable-http PYTHONPATH=. python -m mcp_servers.ls
 
 `server.py` is the import point for the shared objects (`mcp`, `pool`, `TOOLS`, the `tool` /
 `synced_tool` decorators); `app.py` holds the file/scratch/heap tools and `main()`,
-`memory_tools.py` the memory tools. New code imports from `server.py`, not through `app.py`
+`memory_tools.py` the memory tools, `fill_tools.py` the fill_sorries tools. New code imports from `server.py`, not through `app.py`
 (which only re-exports for compatibility).
 
 ## Memory protocol
@@ -129,3 +133,25 @@ release what you hold but do not use (`isabelle_release_idle()`, `isabelle_close
 destroy=true)`), retry after `retry_after_s`, and — when the memory is held by other clients,
 builds, or external pressure — stop and tell the user. Knobs: `ISABELLE_MCP_LSP_SCRATCH_IDLE_S`
 (default 300 s, warm scratch TTL) and `ISABELLE_MCP_LSP_ADVICE_IDLE_S` (default 120 s).
+
+### Sledgehammer on `sorry`s (fill_sorries)
+
+Instead of calling `isabelle_sledgehammer` goal by goal, the agent writes the proof with
+`sorry` at every goal it cannot close and calls `isabelle_fill_sorries(file_path)`: the server
+locates the `sorry` commands, runs sledgehammer on each one (`max_proofs=1`, one step at a time
+per file) and the tool returns `patched_text` with every proved `sorry` replaced (a `by …`
+answer verbatim; several single-method answers for a multi-subgoal `sorry` as an `apply` chain
++ `done`), the per-sorry outcomes and the lines still `sorry`. The agent writes the text to the
+file and verifies with `isabelle_diagnostic_messages`. The server caps the sledgehammers it runs
+by memory tier — 2 at `ok`, 1 at `warning`, none at `critical`, where a job is **parked**
+(`parked: true`, `parked_reason`) until the tier drops — and reports a deterministic ETA
+(`eta_s.typical` = remaining × 6 s, `eta_s.worst` = remaining × (`timeout_s` + 30) + queue wait)
+and the job's `queue_position` (−1 = not queued). The tool waits `ISABELLE_MCP_LSP_FILL_PATIENCE_S`
+(240 s; keep it ≤ the MCP client's tool timeout − 60) and then returns the partial state with
+`continuing: true`; the job keeps running server-side until `max_total_s` —
+`isabelle_fill_status(file_path)` collects it (each poll counts as activity on the session) and
+`isabelle_fill_cancel(file_path)` stops it. While a step runs, other tools on the same file
+answer `busy`. The ATP processes a step spawns are attributed to the file's session as
+`sledgehammer_mb` (the server's `/api/v1/memory` rows; `isabelle_list_sessions` shows it once a
+refresh has merged the rows, and `isabelle_memory_status` counts what other clients' running
+sledgehammers hold).

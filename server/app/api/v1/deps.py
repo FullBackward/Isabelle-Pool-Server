@@ -88,10 +88,19 @@ async def sledgehammer_slot(session_manager: SessionManager) -> AsyncIterator[No
     refuse = getattr(session_manager, "refuse_heavy_if_critical", None)
     if refuse is not None:
         await asyncio.to_thread(refuse, "sledgehammer")
+    slots = getattr(session_manager, "slots", None)
     sem = getattr(session_manager, "sledgehammer_sem", None)
     metrics.sledgehammer_inflight.inc()
     try:
-        if sem is not None:
+        if slots is not None:
+            # fill_sorries §1.4: the tier-aware counter shared with fill steps;
+            # parkable=False keeps the synchronous call refused at capacity 0.
+            await slots.acquire(parkable=False)
+            try:
+                yield
+            finally:
+                await slots.release()
+        elif sem is not None:
             async with sem:
                 yield
         else:

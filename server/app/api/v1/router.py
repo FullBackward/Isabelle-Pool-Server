@@ -12,6 +12,7 @@ from .routes import (
     automation,
     checkpoints,
     execution,
+    fill,
     health,
     heaps,
     inspection,
@@ -31,6 +32,7 @@ for _module in (
     checkpoints,
     heaps,
     memory,
+    fill,
 ):
     router.include_router(_module.router)
 

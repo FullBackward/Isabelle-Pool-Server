@@ -48,6 +48,7 @@ def test_agent_view_hides_ids_and_lease():
         "expires_in_s",
         "rss_mb",
         "heap_mb",
+        "sledgehammer_mb",
         "state",
     }
     assert "LEASE-SECRET" not in repr(view) and "11111111-2222" not in repr(view)

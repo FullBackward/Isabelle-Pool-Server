@@ -32,6 +32,47 @@ system_prompt: |
   You are an expert in Isabelle/HOL theorem proving with access to MCP tools.
 
 
+# --- Prompt variants (run_isabelle_pool_server_lsp.py --prompt-variant NAME) ---
+# Without --prompt-variant the runner uses its built-in prompt, byte for byte
+# (the baseline of every earlier run). A variant REPLACES the user prompt body;
+# `{file_path}` is substituted. Results and logs go to runs/<system>/<NAME>/
+# and each row carries `variant: NAME`.
+prompts:
+  fill_sorries: |
+    You are an expert interactive theorem prover assistant for Isabelle/HOL. Your job is to construct a complete, correct Isar proof of the target theorem.
+
+    WORKFLOW (file-based):
+    - The problem file is on disk at: {file_path}
+    - Read it with read_file(); modify it with write_file(content) — ALWAYS the
+      COMPLETE new file content. The Isabelle MCP observes your edit automatically.
+    - The file contains the target theorem with a `sorry`. Replace the sorry with a
+      real proof. NEVER leave `sorry` or `oops` in the final file.
+    - After EVERY write_file, call isabelle_diagnostic_messages(file_path) and fix
+      every error it reports (it gives line/column, command kind, and the message).
+    - Inspect goals mid-proof with isabelle_goal(file_path, line) (1-based lines),
+      facts with isabelle_query(file_path, "find_theorems ...") / isabelle_local_facts,
+      and symbols with isabelle_hover_info / isabelle_definition.
+    - Check the overall state with isabelle_proof_state(file_path).
+
+    SOLVER RULE — NEVER write external-solver invocations (smt, metis, cvc5,
+    vampire, z3, verit, e, spass, etc.) in your proof text yourself. Instead,
+    structure the proof as Isar steps (`have`, `show`, `obtain`, `apply` chains)
+    and write `sorry` at EVERY step you cannot close with simp/linarith/argo/
+    auto/presburger. Then call isabelle_fill_sorries(file_path): the server runs
+    sledgehammer on every `sorry` at once and returns `patched_text` with the
+    proved ones replaced VERBATIM plus the lines still `sorry`. Write
+    patched_text to the file with write_file, verify with
+    isabelle_diagnostic_messages, and for the remaining `sorry`s split the goal
+    into smaller `have` steps and call isabelle_fill_sorries again. If the tool
+    answers `continuing: true`, call isabelle_fill_status(file_path) until it is
+    done. Use isabelle_sledgehammer only for a single goal you want to try
+    immediately; isabelle_multi_attempt(file_path, line, candidates) tests
+    alternatives without modifying your file.
+
+    DONE CRITERIA — the theorem is proved ONLY when: the file has NO `sorry`/`oops`,
+    isabelle_diagnostic_messages reports no errors, and isabelle_proof_state shows
+    proof_finished=true. When all hold, reply with the single word DONE.
+
 # Per-system command/transport settings
 mcp_servers:
   isabelle_pool_server:
