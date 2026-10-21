@@ -829,13 +829,32 @@ Pooled service (IPS) & \checkmark & \checkmark & $\sim$ \\
 \label{tab:families}
 \end{table}
 
-\paragraph{A worked example.} \todo{One competition problem, ten
-repetitions, one model, run through the stepwise MCP server, Isabelle/Q
-and PIDE MCP; report pass rate, rounds and tokens.} This is an example,
-not an evaluation: pass rate on a few problems with one model measures the
-agent and the prompt as much as the connector. It is here only to show
-that a service built for the first two readers is also usable by the
-third.
+\paragraph{A worked example: agents in the loop.} The Isabelle-Humanize
+project\footnote{\url{https://github.com/FullBackward/Isabelle-Humanize}}
+runs a builder/reviewer loop (the RLCR flow of
+humanize2\footnote{\url{https://github.com/humanfia/humanize2}}) on
+competition problems: two agent seats (opencode on DeepSeek V4 Pro in
+both roles) talk to IPS through the file MCP server over streamable HTTP,
+and the flow itself uses the IPS whole-file check as the arbiter, so a
+problem counts as solved only when \code{isabelle build} passes with no
+\code{sorry} or \code{oops} and the target theorem present. Three
+problems were solved end to end: Putnam 2023 A1 (2 review rounds, 3.3\,h
+wall, about \$3 of model time), Putnam 2023 B5 (5 rounds, 14.3\,h, about
+\$15, with one regression and a replan) and IMO 2026 P1 (one round, a
+1059-line theory with all five \code{sorry}s discharged, 4.2\,h, about
+\$5). A rerun of IMO 2026 P1 on the IPS build with incremental document
+sync and the memory work of this report halved the wall time (7\,391
+against 14\,949\,s) and the agent-active time (117 against 248\,min),
+cut MCP timeouts from 12 to 0 and diagnostics calls from 47 to 18 at a
+median of 0.3\,s, and the arbiter build from 44 to 11\,s. The caveats are
+the project's own: one run per problem, a prompt rule that changed between
+the two IMO runs, costs at a model price that has since changed, and a
+fourth ``solve'' (Putnam 2023 B6) excluded because the benchmark's Isabelle
+statement is degenerate. This is an example, not an evaluation: a few
+problems with one model measure the agent and the prompt as much as the
+connector. It is here to show that a service built for the first two
+readers is also usable by the third, and that the service's latency shows
+up on the agent's wall clock.
 
 % ======================================================================
 \section{Limitations and roadmap}
@@ -912,32 +931,52 @@ enough to repeat the measurements.
 \label{app:quickstart}
 
 \paragraph{Running the server.} IPS ships as one container image
-parameterised by Isabelle version, with a setup script and a systemd
-recipe for native Linux. \todo{the three commands: pull or build the
-image, start it with the memory limit and pool size, check the readiness
-probe.}
-
-\paragraph{A session from Python.} \todo{replace with the exact client
-method names.}
+parameterised by Isabelle version, with a setup script for Docker and one
+for a native Linux host (optionally as a systemd unit). On a machine with
+Docker:
 \begin{verbatim}
-async with IsabelleClient(url) as client:
-    session = await client.acquire(imports=["HOL.Main"])
-    try:
-        await session.submit("theory T imports Main begin")
-        cp = await session.checkpoint()
-        r = await session.verify_chunk(
-            "lemma l: \"x + 0 = x\" by simp", timeout_ms=10_000)
-        proved = r.success and not r.proof_open and not r.used_sorry
-        if not proved:
-            await session.restore(cp)
-    finally:
-        await session.release()
+git clone https://github.com/FullBackward/Isabelle-Pool-Server.git
+cd Isabelle-Pool-Server
+./deploy/setup.sh --verify     # writes .env, builds, starts, proves True
+curl http://localhost:8000/readyz   # 200 once the gateway JVM is up
 \end{verbatim}
+The first build downloads Isabelle and compiles the backend (10--30\,min).
+\code{./deploy/native\_setup.sh --system --systemd --verify} does the same
+without Docker. Pool size, memory thresholds, the prover heap cap and the
+per-call budgets are environment variables in \code{.env}
+(Appendix~\ref{app:deploy}).
 
-\paragraph{The stepwise MCP server (11 tools).} \code{enter\_theory},
+\paragraph{A session from Python.} The client is a separate package
+(\code{pip install -e ./client}, \code{httpx} only). Every call on a session
+carries the lease the acquire returned.
+\begin{verbatim}
+from client.async_client import PoolAsyncClient
+
+async with PoolAsyncClient("http://localhost:8000") as client:
+    s = await client.acquire_session(theories=["Main"], field="HOL")
+    sid, lease = s["session_id"], s["lease_id"]
+    try:
+        await client.enter_theory(sid, "T", imports=["Main"], lease_id=lease)
+        cp = await client.save_checkpoint(sid, lease_id=lease)
+        r = await client.verify_chunk(
+            sid, 'lemma l: "x + 0 = x" by simp', timeout=10.0, lease_id=lease)
+        proved = r["success"] and not r["proof_open"] and not r["used_sorry"]
+        if not proved:
+            await client.restore_checkpoint(sid, cp["checkpoint_id"], lease_id=lease)
+    finally:
+        await client.release_session(sid, lease_id=lease)
+\end{verbatim}
+\code{verify\_chunk} returns the per-command report (\code{commands},
+each with \code{status} and messages, plus \code{timed\_out} and
+\code{stuck\_line} on a budget expiry); \code{load\_document} replaces the
+whole document, \code{rollback} undoes the last submission, and
+\code{verify\_bigstep\_text} is the cold build.
+
+\paragraph{The stepwise MCP server (13 tools).} \code{enter\_theory},
 \code{verify\_chunk}, \code{proof\_state}, \code{source},
 \code{diagnostic}, \code{sledgehammer}, \code{checkpoint}, \code{restore},
-\code{rollback}, \code{close\_theory}, \code{verify\_batch}.
+\code{rollback}, \code{close\_theory}, \code{verify\_batch},
+\code{list\_my\_sessions}, \code{memory\_status}.
 \code{verify\_chunk} is the only tool that executes Isar.
 
 \paragraph{The file MCP server.} The agent edits a theory file
