@@ -43,6 +43,10 @@ isabelle pide_mcp -?                        # builds the jar once, prints its us
 The ML heap cap IPS writes into `~/.isabelle/Isabelle2026-RC2/etc/settings` (`ML_OPTIONS … --maxheap`)
 applies to every `poly` of both tools — that is intended (same cap for both) and recorded.
 
+Every new shell needs the environment again before any script: `source .venv/bin/activate` in the
+repo root and Isabelle's `bin` on `PATH` (`/opt/isabelle/bin`, or `$HOME/Isabelle2026-RC2/bin` for a
+home-directory install without sudo).
+
 ## 2. Check the environment
 
 ```bash

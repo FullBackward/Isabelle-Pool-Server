@@ -57,6 +57,13 @@ NOTE: IPS writes a memory cap for the prover process into
 `~/.isabelle/Isabelle2026-RC2/etc/settings`. The cap applies to both tools. This is correct. The
 experiment records the cap.
 
+NOTE: A new shell (a new login, a new tmux window) does not have the Python environment. Activate it
+again in each new shell before you run a script:
+```bash
+cd ~/Isabelle-Pool-Server && source .venv/bin/activate && export PATH=/opt/isabelle/bin:$PATH
+```
+If Isabelle is in your home directory, use `$HOME/Isabelle2026-RC2/bin` in place of `/opt/isabelle/bin`.
+
 ## 4. Check the environment
 
 1. Go to the experiment folder:
