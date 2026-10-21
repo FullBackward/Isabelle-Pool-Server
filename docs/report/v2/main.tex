@@ -504,8 +504,12 @@ of one more session: 894\,MB on HOL, 1084\,MB on HOL-Library and
 grows from 3.6\,GB at one session to 5.3\,GB at 32, so the fixed cost is
 not constant, but its growth is small against the sessions. A 100\,GB
 budget holds 110 HOL, 90 HOL-Library or 77 HOL-Analysis sessions. The
-concurrent re-check of all k theories adds 1--3\,\% to the settled
-footprint, because it runs inside each prover's existing heap.
+same fit on the processes' summed PSS gives per-session costs within 1\,\%
+of the host-used ones, so the process view accounts for everything the
+host loses. The concurrent re-check of all k theories
+(Figure~\ref{fig:peak}, Appendix~\ref{app:bench}) adds 1--3\,\% to the
+settled per-session cost under IPS, because it runs inside each prover's
+existing heap; under PIDE MCP it adds 4--28\,\%, most on HOL-Library.
 
 \begin{figure}[!htb]
 \centering
@@ -520,29 +524,33 @@ footprint, because it runs inside each prover's existing heap.
 
 \begin{table}[!htb]
 \centering\small
-\begin{tabular}{@{}llrrrrr@{}}
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{@{}llrrrrrrr@{}}
 \toprule
-Tool & Heap & \shortstack{MB per\\session} & \shortstack{Fixed\\MB} & \shortstack{Sessions\\per 100\,GB} & \shortstack{Start\\p50/p95 s} & \shortstack{Load\\p50/p95 s} \\
+Tool & Heap & \shortstack{MB per\\session\\(host)} & \shortstack{Fixed\\MB\\(host)} & \shortstack{MB per\\session\\(PSS)} & \shortstack{Peak MB\\per session\\(PSS)} & \shortstack{Sessions\\per\\100\,GB} & \shortstack{Start\\p50/p95 s} & \shortstack{Load\\p50/p95 s} \\
 \midrule
-IPS & HOL & 894 & 3183 & 110 & 2.3 / 3.9 & 3.1 / 4.1 \\
-IPS & HOL-Library & 1084 & 3740 & 90 & 3.4 / 5.1 & 9.2 / 10.0 \\
-IPS & HOL-Analysis & 1271 & 3541 & 77 & 6.0 / 8.2 & 6.8 / 7.5 \\
+IPS & HOL & 894 & 3183 & 886 & 887 & 110 & 2.3 / 3.9 & 3.1 / 4.1 \\
+IPS & HOL-Library & 1084 & 3740 & 1077 & 1092 & 90 & 3.4 / 5.1 & 9.2 / 10.0 \\
+IPS & HOL-Analysis & 1271 & 3541 & 1263 & 1267 & 77 & 6.0 / 8.2 & 6.8 / 7.5 \\
 \midrule
-PIDE MCP A & HOL & 1279 & 1876 & 78 & 2.0 / 3.2 & 1.2 / 2.2 \\
-PIDE MCP A & HOL-Library & 1513 & 2467 & 66 & 3.0 / 4.3 & 7.2 / 7.4 \\
-PIDE MCP A & HOL-Analysis & 1476 & 2671 & 67 & 5.8 / 7.1 & 1.1 / 1.4 \\
+PIDE MCP A & HOL & 1279 & 1876 & 1266 & 1320 & 78 & 2.0 / 3.2 & 1.2 / 2.2 \\
+PIDE MCP A & HOL-Library & 1513 & 2467 & 1495 & 1915 & 66 & 3.0 / 4.3 & 7.2 / 7.4 \\
+PIDE MCP A & HOL-Analysis & 1476 & 2671 & 1461 & 1602 & 67 & 5.8 / 7.1 & 1.1 / 1.4 \\
 \midrule
-PIDE MCP B & HOL & 2665 & $-581$ & 38 & 3.1 / 3.2 & 1.4 / 1.5 \\
-PIDE MCP B & HOL-Library & 3047 & $-620$ & 33 & 4.1 / 4.2 & 7.3 / 8.3 \\
-PIDE MCP B & HOL-Analysis & 3660 & $-232$ & 28 & 6.7 / 7.3 & 1.3 / 1.4 \\
+PIDE MCP B & HOL & 2665 & $-581$ & 2630 & 2712 & 38 & 3.1 / 3.2 & 1.4 / 1.5 \\
+PIDE MCP B & HOL-Library & 3047 & $-620$ & 3017 & 3466 & 33 & 4.1 / 4.2 & 7.3 / 8.3 \\
+PIDE MCP B & HOL-Analysis & 3660 & $-232$ & 3604 & 3753 & 28 & 6.7 / 7.3 & 1.3 / 1.4 \\
 \bottomrule
 \end{tabular}
 \caption{Capacity and latency from the E1 matrix: least-squares marginal
-  and fixed memory on host used over k\,=\,1\ldots32 (18 cells per row),
-  sessions in a 100\,GB budget, and start and load latencies. A negative
-  fixed cost is the intercept of a straight fit through points that all
-  carry at least one JVM; PIDE MCP B has no process at k\,=\,0. Fits on
-  summed PSS agree with these within 1\,\% (Appendix~\ref{app:bench}).}
+  and fixed memory over k\,=\,1\ldots32 (18 cells per row) on host used
+  and on summed PSS after the loads, the marginal PSS at the concurrent
+  re-check (peak), sessions in a 100\,GB budget on the host slope, and
+  start and load latencies. A negative fixed cost is the intercept of a
+  straight fit through points that all carry at least one JVM; PIDE MCP B
+  has no process at k\,=\,0. The PSS fixed costs are 3.7--4.3\,GB for IPS,
+  2.5--3.3\,GB for PIDE MCP A and 0--0.5\,GB for PIDE MCP B
+  (Appendix~\ref{app:bench}).}
 \label{tab:capacity}
 \end{table}
 
@@ -1193,6 +1201,15 @@ PIDE MCP B & HOL-Analysis & 32 & 117851 & 116454 & 120589 & 71663 & 6.6 & 1.3 & 
   re-check (P5).}
 \label{tab:raw}
 \end{table}
+
+\begin{figure}[!htb]
+\centering
+\includegraphics[width=\textwidth]{figures/pss_peak_mb.png}
+\caption{Summed PSS of the tool's processes at the concurrent re-check of
+  all k theories (P5 peak), against k; one panel per heap, three repeats
+  per point.}
+\label{fig:peak}
+\end{figure}
 
 \paragraph{Raw results, E3.} Table~\ref{tab:raw-e3} gives the scope's
 \code{memory.current} after each session loaded. IPS: 27 admitted,
