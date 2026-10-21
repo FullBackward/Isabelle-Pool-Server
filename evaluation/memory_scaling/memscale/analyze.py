@@ -35,7 +35,7 @@ def load_cells(results: Path) -> List[Dict[str, Any]]:
             continue
         with open(manifest, "r", encoding="utf-8") as fh:
             m = dict(json.load(fh))
-        if m.get("experiment") or "phases" not in m:
+        if m.get("experiment") or "k" not in m:
             continue  # E2–E4 outputs (warm_hit / pressure / kill_probe) are not cells
         rows = []
         with open(samples, "r", encoding="utf-8") as fh:
