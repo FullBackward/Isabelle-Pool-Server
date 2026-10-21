@@ -30,6 +30,39 @@ E2–E4 complete). Everything here is deterministic (no LLM). Experiment code: `
   steady state = median of the last 30 s of a phase. k ∈ {1, 2, 4, 8, 16, 32}, 3 repeats at every k
   (162 cells); series stop at 110 GB host used (never reached).
 
+## Memory measures: RSS, PSS and USS
+
+Linux gives three sizes for the physical memory of one process, and they differ exactly where this experiment
+needs care: in what is shared. A process's address space is a set of mappings; a mapping is either anonymous
+(the heap the process allocated itself) or file-backed (an executable, a library, or — for Isabelle — the
+session heap image such as `HOL.heap`, which every `poly` process of that session maps from disk). The kernel
+keeps one physical copy of a file-backed page and lets every process that maps it share that copy until a
+process writes to it (copy-on-write); it also shares anonymous pages between a parent and a forked child the
+same way.
+
+- **RSS** (resident set size) counts every physical page the process currently has mapped, shared or not.
+  Adding RSS over 32 provers counts a shared heap page 32 times, so a sum of RSS overstates what the machine
+  spends.
+- **PSS** (proportional set size) counts a page shared by *n* processes as 1/*n* for each of them. Summed over
+  all processes of a tool, PSS equals the physical memory those processes really occupy; summed over the whole
+  machine it adds up to what the machine uses. The kernel reports it per process in
+  `/proc/<pid>/smaps_rollup` (`Pss:`, plus `Pss_Anon`/`Pss_File`/`Pss_Shmem`).
+- **USS** (unique set size, `Private_Clean + Private_Dirty` in `smaps_rollup`) counts only pages no other
+  process maps: what the system would get back if that one process exited.
+
+Why PSS is the headline here: two Isabelle provers on the same heap genuinely share part of their memory
+(the untouched pages of the heap image), and PSS is the one measure that credits them for it, so a per-session
+cost measured on PSS is the cost the machine pays. It has one known artefact: when k grows, each shared page
+is split over more processes, so the PSS of any single process falls while the sum stays right. That is why
+the report fits the *sum* over the tool's processes and never compares single-process PSS across k.
+
+Two independent checks sit beside PSS. **Host used** (`MemTotal − MemAvailable` from `/proc/meminfo`) is the
+kernel's own answer to "how much of the machine is gone", including page cache and anything the sampler could
+not attribute to a process; it is reported as the change over the cell's baseline. The PSS slope and the
+host-used slope agree within 1 % in every series of E1, which is the evidence that the process view misses
+nothing. The **cgroup** counters (`memory.current`, `memory.peak`, `memory.events oom_kill` of the systemd scope
+the tool runs in) are what a memory limit is enforced on; they carry the E3 result.
+
 ## What was measured
 
 - Per process under each tool (one external `/proc` sampler, `smaps_rollup`): RSS, **PSS** (the headline:
