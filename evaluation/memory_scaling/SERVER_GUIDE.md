@@ -164,6 +164,12 @@ server. Do not increase this limit.
 
 1. Pack the results:
    ```bash
+   GH_TOKEN=<token> scripts/30_release_results.sh
+   ```
+   The script packs `results/` and attaches the archive to a GitHub Release of the repository. It
+   prints the download link. Give a name with `TAG=<name>` to make a second release on the same
+   day. Without a token, pack by hand:
+   ```bash
    tar czf memory-scaling-results.tgz results/
    ```
 2. Copy the archive to your computer.

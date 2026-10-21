@@ -95,7 +95,8 @@ scripts/13_run_e4_kill.sh                    # kill one prover among 8; do the o
 
 ```bash
 scripts/20_analyze.sh            # results/tables/*.csv, results/plots/*.png, results/REPORT_SNIPPET.md
-tar czf memory-scaling-results.tgz results/   # copy back; the snippet's tables go into the report section
+GH_TOKEN=... scripts/30_release_results.sh    # packs results/ and attaches it to a GitHub Release (asset <= 2 GB)
+tar czf memory-scaling-results.tgz results/   # or copy back by hand; the snippet's tables go into the report section
 ```
 
 ## Fairness rules the scripts enforce
