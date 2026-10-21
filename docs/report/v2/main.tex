@@ -53,115 +53,127 @@
 
 % ======================================================================
 \begin{abstract}
-Isabelle Pool Server (IPS) maintains a pool of warm Isabelle sessions, each
-a headless instance of PIDE, Isabelle's asynchronous document model.
-Sessions are handed to clients over HTTP through a lease protocol that
-gives each client exclusive use of a session while the pool serves many
-clients at once. Clients reach the pool through a Python client or through
-two bundled MCP servers, one that verifies proof chunks the agent submits
-and one that follows a theory file the agent edits on disk, so coding
-agents use IPS as readily as training harnesses do. IPS plays the role for
-Isabelle that Kimina Lean Server plays for Lean: a verification service
-built for training and evaluating LLM provers at scale and for many agents
-sharing one prover host, rather than an interactive front-end for a single
-agent such as PIDE MCP. It adds to the Kimina design what PIDE makes
-possible: interactive sessions with checkpoints and rollback, per-command
-results, and a whole-file build as the final arbiter of what counts as
-proved. We measure IPS and PIDE MCP on one 128\,GB host with 1 to 32
-concurrent sessions on three heaps: a session costs 0.9--1.3\,GB under IPS
-and 1.3--1.5\,GB under PIDE MCP in its intended one-process shape, or
-2.7--3.7\,GB when each agent runs its own PIDE MCP process; under a 48\,GB
-limit IPS admits 27 HOL-Analysis sessions and refuses the next with a
-reason, where one process per agent reaches 13 and the kernel then kills
-four of them. IPS is free software, available at
+We present Isabelle Pool Server (IPS), a verification service for
+Isabelle/HOL built for two users that existing Isabelle connectors do not
+serve: training loops for LLM provers and groups of agents sharing one
+prover host. IPS keeps a pool of warm Isabelle sessions, each a headless
+instance of PIDE, Isabelle's document model, and leases them to clients
+over HTTP, one client per session at a time. Every call runs under a
+wall-clock budget. A session offers three verification modes, one command
+at a time, a proof chunk checked as one transaction, and a whole-file
+build as the final arbiter, together with checkpoints and rollback.
+Clients use a Python client or one of two bundled MCP servers. We
+measured IPS and PIDE MCP, the other headless PIDE connector, on one
+128\,GB host with 1 to 32 concurrent sessions on three heaps. A session
+costs 0.9--1.3\,GB under IPS and 1.3--1.5\,GB under PIDE MCP in its
+intended one-process shape, or 2.7--3.7\,GB when each agent runs its own
+PIDE MCP process. Under a 48\,GB limit, IPS admits 27 HOL-Analysis
+sessions and refuses the next with a reason; one PIDE MCP process per
+agent reaches 13, and the kernel then kills four of them. A released IPS
+session is handed to the next client in 2\,ms. IPS is free software:
 \url{https://github.com/FullBackward/Isabelle-Pool-Server}.
 \end{abstract}
 
 % ======================================================================
 \section{Introduction}
 
-Proof assistants are now driven by machines more than by people, mostly in
-two ways. Training an LLM prover means verifying thousands of candidate
-proof steps per hour. Every Isabelle prover since LISA has done this
-through PISA-style read-eval-print loops, one Isabelle process per
+Machines now drive proof assistants more than people do, in two ways.
+Training an LLM prover means verifying thousands of candidate proof steps
+per hour. Every Isabelle prover since LISA has done this through
+PISA-style read-eval-print loops, one Isabelle process per
 worker~\cite{jiang2021lisa,jiang2022thor,jiang2023dsp,mikula2024magnushammer},
-and their authors name the cost of attempts as what limits
-them~\cite{jiang2023dsp,mikula2024magnushammer}. Running coding agents
+and their authors name the cost of attempts as the limiting
+factor~\cite{jiang2023dsp,mikula2024magnushammer}. Running coding agents
 means many agents reaching the prover over the Model Context Protocol
 (MCP)~\cite{anthropic2024mcp} and sharing machines that can each hold a
 few Isabelle heaps. Lean has infrastructure for both: Kimina Lean Server
 pools REPL workers for reinforcement
 learning~\cite{santos2025kimina,deepseek2024proverv15}, and AXLE hosts
 isolated, strictly checked verification for agents and training
-alike~\cite{xin2026axle}. Isabelle has none. Its connectors expose PIDE,
-the document model behind Isabelle's editors~\cite{wenzel2014pide}, to one
-agent at a time: Isabelle/Q~\cite{awslabs2026autocorrode} inside a human's
-editor session, PIDE MCP~\cite{kappelmann2026pidemcp} as a headless process
-per agent.
+alike~\cite{xin2026axle}. Isabelle has neither. Its connectors expose
+PIDE, the document model behind Isabelle's editors~\cite{wenzel2014pide},
+to one agent at a time: Isabelle/Q~\cite{awslabs2026autocorrode} inside a
+human's editor session, PIDE MCP~\cite{kappelmann2026pidemcp} as a
+headless process per agent.
 
-The two jobs need the same service. A training loop branches at a proof
-state, discards most of what it tries, and must bound every step so that no
-attempt stalls a worker. It also needs a verdict it can trust, since a
-verifier that accepts an unfinished proof corrupts the
-reward~\cite{deepseek2025proverv2,xin2026axle}. An agent harness needs each
-agent isolated from the others, a session ready when asked, calls that
-return within a known time, and access over the network. Both need someone
-to decide who gets a session, when it is taken back, and what happens when
-memory runs out. Section~\ref{sec:readers} states these requirements as the
-questions each reader asks and the metric that answers each.
+The two workloads need the same service. A training loop branches at a
+proof state, discards most of what it tries, and must bound every step so
+that no attempt stalls a worker. It needs a verdict it can trust, because
+a verifier that accepts an unfinished proof corrupts the
+reward~\cite{deepseek2025proverv2,xin2026axle}. An agent harness needs
+each agent isolated from the others, a session ready on request, calls
+that return within a known time, and access over the network. Both need
+a component that decides who gets a session, when it is taken back, and
+what happens when memory runs out.
 
-Isabelle Pool Server (IPS) is a pooled verification service that makes
-those decisions. It keeps a pool of warm headless PIDE sessions, leases them
-to clients over HTTP, one client per session at a time, reclaims idle and
-abandoned leases, and gates admission on memory. Because a PIDE session is
-a document rather than a command stream~\cite{wenzel2012repl}, IPS offers
-what a REPL pool does not: a failed attempt is rolled back as if never
-submitted, a checkpoint is restored exactly, a proof chunk is checked as
-one edit with parallel proof checking on, and a whole file can be rebuilt
-from a cold heap as the final arbiter of what counts as proved
-(Section~\ref{sec:arch}). Every wait on the prover runs under a wall-clock
-budget. Training harnesses reach the pool through a Python client; agents
-reach it through two bundled MCP servers, one that verifies submitted proof
-chunks and one that follows a theory file the agent edits on disk
-(Section~\ref{sec:serving}).
+IPS is a pooled verification service that makes those decisions. It keeps
+a pool of warm headless PIDE sessions, leases them to clients over HTTP,
+reclaims idle and abandoned leases, and gates admission on memory. Because
+a PIDE session is a document rather than a command
+stream~\cite{wenzel2012repl}, IPS offers what a REPL pool cannot: a failed
+attempt is rolled back as if never submitted, a checkpoint is restored
+exactly, a proof chunk is checked as one edit with parallel proof checking
+on, and a whole file can be rebuilt from a cold heap as the final verdict.
+Every wait on the prover runs under a wall-clock budget. Training
+harnesses use a Python client; agents use one of two bundled MCP servers,
+one that verifies submitted proof chunks and one that follows a theory
+file the agent edits on disk.
 
-The report describes IPS as its users see it (Section~\ref{sec:arch}),
-states what the training reader needs and what remains to be measured for
-them (Section~\ref{sec:training}), measures the operator's questions on a
-128\,GB host (Section~\ref{sec:serving}), sets IPS beside PIDE MCP, the
-other headless PIDE connector, on the same measurements and on what each
-can do (Section~\ref{sec:comparison}), and positions both among Isabelle
-connectors (Section~\ref{sec:position}). The quickstart, the feature
-inventory, the experiment method with its raw results, deployment and how
-the server works are in the appendices.
+We write for two readers, the \emph{training reader} who builds or
+evaluates an LLM prover and the \emph{operator} who runs a shared Isabelle
+host, and we state each reader's requirements as metrics before reporting
+on them (Section~\ref{sec:readers}). Our contributions are:
+\begin{enumerate}
+  \item \textbf{A pooled PIDE service.} Leased sessions with budgets,
+    transactional chunk verification, checkpoints and rollback, a cold
+    build as arbiter, memory-gated admission, and a Python client plus two
+    MCP servers (Section~\ref{sec:arch}).
+  \item \textbf{Measurements for the operator.} Memory per session,
+    acquire latency, behaviour under a memory limit and crash containment
+    on a 128\,GB host, for IPS and, under identical conditions, for PIDE
+    MCP (Sections~\ref{sec:serving} and~\ref{sec:comparison}).
+  \item \textbf{A comparison with PIDE MCP.} The design choices that
+    separate the two headless PIDE connectors, what each can do that the
+    other cannot, and a feature inventory (Section~\ref{sec:comparison},
+    Appendix~\ref{app:inventory}).
+  \item \textbf{An open implementation.} The service, the experiment
+    harness and the raw results are public (Appendix~\ref{app:bench}).
+\end{enumerate}
+The training reader's metrics are stated but not yet measured
+(Section~\ref{sec:training}). Section~\ref{sec:position} places IPS among
+Isabelle connectors; Section~\ref{sec:limitations} lists its limits.
 
 % ======================================================================
-\section{Readers and metrics}
+\section{Requirements and metrics}
 \label{sec:readers}
 
 \subsection{Two readers}
 
-This report is written for two readers.
-\begin{itemize}
-    \item The \textbf{\emph{training reader}} builds or evaluates an LLM-based prover: their loop samples candidate steps, submits them, and learns from the verdicts. They judge IPS by what it does to that loop, in verified steps per hour, time per verdict, the cost of branching, and whether ``proved'' can be trusted as a reward.
-    \item The \textbf{\emph{operator}} runs one Isabelle host that several agents or harnesses share. They judge IPS by capacity and conduct under load, in sessions per host, wait for a session, heap rebuilds, and behaviour when memory runs out.
-\end{itemize}
+The \textbf{training reader} builds or evaluates an LLM prover. Their
+loop samples candidate steps, submits them, and learns from the verdicts.
+They judge IPS by what it does to that loop: verified steps per hour,
+time per verdict, the cost of branching, and whether ``proved'' can be
+trusted as a reward.
 
-A third reader, the single agent working interactively beside a
-human, is the one the PIDE MCP preprint's desiderata
-describe~\cite{kappelmann2026pidemcp}; IPS does not primarily serve that
-reader, and Sections~\ref{sec:comparison} and~\ref{sec:position} make the
+The \textbf{operator} runs one Isabelle host that several agents or
+harnesses share. They judge IPS by capacity and by conduct under load:
+sessions per host, wait for a session, heap rebuilds, and behaviour when
+memory runs out.
+
+A third reader, the single agent working interactively beside a human, is
+the one the PIDE MCP preprint's desiderata
+describe~\cite{kappelmann2026pidemcp}. IPS does not primarily serve that
+reader; Sections~\ref{sec:comparison} and~\ref{sec:position} make the
 comparison.
 
-\subsection{The metrics}
+\subsection{Metrics}
 
 Table~\ref{tab:metrics} turns each reader's questions into the metrics
 that Sections~\ref{sec:training} and~\ref{sec:serving} report, with the
 procedure for each in Appendix~\ref{app:bench}. This version measures the
-operator's metrics; the training reader's are pending and marked so.
-Agent success on a benchmark is a property of the agent and its prompt,
-not of the service, and appears only as a worked example in
-Section~\ref{sec:position}.
+operator's metrics; the training reader's are pending. Agent success on
+a benchmark measures the agent and its prompt rather than the service, so
+it appears only as a worked example in Section~\ref{sec:position}.
 
 \begin{table}[t]
 \centering\small
@@ -189,8 +201,11 @@ Are agents isolated from each other? & isolation & crash containment: do the oth
 \end{table}
 
 % ======================================================================
-\section{Using IPS}
+\section{Service overview}
 \label{sec:arch}
+
+This section describes IPS as a client sees it. Figure~\ref{fig:arch}
+shows the parts.
 
 \begin{figure}[!htb]
 \centering
@@ -231,132 +246,132 @@ Are agents isolated from each other? & isolation & crash containment: do the oth
   through the Python client; an agent through one of the two bundled MCP
   servers. The pool holds warm Isabelle sessions and leases each to one
   client at a time (session A). A released session stays warm for the
-  next client with the same imports (session B). A new session is started
+  next client with the same imports (session B). A new session starts
   only when no warm one matches and the host has memory for it
   (session C). Every call into a session runs under a time budget.}
 \label{fig:arch}
 \end{figure}
 
-\subsection{A session is the unit of work}
+\subsection{Sessions and leases}
 
 A client works with a \emph{session}: a running Isabelle, loaded with the
 imports the client asked for, holding one theory the client builds up by
 submitting text. The client never starts Isabelle and never sees a file.
-Three things about a session are fixed: its imports cannot change, its
-document is one theory rather than a project, and it is exclusively the
-client's for the life of its lease. A training harness reaches sessions
+Three properties of a session are fixed: its imports cannot change, its
+document is one theory rather than a project, and it belongs to one
+client for the life of its lease. A training harness reaches sessions
 through the Python client; an agent through the \emph{stepwise} MCP
 server, which verifies chunks the agent submits, or the \emph{file} MCP
 server, which follows a theory file the agent edits with its own tools.
 
-\subsection{Getting one is usually instant}
+\subsection{Acquiring a session}
 
 The client names the imports it needs. If an idle session with those
-imports exists, it is leased at once: a warm hit takes 2\,ms
-(Section~\ref{sec:serving}). Otherwise the pool starts one, which takes
-2 to 6 seconds on a built heap, or refuses with an explanation if the host
-is short of memory. Imports from the Isabelle distribution are always
-available. Imports from the client's own project need a heap that IPS
-builds once on request and reuses until the project's sources change.
-Leases expire and idle sessions are reclaimed, so a client that forgets
-to release does not hold a session forever.
+imports exists, it is leased at once; a warm hit takes 2\,ms
+(Section~\ref{sec:serving-measured}). Otherwise the pool starts one, which
+takes 2 to 6 seconds on a built heap, or refuses with an explanation if
+the host is short of memory. Imports from the Isabelle distribution are
+always available. Imports from the client's own project need a heap that
+IPS builds once on request and reuses until the project's sources change.
+Leases expire and idle sessions are reclaimed, so a client that fails to
+release does not hold a session indefinitely.
 
-\subsection{Three ways to check a proof}
+\subsection{Verification modes}
 
 \begin{itemize}
   \item \emph{One command at a time}, for a loop that wants the proof
-    state after each step; the step is undone if it fails or times out.
-  \item \emph{A proof chunk} (\code{verify\_chunk}), a block of Isar
+    state after each step. A failed or timed-out step is undone.
+  \item \emph{A proof chunk} (\code{verify\_chunk}): a block of Isar
     submitted at once. IPS checks it as one unit, reports each command's
-    status, and says whether the proof is still open and whether
-    \code{sorry} was used; if any command fails, the whole block is
+    status, and states whether the proof is still open and whether
+    \code{sorry} was used. If any command fails, the whole block is
     undone. This is the call a training loop uses.
   \item \emph{A whole file}, rebuilt from scratch in a fresh Isabelle,
     for a verdict that must be final. It is slower, stateless and cached.
 \end{itemize}
 Between submissions the client can read goals, open proofs, facts in
 scope, or a Sledgehammer suggestion without changing the document; take a
-\emph{checkpoint} and later \emph{restore} it, so a search can branch and
-backtrack without a new session; or \emph{roll back} the last submission.
+\emph{checkpoint} and later \emph{restore} it, so a search branches and
+backtracks without a new session; or \emph{roll back} the last submission.
 
-\subsection{What ``proved'' means}
+\subsection{Verdict semantics}
 
-IPS keeps the question ``did anything error'' separate from the question
-``is the theorem proved'', because the two are not the same. A chunk
-succeeds when no command in it errored. It is \emph{proved} when it
-succeeded, left no proof open, and used no \code{sorry}, and the client
-reads this from the three flags IPS returns. When a verdict matters beyond
-the current loop, the whole-file check is the arbiter, because an
-in-session check can accept a step that a fresh build rejects.
+IPS separates ``did anything error'' from ``is the theorem proved''. A
+chunk \emph{succeeds} when no command in it errored. It is \emph{proved}
+when it succeeded, left no proof open, and used no \code{sorry}; the
+client reads this from three flags in the response. When a verdict
+matters beyond the current loop, the whole-file check is the arbiter,
+because an in-session check can accept a step that a fresh build rejects.
 
-\subsection{What to expect from time}
+\subsection{Time budgets}
 
-Every call that waits on Isabelle has a time budget, chosen by the client
-and enforced by the server. A call that runs out of budget returns a
+Every call that waits on Isabelle carries a budget, chosen by the client
+and enforced by the server. A call that exceeds its budget returns a
 timeout, undoes what it submitted, and leaves the session usable. No
-submission, whatever it contains, can hold a session or a worker
-indefinitely. This is the guarantee a training loop and an agent harness
-both rely on, and it is the main point on which IPS differs from an
-interactive connector such as PIDE MCP, which bounds nothing by design
-(Section~\ref{sec:comparison}). How the server keeps these guarantees is in
-Appendix~\ref{app:code}; how it is configured is in
-Appendix~\ref{app:deploy}.
+submission can hold a session or a worker indefinitely. This guarantee is
+what a training loop and an agent harness both rely on, and it is the
+main point on which IPS differs from an interactive connector such as
+PIDE MCP, which bounds nothing by design (Section~\ref{sec:comparison}).
+Appendix~\ref{app:code} explains how the server keeps these guarantees;
+Appendix~\ref{app:deploy} how it is configured.
 
 % ======================================================================
-\section{For the training reader: training and evaluation}
+\section{Training workloads}
 \label{sec:training}
 
-\subsection{What you need}
+This section is for the training reader. It states what a training loop
+needs from a verification service, how IPS provides it, and which of the
+resulting metrics we have measured.
+
+\subsection{Requirements}
 
 A training loop, whether reinforcement learning, expert iteration or
 search, has one shape: sample candidate steps, submit them, learn from
-the verdicts, repeat. From the service it needs four things.
+the verdicts, repeat. It needs four things from the service.
 
-\paragraph{Verdicts at the sampler's rate.} Thor issues up to
-300 model queries per theorem~\cite{jiang2022thor}; DeepSeek-Prover-V2
-samples 32 candidate proofs per problem at every reinforcement-learning
+\paragraph{Verdicts at the sampler's rate.} Thor issues up to 300 model
+queries per theorem~\cite{jiang2022thor}; DeepSeek-Prover-V2 samples 32
+candidate proofs per problem at every reinforcement-learning
 step~\cite{deepseek2025proverv2}. A Lean pool answers one such request in
-about 0.05 seconds on 64 cores~\cite{santos2025kimina}, which is the
-number an Isabelle reader will want to set IPS beside.
+about 0.05 seconds on 64 cores~\cite{santos2025kimina}; that is the
+reference point for an Isabelle service.
 
-\paragraph{Cheap branching at a proof state.} Best-first and tree search in
-Thor~\cite{jiang2022thor}, Magnushammer~\cite{mikula2024magnushammer} and
-DeepSeek-Prover-V1.5~\cite{deepseek2024proverv15} all branch; in a REPL,
-every branch is a replay from the start or a fresh process.
+\paragraph{Cheap branching at a proof state.} Best-first and tree search
+in Thor~\cite{jiang2022thor}, Magnushammer~\cite{mikula2024magnushammer}
+and DeepSeek-Prover-V1.5~\cite{deepseek2024proverv15} all branch. In a
+REPL, every branch is a replay from the start or a fresh process.
 
-\paragraph{A bound on every step.} Every system in the lineage bounds each prover
-call, from 2 seconds in Magnushammer~\cite{mikula2024magnushammer} to 300
-in DeepSeek-Prover~\cite{deepseek2024proverv15}, because one looping
-tactic otherwise takes a worker out of the pool.
+\paragraph{A bound on every step.} Every system in this lineage bounds
+each prover call, from 2 seconds in
+Magnushammer~\cite{mikula2024magnushammer} to 300 in
+DeepSeek-Prover~\cite{deepseek2024proverv15}, because one looping tactic
+otherwise removes a worker from the pool.
 
-\paragraph{A verdict that means what the reward assumes.} DeepSeek-Prover-V2 traced
-inflated benchmark results to a Lean bug that failed to report
-\code{sorry}~\cite{deepseek2025proverv2}; AXLE's strict verifier exists
-because compilation alone accepts \code{sorry}, unsound axioms and
-restated theorems~\cite{xin2026axle}. IPS had its own instance: an
-in-session check once accepted a \code{metis} call that a fresh build
-rejected.
+\paragraph{A verdict that means what the reward assumes.}
+DeepSeek-Prover-V2 traced inflated benchmark results to a Lean bug that
+failed to report \code{sorry}~\cite{deepseek2025proverv2}; AXLE's strict
+verifier exists because compilation alone accepts \code{sorry}, unsound
+axioms and restated theorems~\cite{xin2026axle}. IPS had its own
+instance: an in-session check once accepted a \code{metis} call that a
+fresh build rejected.
 
-\subsection{How IPS provides it}
+\subsection{Design}
 
 The loop acquires one session per worker and keeps it for the run. Each
-candidate is submitted as a chunk; the per-command report says which step
-failed, and a failed chunk leaves the session as it was, so the next
-candidate is submitted to the same state without cleanup. To branch, the
-loop takes a checkpoint at the proof state, tries a continuation, and
-restores the checkpoint before trying the next; both operations are
-document edits, not session restarts. Every submission carries a budget,
-and a submission that exceeds it is undone and reported as a timeout, so a
-worker is never lost to a runaway step. The reward reads the three flags
-from the chunk report: success, no open proof, no \code{sorry}. For
-evaluation, where a verdict is final, the loop submits the completed
-theory to the whole-file check, which rebuilds it from a cold heap.
-
-For batch evaluation without session state, the stepwise MCP server's
-\code{verify\_batch} tool and the HTTP batch route fan a set of candidates
-out across the pool and return their verdicts together.
-
-Figure~\ref{fig:rollout} shows the loop as a client sees it.
+candidate is submitted as a chunk. The per-command report names the step
+that failed, and a failed chunk leaves the session unchanged, so the next
+candidate goes to the same state without cleanup. To branch, the loop
+takes a checkpoint at the proof state, tries a continuation, and restores
+the checkpoint before the next; both are document edits, not session
+restarts. Every submission carries a budget; one that exceeds it is
+undone and reported as a timeout, so no worker is lost to a runaway step.
+The reward reads three flags from the chunk report: success, no open
+proof, no \code{sorry}. For evaluation, where a verdict is final, the
+loop submits the completed theory to the whole-file check, which rebuilds
+it from a cold heap. For batch evaluation without session state, the
+stepwise MCP server's \code{verify\_batch} tool and the HTTP batch route
+fan a set of candidates out across the pool and return their verdicts
+together. Figure~\ref{fig:rollout} shows the loop as a client sees it.
 
 \begin{figure}[!htb]
 \centering
@@ -367,14 +382,14 @@ continue, release; one box per call, with the budget on the verify call}
 \label{fig:rollout}
 \end{figure}
 
-\subsection{What we measured}
+\subsection{Results}
 
-The training reader's five metrics are not measured in this version. What
-this version does establish for that reader is the memory and latency
-envelope of Section~\ref{sec:serving}: a worker's session costs
-0.9--1.3\,GB, a cold session takes 2 to 6 seconds, and a released session
-is handed back in 2\,ms. The runs below use the hardware, Isabelle build
-and IPS commit recorded in Appendix~\ref{app:bench}.
+We have not yet measured the training reader's five metrics. What this
+version establishes for that reader is the envelope of
+Section~\ref{sec:serving}: a worker's session costs 0.9--1.3\,GB, a cold
+session takes 2 to 6 seconds, and a released session is handed back in
+2\,ms. The runs below will use the hardware, Isabelle build and IPS
+commit recorded in Appendix~\ref{app:bench}.
 
 \paragraph{Throughput.} \todo{verify\_chunk calls per minute at 1, 2, 4, 8
 and 16 workers on the training corpus; plot of throughput against workers;
@@ -398,100 +413,99 @@ the cold import set).}
 on a corpus seeded with non-terminating tactics; time from timeout to the
 next successful call on the same session.}
 
-\subsection{What to watch out for}
+\subsection{Caveats}
 
 Imports are fixed when a session is acquired, so a curriculum that mixes
-problems with different imports needs a session per import set, or a
-single session on a superset of the imports. The one-command granularity
-is sequential by nature; a loop that wants Isabelle's parallel checking
-should submit chunks. A budget expiry undoes the submission silently from
-the document's point of view: the timeout is in the response, and a loop
-that ignores it will submit its next step to an older state than it
-expects. Finally, the in-session verdict is the fast one and the cold
-build is the final one; a reward computed only in-session should be
-spot-checked against the cold build at the rate Section~\ref{sec:training}
-will report for agreement.
+import sets needs a session per set or one session on a superset. The
+one-command mode is sequential; a loop that wants Isabelle's parallel
+checking should submit chunks. A budget expiry undoes the submission
+silently from the document's point of view: the timeout is in the
+response, and a loop that ignores it submits its next step to an older
+state than it expects. The in-session verdict is the fast one and the
+cold build the final one; a reward computed in-session should be
+spot-checked against the cold build at the rate the agreement metric will
+report.
 
 % ======================================================================
-\section{For the operator: pooled multi-agent serving}
+\section{Multi-agent serving}
 \label{sec:serving}
 
-\subsection{What you need}
+This section is for the operator. It states what a shared host needs
+from the service, how IPS provides it, and reports the measurements.
+
+\subsection{Requirements}
 
 An operator runs one host for several agents or harnesses, usually
-without knowing how many will be active or what they will import. From
-the service they need predictability on four counts.
+without knowing how many will be active or what they will import. They
+need predictability on four counts.
 
-\paragraph{A known number of sessions, and a known wait.} Kimina's
+\paragraph{A known number of sessions and a known wait.} Kimina's
 motivation was that earlier tools paid an initialisation cost on every
-verification~\cite{santos2025kimina}; for Isabelle the cost is larger,
-since PISA needed a separate 35\,GB copy of Isabelle per concurrent
-process~\cite{jiang2021lisa}. Memory, not cores, is what limits an
-Isabelle host, and a warm hit, a cold start and a heap build differ by
-orders of magnitude.
+verification~\cite{santos2025kimina}. For Isabelle the cost is larger:
+PISA needed a separate 35\,GB copy of Isabelle per concurrent
+process~\cite{jiang2021lisa}. Memory, not cores, limits an Isabelle host,
+and a warm hit, a cold start and a heap build differ by orders of
+magnitude.
 
-\paragraph{No build in the hot path.} Kimina's
-header-keyed cache halved its verification time~\cite{santos2025kimina};
-the heap for an Isabelle project is far more expensive than a Lean
-import, so a miss costs minutes rather than seconds.
+\paragraph{No build in the hot path.} Kimina's header-keyed cache halved
+its verification time~\cite{santos2025kimina}. An Isabelle project heap
+is far more expensive than a Lean import, so a miss costs minutes rather
+than seconds.
 
 \paragraph{Defined behaviour when memory runs out.} Kimina added a
 per-worker memory cap after out-of-memory
-failures~\cite{santos2025kimina}; an Isabelle host has the same failure
+failures~\cite{santos2025kimina}. An Isabelle host has the same failure
 mode with larger processes.
 
 \paragraph{Each client's work kept from the others.} AXLE sandboxes every
 request~\cite{xin2026axle}, and the Isabelle community has proposed
 container and VM setups for agents~\cite{schaeffeler2026safe}. IPS
-isolates by lease, not by process, which is cheaper and weaker, and the
-measurements say what that buys.
+isolates by lease rather than by process, which is cheaper and weaker;
+the isolation measurement below states what it provides.
 
-\subsection{How IPS provides it}
+\subsection{Design}
 
 The pool keeps a configurable number of sessions warm and reuses them
-across clients when imports match, so an agent that asks for a common
-import set usually gets a session that already exists. Admission is gated
-on the container's memory: when usage is above the threshold, the pool
-evicts the least-recently-used idle session first, and refuses a new
-session with an explanation if that is not enough, so the host degrades to
-``busy'' rather than to an out-of-memory kill. Leases expire and idle
-sessions are reaped, so an agent that crashes or forgets to release does
-not hold a session indefinitely. Project heaps are built once, verified by
-fingerprint, and reused by every later session on that project.
-Concurrent Sledgehammer runs are capped by a server-wide limit, since each
-run fans out to several external provers. The service exposes liveness and
-readiness probes, Prometheus metrics and an administrative view, and all
-sessions share one server process, so a crash of that process is detected
-and the pool is rebuilt.
+across clients when imports match. Admission is gated on the container's
+memory: above the threshold the pool first evicts the least-recently-used
+idle session, then refuses a new session with an explanation, so the host
+reports ``busy'' instead of suffering an out-of-memory kill. Leases expire
+and idle sessions are reaped, so an agent that crashes or fails to release
+does not hold a session indefinitely. Project heaps are built once,
+verified by fingerprint, and reused by every later session on that
+project. Concurrent Sledgehammer runs are capped by a server-wide limit,
+since each run fans out to several external provers. The service exposes
+liveness and readiness probes, Prometheus metrics and an administrative
+view. All sessions share one server process; a crash of that process is
+detected and the pool rebuilt.
 
-Agents reach the pool through either MCP server over stdio or
-streamable HTTP, and harnesses through the Python client. All of them use
-the same HTTP API underneath and are subject to the same leases and
-budgets. There is no authentication: IPS assumes a trusted network
-(Appendix~\ref{app:deploy}).
+Agents reach the pool through either MCP server over stdio or streamable
+HTTP, harnesses through the Python client. All use the same HTTP API and
+are subject to the same leases and budgets. There is no authentication:
+IPS assumes a trusted network (Appendix~\ref{app:deploy}).
 
-\subsection{What we measured}
+\subsection{Results}
 \label{sec:serving-measured}
 
 All numbers in this section come from one run on a 32-core, 128\,GB
-Ubuntu host with Isabelle2026-RC2, both tools native, nothing else
-running; the method, the workloads and the per-cell raw results are in
-Appendix~\ref{app:bench}. Each measurement was taken for IPS and, under
-identical conditions, for PIDE MCP; Section~\ref{sec:comparison} reads the
-two side by side, this section reads the IPS numbers.
+Ubuntu host with Isabelle2026-RC2, both tools native and nothing else
+running; Appendix~\ref{app:bench} gives the method, the workloads and the
+per-cell raw results. We took each measurement for IPS and, under
+identical conditions, for PIDE MCP. This section reports the IPS numbers;
+Section~\ref{sec:comparison} reads the two side by side.
 
-\paragraph{Capacity.} Figure~\ref{fig:capacity} shows host memory against
+\paragraph{Capacity.} Figure~\ref{fig:capacity} plots host memory against
 the number of concurrent sessions for three heaps, each session holding a
-checked theory, three repeats at every point. The curves are straight to
+checked theory, three repeats per point. The curves are straight to
 k\,=\,32. A least-squares fit (Table~\ref{tab:capacity}) separates the
 pool's fixed cost, one server process and one gateway JVM, from the cost
 of one more session: 894\,MB on HOL, 1084\,MB on HOL-Library and
-1271\,MB on HOL-Analysis, the prover alone. The gateway JVM grows from
-3.6\,GB at one session to 5.3\,GB at 32, so the fixed cost is not
-constant but its growth is small against the sessions. A 100\,GB budget
-holds 110 HOL, 90 HOL-Library or 77 HOL-Analysis sessions. The concurrent
-re-check of all k theories adds 1--3\,\% to the settled footprint,
-because it runs inside each prover's existing heap.
+1271\,MB on HOL-Analysis, which is the prover alone. The gateway JVM
+grows from 3.6\,GB at one session to 5.3\,GB at 32, so the fixed cost is
+not constant, but its growth is small against the sessions. A 100\,GB
+budget holds 110 HOL, 90 HOL-Library or 77 HOL-Analysis sessions. The
+concurrent re-check of all k theories adds 1--3\,\% to the settled
+footprint, because it runs inside each prover's existing heap.
 
 \begin{figure}[!htb]
 \centering
@@ -499,7 +513,7 @@ because it runs inside each prover's existing heap.
 \caption{Host memory used by the tool's processes, above the host's
   baseline, after every session has loaded and checked its theory, against
   the number of sessions k; one panel per heap, three repeats per point.
-  IPS: one pool; PIDE MCP A: one process holding k sessions; PIDE MCP B:
+  IPS: one pool. PIDE MCP A: one process holding k sessions. PIDE MCP B:
   k processes, one session each.}
 \label{fig:capacity}
 \end{figure}
@@ -525,11 +539,10 @@ PIDE MCP B & HOL-Analysis & 3660 & $-232$ & 28 & 6.7 / 7.3 & 1.3 / 1.4 \\
 \end{tabular}
 \caption{Capacity and latency from the E1 matrix: least-squares marginal
   and fixed memory on host used over k\,=\,1\ldots32 (18 cells per row),
-  sessions in a 100\,GB budget, and the start and load latencies. A
-  negative fixed cost is the intercept of a straight fit through points
-  that all carry at least one JVM; PIDE MCP B has no process at k\,=\,0.
-  Fits on summed PSS agree with these within 1\,\%
-  (Appendix~\ref{app:bench}).}
+  sessions in a 100\,GB budget, and start and load latencies. A negative
+  fixed cost is the intercept of a straight fit through points that all
+  carry at least one JVM; PIDE MCP B has no process at k\,=\,0. Fits on
+  summed PSS agree with these within 1\,\% (Appendix~\ref{app:bench}).}
 \label{tab:capacity}
 \end{table}
 
@@ -537,7 +550,7 @@ PIDE MCP B & HOL-Analysis & 3660 & $-232$ & 28 & 6.7 / 7.3 & 1.3 / 1.4 \\
 cases. A warm hit, a released session handed to the next client with the
 same imports, takes 2\,ms and returned the same session in all 36 trials.
 A cold start on a built heap takes 2 to 6 seconds depending on the heap.
-A heap build is minutes: 114\,s for HOL-Library and 360\,s for
+A heap build takes minutes: 114\,s for HOL-Library and 360\,s for
 HOL-Analysis from the distribution sources on this host, and a project
 heap is of the same order. The three cases differ by three orders of
 magnitude, which is why the pool and the heap cache exist.
@@ -561,95 +574,91 @@ Heap build from sources (once) & 4\,s\footnotemark & 114\,s & 360\,s \\
 \footnotetext{HOL was already built by the Isabelle installation; the
 figure is the check, not a build.}
 
-\paragraph{Cache hit rate.} Not measured: it needs a mix of projects with
+\paragraph{Cache hit rate.} Not measured. It needs a mix of projects with
 their own heaps and a replayed agent workload, which this round did not
-have. What Table~\ref{tab:acquire} does fix is the size of each miss: a
-cold start costs 2 to 6 seconds and a heap build minutes, so one build
-avoided per project pays for hundreds of cold starts.
+include. Table~\ref{tab:acquire} does fix the size of a miss: a cold
+start costs 2 to 6 seconds and a heap build minutes, so one build avoided
+per project pays for hundreds of cold starts.
 
-\paragraph{Pressure.} The server was started in a systemd scope with
-\code{MemoryMax=48G} and HOL-Analysis sessions were added one at a time,
-each loading and checking the theory, until the pool refused. IPS admitted
-27 sessions and refused the 28th with HTTP 503 and a body that names the
+\paragraph{Pressure.} We started the server in a systemd scope with
+\code{MemoryMax=48G} and added HOL-Analysis sessions one at a time, each
+loading and checking the theory, until the pool refused. IPS admitted 27
+sessions and refused the 28th with HTTP 503 and a body that states the
 reason: 38.4\,GB in use (78\,\% of the limit), 10.8\,GB available, and
 the next session's 4\,GB estimate would cross the 85\,\% threshold; every
-running session was leased, so nothing was evictable; retry in 5\,s. No
+running session was leased, so none was evictable; retry in 5\,s. No
 process died (\code{oom\_kill} stayed 0; the scope's peak was 38.4\,GB).
 After the client released half of its sessions, the next session was
-admitted and loaded 8.4\,s later. The host degraded to ``busy'' and back,
-as designed.
+admitted and loaded 8.4\,s later.
 
-\paragraph{Isolation.} With 8 HOL sessions leased, the newest session's
-prover process was killed with SIGKILL, and every session was then asked
-to re-check its theory within 30\,s. The other 7 answered; the victim's
-session returned ``prover process died, the session has been discarded''
-and its slot went back to the pool. The gateway and the server process
-were unaffected. This is the containment a lease gives: a prover death is
-one client's failure, named as such. Cross-lease requests, the other half
-of isolation, are refused by the lease check and were not measured here.
+\paragraph{Isolation.} With 8 HOL sessions leased, we killed the newest
+session's prover process with SIGKILL and asked every session to re-check
+its theory within 30\,s. The other 7 answered. The victim's session
+returned ``prover process died, the session has been discarded'', and
+its slot went back to the pool. The gateway and the server process were
+unaffected. A prover death is thus one client's failure, reported as
+such. Cross-lease requests, the other half of isolation, are refused by
+the lease check; we did not measure them here.
 
-\subsection{What to watch out for}
+\subsection{Caveats}
 
 The trusted-network assumption is real: anyone who can reach the port can
 acquire sessions and, if the ML-command guard is switched off, run
-arbitrary code inside Isabelle. Run IPS behind a network boundary or a
-reverse proxy that authenticates. The administrative page currently inlines
-its token in the rendered page, a known deferred issue
-(Section~\ref{sec:limitations}). All sessions share one server process, so
-recovery after a crash means every client loses its session at once and
-must re-acquire. The admission gate refuses on an \emph{estimate} of the
-next session's size, so with 10\,GB still free it refused rather than
-risked a kill; an operator who wants the last gigabytes used can lower
-the estimate at the cost of that margin. And a project heap is rebuilt
-only on request, so an operator who updates a project's sources should
-trigger the rebuild rather than wait for a client to be refused with a
-stale-heap error.
+arbitrary code inside Isabelle. Run IPS behind a network boundary or an
+authenticating reverse proxy. The administrative page inlines its token
+in the rendered page, a known deferred issue
+(Section~\ref{sec:limitations}). All sessions share one server process,
+so recovery after a crash means every client loses its session at once
+and must re-acquire. The admission gate refuses on an \emph{estimate} of
+the next session's size; with 10\,GB still free it refused rather than
+risk a kill, and an operator who wants that margin used can lower the
+estimate. A project heap is rebuilt only on request, so an operator who
+updates a project's sources should trigger the rebuild rather than wait
+for a client to receive a stale-heap error.
 
 % ======================================================================
-\section{IPS and PIDE MCP side by side}
+\section{Comparison with PIDE MCP}
 \label{sec:comparison}
 
 IPS and PIDE MCP~\cite{kappelmann2026pidemcp} are the two headless PIDE
-connectors for Isabelle. Both start an Isabelle session without an editor,
-drive it through the document model, and expose it to a language model
-over MCP; neither is a REPL. They were built for different readers, and
-this section tries to be fair to both: it names the design choices on
-which they differ and why each is right for its reader, reports the
-measurements taken for both under the same conditions, and lists what
-each can do that the other cannot. Appendix~\ref{app:inventory} has the
-full inventory.
+connectors for Isabelle. Both start an Isabelle session without an
+editor, drive it through the document model, and expose it to a language
+model over MCP; neither is a REPL. They were built for different readers.
+This section names the design choices on which they differ and why each
+is right for its reader, reports the measurements we took for both under
+the same conditions, and lists what each can do that the other cannot.
+Appendix~\ref{app:inventory} gives the full inventory.
 
-\subsection{Three design choices}
+\subsection{Design choices}
 
-\paragraph{Who owns the document.} IPS owns each session's document as a
-string the server appends to; the client never sees a file. That is what
-makes a chunk a transaction (undone as a unit on failure), a checkpoint a
-snapshot and a restore exact, and it is what fixes the imports at session
-start and limits a session to one theory. PIDE MCP treats the files of a
-project on disk as the document: the agent edits them, the server resolves
-dependencies and reports positioned messages. That is what gives project
-scope, file editing and co-presence with a human's editor, and it is why
-there are no transactions, since a file is not undone.
+\paragraph{Document ownership.} IPS owns each session's document as a
+string the server appends to; the client never sees a file. That makes a
+chunk a transaction (undone as a unit on failure), a checkpoint a snapshot
+and a restore exact; it also fixes the imports at session start and limits
+a session to one theory. PIDE MCP treats the files of a project on disk as
+the document: the agent edits them, the server resolves dependencies and
+reports positioned messages. That gives project scope, file editing and
+co-presence with a human's editor; it rules out transactions, since a file
+is not undone.
 
-\paragraph{How time is treated.} PIDE MCP ``decidedly does not block on
-checking and does not use timeouts for its core tools'': an edit returns
-when PIDE has accepted it, the agent polls a snapshot, and a running check
-can be cancelled through the protocol. IPS bounds every wait, and a
-submission that runs out of budget is undone and reported as a timeout.
-The first choice suits an agent that can wait, poll and cancel; the second
-suits a loop with a fixed worker pool that cannot afford to lose one.
-Neither is wrong; they answer different readers.
+\paragraph{Time.} PIDE MCP ``decidedly does not block on checking and
+does not use timeouts for its core tools'': an edit returns when PIDE has
+accepted it, the agent polls a snapshot, and a running check can be
+cancelled through the protocol. IPS bounds every wait, and a submission
+that exceeds its budget is undone and reported as a timeout. The first
+choice suits an agent that can wait, poll and cancel; the second suits a
+loop with a fixed worker pool that cannot afford to lose one.
 
-\paragraph{Who decides about resources.} IPS has a pool with leases,
-idle and lease timeouts, LRU eviction, a memory admission gate and a
-Sledgehammer cap. PIDE MCP has none of these: it reports session
-statistics and leaves the decisions to whoever runs it. For one agent on
-one machine that is the right amount of machinery. For many agents on one
-host it is the difference the next subsection measures.
+\paragraph{Resource decisions.} IPS has a pool with leases, idle and
+lease timeouts, LRU eviction, a memory admission gate and a Sledgehammer
+cap. PIDE MCP has none of these; it reports session statistics and leaves
+the decisions to whoever runs it. For one agent on one machine that is
+the right amount of machinery. For many agents on one host, it is the
+difference the next subsection measures.
 
-\subsection{The same measurements, both tools}
+\subsection{Measurements}
 
-Every experiment of Section~\ref{sec:serving-measured} was run for PIDE
+We ran every experiment of Section~\ref{sec:serving-measured} for PIDE
 MCP on the same host, Isabelle build, heap cap and workloads, in two
 shapes. \emph{Topology A} is PIDE MCP as designed: one process holding k
 sessions. \emph{Topology B} gives every agent its own PIDE MCP process,
@@ -659,48 +668,47 @@ the tool.
 
 \paragraph{Memory per session.} Under topology A a session costs
 1279\,MB on HOL, 1513\,MB on HOL-Library and 1476\,MB on HOL-Analysis,
-against 894, 1084 and 1271\,MB under IPS (Table~\ref{tab:capacity}): 0.2
-to 0.4\,GB more per session, and 67--78 rather than 77--110 sessions in
-100\,GB. Part of that gap is a confound, since PIDE MCP ran with
-Isabelle's default session options and IPS with its own
-(\code{parallel\_proofs=2}, \code{threads=4}); part is per-session state
-the PIDE MCP process keeps in its JVM. PIDE MCP's fixed cost is lower
-(1.9--2.7\,GB against 3.2--3.7\,GB): its JVM starts at 1.5\,GB and grows
-to 5.1\,GB at 32 sessions, where the IPS gateway starts at 3.6\,GB and
-ends at 5.3\,GB. For a handful of sessions PIDE MCP A is the smaller
-deployment; above about eight sessions IPS is. Under topology B a session
-costs 2.7--3.7\,GB, three times IPS, because every agent pays a
-1.5--2.3\,GB JVM; 32 HOL-Analysis agents used 118--122\,GB of the
-128\,GB host.
+against 894, 1084 and 1271\,MB under IPS (Table~\ref{tab:capacity}):
+0.2 to 0.4\,GB more per session, and 67--78 rather than 77--110 sessions
+in 100\,GB. Part of that gap is a confound: PIDE MCP ran with Isabelle's
+default session options and IPS with its own (\code{parallel\_proofs=2},
+\code{threads=4}). Part is per-session state the PIDE MCP process keeps
+in its JVM. PIDE MCP's fixed cost is lower (1.9--2.7\,GB against
+3.2--3.7\,GB): its JVM starts at 1.5\,GB and grows to 5.1\,GB at 32
+sessions, where the IPS gateway starts at 3.6\,GB and ends at 5.3\,GB.
+For a handful of sessions PIDE MCP A is the smaller deployment; above
+about eight sessions IPS is. Under topology B a session costs
+2.7--3.7\,GB, three times IPS, because every agent pays a 1.5--2.3\,GB
+JVM; 32 HOL-Analysis agents used 118--122\,GB of the 128\,GB host.
 
-\paragraph{Latency.} Cold starts are the same within noise (2--7\,s,
+\paragraph{Latency.} Cold starts are equal within noise (2--7\,s,
 Table~\ref{tab:capacity}). Loading and checking the theory reports lower
 for PIDE MCP (1.1--1.4\,s on HOL and HOL-Analysis against 3.1 and 6.8\,s
 for IPS; 7.2 against 9.2\,s on HOL-Library). The two timings do not
-measure the same thing: IPS's load waits for every command to settle and
-assembles a per-command report before returning, while PIDE MCP's edit
-returns on acceptance and the experiment then polled \code{get\_state}
-until the counts stopped moving, with a one-second poll, so the PIDE MCP
-figure is a lower bound on the time to a usable verdict. The concurrent
-re-check of all k theories at k\,=\,32 took a p95 of 3--17\,s under IPS
-and 10--24\,s under PIDE MCP A.
+measure the same thing. IPS's load waits for every command to settle and
+assembles a per-command report before returning; PIDE MCP's edit returns
+on acceptance, and the experiment then polled \code{get\_state} once a
+second until the counts stopped moving, so the PIDE MCP figure is a lower
+bound on the time to a usable verdict. The concurrent re-check of all k
+theories at k\,=\,32 took a p95 of 3--17\,s under IPS and 10--24\,s
+under PIDE MCP A.
 
 \paragraph{Under a memory limit.} With \code{MemoryMax=48G} on
 HOL-Analysis, IPS admitted 27 sessions and refused the 28th with a reason,
 losing nothing. PIDE MCP B admitted 13: the scope reached its limit, and
 the kernel killed four of the thirteen MCP processes to make room, so
 four agents lost their sessions without any message from the tool, and
-the thirteenth was admitted on their memory
-(Table~\ref{tab:pressure}). Both tools recovered a new session about
-8\,s after half the sessions were released. Topology A was not run under
-the limit: with one process, the first kernel kill ends every session at
-once, which is the same outcome with fewer steps.
+the thirteenth was admitted on their memory (Table~\ref{tab:pressure}).
+Both tools recovered a new session about 8\,s after half the sessions
+were released. We did not run topology A under the limit: with one
+process, the first kernel kill ends every session at once, which is the
+same outcome in fewer steps.
 
 \paragraph{Isolation.} With one prover among 8 killed, the other 7
 sessions answered under all three arrangements. IPS names the cause
 (``prover process died'') and frees the slot; PIDE MCP reports the session
-as no longer running. Under topology B the eight MCP processes all
-survived their provers. On this test the tools are equal.
+as no longer running. Under topology B all eight MCP processes survived
+their provers. On this test the tools are equal.
 
 \begin{table}[!htb]
 \centering\small
@@ -720,15 +728,15 @@ Recovery after releasing half & 8.4\,s & 8.6\,s \\
 \label{tab:pressure}
 \end{table}
 
-\subsection{What each can do that the other cannot}
+\subsection{Capabilities}
 
 \paragraph{Only PIDE MCP.} A project of many theories with dependency
-resolution; the agent editing files, with messages at line and column;
-a visible perspective, so only what the agent looks at is printed;
+resolution; the agent editing files, with messages at line and column; a
+visible perspective, so only what the agent looks at is printed;
 cancellation of a running check and progress notifications; entity search
 over a range; a plugin mechanism through Isabelle services; and three
-shipped agent skills. Every one of these follows from treating the files
-as the document and from not bounding time.
+shipped agent skills. Each follows from treating the files as the
+document and from not bounding time.
 
 \paragraph{Only IPS.} A pool with leases, reuse, eviction and a memory
 admission gate; transactional chunks, checkpoints and rollback; a
@@ -736,39 +744,38 @@ verification call with explicit semantics (success, open proof,
 \code{sorry}) and a cold build as arbiter; a wall-clock budget on every
 call; batch fan-out across the pool; an HTTP API beside MCP; input
 hardening (an ML and file-IO denylist, path roots); Prometheus metrics
-and probes; and a test suite. Every one of these follows from owning the
-document and from serving many clients.
+and probes; and a test suite. Each follows from owning the document and
+from serving many clients.
 
 \paragraph{Both.} Headless PIDE sessions with chosen logic and imports;
 per-command status; non-invasive state queries; Sledgehammer; a
 Sledgehammer-on-every-\code{sorry} pass (IPS's \code{fill\_sorries} job,
 PIDE MCP's extension); MCP over stdio.
 
-\subsection{Reading the comparison}
+\subsection{Summary}
 
-On the questions this report measures, memory per session, conduct under
-a limit and isolation, IPS does what it was built for, and PIDE MCP in its
+On the questions we measured, memory per session, conduct under a limit
+and isolation, IPS does what it was built for, and PIDE MCP in its
 intended shape is within 0.2--0.4\,GB per session of it. The three-fold
-gap appears only when each agent runs its own PIDE MCP process, which is
-the arrangement a group of independent agents falls into without a pool;
-that gap is the price of a JVM per agent, and it is the number an
-operator choosing between ``one PIDE MCP per agent'' and ``one pool''
-needs. On the questions this report does not measure, the interactive
-agent's desiderata, PIDE MCP is the more capable tool, and nothing in the
-measurements says otherwise. A group running both would use PIDE MCP at
-the keyboard and IPS in the training cluster, and the two share enough
-(headless PIDE, overlays, Sledgehammer) that work on one carries to the
-other.
+gap appears only when each agent runs its own PIDE MCP process, the
+arrangement a group of independent agents falls into without a pool; that
+gap is the price of a JVM per agent, and it is the number an operator
+choosing between one PIDE MCP per agent and one pool needs. On the
+questions we did not measure, the interactive agent's desiderata, PIDE MCP
+is the more capable tool, and nothing in our measurements says otherwise.
+A group running both would use PIDE MCP for interactive work and IPS in
+the training cluster; the two share enough (headless PIDE, overlays,
+Sledgehammer) that work on one carries to the other.
 
 % ======================================================================
-\section{Position among Isabelle connectors}
+\section{Related connectors}
 \label{sec:position}
 
-Connectors between agents and Isabelle fall into five families. Each was
-built for a reader, and each serves that reader well. Kappelmann's
-taxonomy and desiderata~\cite{kappelmann2026pidemcp} supply the family
-names and the interactive agent's questions; the training reader's and
-operator's questions are those of Table~\ref{tab:metrics}.
+Connectors between agents and Isabelle fall into five families, each
+built for a reader. Kappelmann's taxonomy and
+desiderata~\cite{kappelmann2026pidemcp} supply the family names and the
+interactive agent's questions; the training reader's and operator's
+questions are those of Table~\ref{tab:metrics}.
 
 \begin{itemize}
   \item \textbf{REPL.} PISA and its descendants~\cite{jiang2021lisa},
@@ -785,33 +792,32 @@ operator's questions are those of Table~\ref{tab:metrics}.
     Not incremental: every attempt re-checks the whole development.
   \item \textbf{Editor-attached PIDE.} Isabelle/Q~\cite{awslabs2026autocorrode}
     attaches an agent to a human's jEdit session. Full PIDE access and
-    true co-presence in shared memory, at the price of one session, one
+    co-presence in shared memory, at the price of one session, one
     editor, one machine. Built for the interactive agent beside a human.
   \item \textbf{Headless PIDE, one process per agent.} PIDE
     MCP~\cite{kappelmann2026pidemcp}, and Isabelle-MCP as a third-party
     variant. Built for the interactive agent without an editor, and the
     only family meeting all five of the preprint's desiderata.
-    Section~\ref{sec:comparison} measures what it costs when many agents
-    share a host.
+    Section~\ref{sec:comparison} measures its cost when many agents share
+    a host.
   \item \textbf{Pooled service.} Kimina~\cite{santos2025kimina} and
     AXLE~\cite{xin2026axle} in Lean; IPS in Isabelle. A pool of prover
     processes behind HTTP, built for the training reader and the
-    operator: throughput, admission, isolation and a bounded call. IPS
-    is the first of this family for Isabelle, and the first in either
-    prover whose sessions are PIDE documents, which is what gives it
-    checkpoints, rollback and chunk-level parallel checking.
+    operator: throughput, admission, isolation and a bounded call. IPS is
+    the first of this family for Isabelle, and the first in either prover
+    whose sessions are PIDE documents, which gives it checkpoints,
+    rollback and chunk-level parallel checking.
 \end{itemize}
 
 Table~\ref{tab:families} summarises the fit. A tick means the family
 answers that reader's questions as designed; a tilde means it can be
-made to, with work the reader must do themselves; a dash means it does
-not try. No family serves all three readers, and none should be expected
-to: the interactive agent wants the whole PIDE surface and no timeouts,
-the training reader a narrow, bounded, pooled contract, and these pull in
-opposite directions on document ownership and on time. The REPL critique
-applies to IPS in part: its one-command granularity is a REPL and
-inherits the sequential cost, while its chunk call submits a block as one
-PIDE edit with parallel proofs on and its whole-file check is a batch
+made to, with work the reader must do; a dash means it does not try. No
+family serves all three readers: the interactive agent wants the whole
+PIDE surface and no timeouts, the training reader a narrow, bounded,
+pooled contract, and the two conflict on document ownership and on time.
+The REPL critique applies to IPS in part. Its one-command mode is a REPL
+and inherits the sequential cost; its chunk call submits a block as one
+PIDE edit with parallel proofs on, and its whole-file check is a batch
 build.
 
 \begin{table}[!htb]
@@ -835,10 +841,10 @@ Pooled service (IPS) & \checkmark & \checkmark & $\sim$ \\
 project\footnote{\url{https://github.com/FullBackward/Isabelle-Humanize}}
 runs a builder/reviewer loop (the RLCR flow of
 humanize2\footnote{\url{https://github.com/humanfia/humanize2}}) on
-competition problems: two agent seats (opencode on DeepSeek V4 Pro in
+competition problems. Two agent seats (opencode on DeepSeek V4 Pro in
 both roles) talk to IPS through the file MCP server over streamable HTTP,
-and the flow itself uses the IPS whole-file check as the arbiter, so a
-problem counts as solved only when \code{isabelle build} passes with no
+and the flow uses the IPS whole-file check as the arbiter: a problem
+counts as solved only when \code{isabelle build} passes with no
 \code{sorry} or \code{oops} and the target theorem present. Three
 problems were solved end to end: Putnam 2023 A1 (2 review rounds, 3.3\,h
 wall, about \$3 of model time), Putnam 2023 B5 (5 rounds, 14.3\,h, about
@@ -848,58 +854,60 @@ wall, about \$3 of model time), Putnam 2023 B5 (5 rounds, 14.3\,h, about
 sync and the memory work of this report halved the wall time (7\,391
 against 14\,949\,s) and the agent-active time (117 against 248\,min),
 cut MCP timeouts from 12 to 0 and diagnostics calls from 47 to 18 at a
-median of 0.3\,s, and the arbiter build from 44 to 11\,s. The caveats are
-the project's own: one run per problem, a prompt rule that changed between
+median of 0.3\,s, and the arbiter build from 44 to 11\,s. The project's
+own caveats apply: one run per problem, a prompt rule that changed between
 the two IMO runs, costs at a model price that has since changed, and a
 fourth ``solve'' (Putnam 2023 B6) excluded because the benchmark's Isabelle
 statement is degenerate. This is an example, not an evaluation: a few
 problems with one model measure the agent and the prompt as much as the
-connector. It is here to show that a service built for the first two
-readers is also usable by the third, and that the service's latency shows
-up on the agent's wall clock.
+connector. It shows that a service built for the first two readers also
+serves the third, and that the service's latency reaches the agent's wall
+clock.
 
 % ======================================================================
 \section{Limitations and roadmap}
 \label{sec:limitations}
 
-The limitations a user will meet, in the order they are likely to meet
-them.
+\paragraph{Trusted network only.} There is no authentication. The
+administrative page inlines its token, a known and deferred issue.
 
-\begin{itemize}
-  \item \emph{Trusted network only.} There is no authentication. The
-    administrative page inlines its token, a known and deferred issue.
-  \item \emph{Imports are fixed at session creation.} Changing imports
-    means a new session. Project imports must use qualified heap names.
-  \item \emph{One theory per session.} There is no multi-file project
-    scope, and diagnostics are located at command granularity, not at the
-    line within a command.
-  \item \emph{No file editing by the connector.} The file MCP server
-    observes a file the agent edits with its own tools; the stepwise
-    server has no file at all.
-  \item \emph{No protocol-level cancellation or progress.} A running call
-    can only be bounded by its budget; the agent cannot cancel it early or
-    watch it progress.
-  \item \emph{No plugin mechanism.} Adding a tool means editing the
-    repository.
-  \item \emph{The gateway is one JVM.} It holds every session's backend
-    and grows with the pool (3.6 to 5.3\,GB over 32 sessions); a crash
-    of it loses every session at once.
-  \item \emph{Numbers are tied to a build.} Every figure in
-    Sections~\ref{sec:serving} and~\ref{sec:comparison} is for the
-    Isabelle build, host and commits in Appendix~\ref{app:bench};
-    Isabelle2026 was a release candidate when they were taken, and the
-    training reader's metrics are still to be measured.
-\end{itemize}
+\paragraph{Imports are fixed at session creation.} Changing imports means
+a new session. Project imports must use qualified heap names.
 
-The roadmap follows from the comparison. Cancellation and progress can be
-had by routing calls through Isabelle's own query-operation classes, which
-would also give sendback resolution for Sledgehammer results. Per-command
-timing and a visible-range perspective are small additions to the report
-IPS already produces. Entity search and shipped agent skills are the two
-items from the headless-PIDE family that cost least to adopt. Packaging
-the backend as an Isabelle tool would remove the remaining reflective
-access to Isabelle internals. None of these change the document model,
-which is the decision the two readers above depend on.
+\paragraph{One theory per session.} There is no multi-file project scope,
+and diagnostics are located at command granularity, not at the line within
+a command.
+
+\paragraph{No file editing by the connector.} The file MCP server observes
+a file the agent edits with its own tools; the stepwise server has no file
+at all.
+
+\paragraph{No protocol-level cancellation or progress.} A running call is
+bounded only by its budget; the agent cannot cancel it early or watch it
+progress.
+
+\paragraph{No plugin mechanism.} Adding a tool means editing the
+repository.
+
+\paragraph{One gateway JVM.} It holds every session's backend and grows
+with the pool (3.6 to 5.3\,GB over 32 sessions); a crash of it loses
+every session at once.
+
+\paragraph{Numbers are tied to a build.} Every figure in
+Sections~\ref{sec:serving} and~\ref{sec:comparison} is for the Isabelle
+build, host and commits in Appendix~\ref{app:bench}; Isabelle2026 was a
+release candidate when they were taken, and the training reader's metrics
+are still to be measured.
+
+\paragraph{Roadmap.} Cancellation and progress can be had by routing
+calls through Isabelle's own query-operation classes, which would also
+give sendback resolution for Sledgehammer results. Per-command timing and
+a visible-range perspective are small additions to the report IPS already
+produces. Entity search and shipped agent skills are the two items from
+the headless-PIDE family that cost least to adopt. Packaging the backend
+as an Isabelle tool would remove the remaining reflective access to
+Isabelle internals. None of these change the document model, which is
+the decision both readers depend on.
 
 % ======================================================================
 \section{Conclusion}
@@ -908,19 +916,19 @@ which is the decision the two readers above depend on.
 IPS is a pooled verification service for Isabelle, built for two readers
 that existing connectors do not serve: a training loop that needs fast,
 bounded, trustworthy verdicts with cheap branching, and an operator who
-needs many agents to share one host predictably. It gets both from one
-decision, owning each session's document as text the server appends to,
-which makes rollback and checkpoints cheap and lets every call run under a
-budget, at the price of project scope and positioned diagnostics. On a
-128\,GB host a session costs 0.9--1.3\,GB and a warm hit 2\,ms; under a
-48\,GB limit the pool admits 27 HOL-Analysis sessions and refuses the next
-with a reason, where one PIDE MCP process per agent reaches 13 and loses
-four to the kernel. Among Isabelle connectors IPS is the first of the
-pooled-service family, and it complements rather than competes with the
-interactive families: PIDE MCP gives a single agent full access to a
-project at a per-session cost within 0.2--0.4\,GB of IPS's, and IPS gives
-many clients isolated verification at scale. Appendix~\ref{app:bench} is
-enough to repeat the measurements.
+needs many agents to share one host predictably. One decision serves
+both: the server owns each session's document as text it appends to,
+which makes rollback and checkpoints cheap and lets every call run under
+a budget, at the price of project scope and positioned diagnostics. On a
+128\,GB host a session costs 0.9--1.3\,GB and a warm hit 2\,ms. Under a
+48\,GB limit the pool admits 27 HOL-Analysis sessions and refuses the
+next with a reason, where one PIDE MCP process per agent reaches 13 and
+loses four to the kernel. Among Isabelle connectors IPS is the first of
+the pooled-service family, and it complements the interactive families
+rather than competing with them: PIDE MCP gives a single agent full
+access to a project at a per-session cost within 0.2--0.4\,GB of IPS's,
+and IPS gives many clients isolated verification at scale.
+Appendix~\ref{app:bench} is sufficient to repeat the measurements.
 
 % ======================================================================
 \bibliographystyle{plainnat}
