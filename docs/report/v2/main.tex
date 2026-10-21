@@ -494,6 +494,22 @@ per-cell raw results. We took each measurement for IPS and, under
 identical conditions, for PIDE MCP. This section reports the IPS numbers;
 Section~\ref{sec:comparison} reads the two side by side.
 
+\paragraph{Memory measures.} We report memory two ways. The first is the
+\emph{proportional set size} (PSS) of the tool's processes, summed over
+them: PSS counts a physical page shared by $n$ processes as $1/n$ for
+each, so the sum is the memory those processes occupy. This matters for
+Isabelle because every prover of a session maps the same heap image from
+disk and the kernel keeps one copy of its untouched pages; the resident
+set size (RSS) would count that copy once per prover and overstate the
+total, and the unique set size (USS) would omit it. The second is
+\emph{host used}, \code{MemTotal} minus \code{MemAvailable}, which is the
+kernel's own account of what the machine has lost, page cache included,
+reported as the change over the cell's baseline. PSS attributes memory to
+processes; host used checks that nothing escaped the attribution. Under a
+memory limit we also read the cgroup's own counters (\code{memory.current},
+\code{memory.peak}, \code{oom\_kill}), since those are what the limit is
+enforced on. Appendix~\ref{app:bench} has the definitions in full.
+
 \paragraph{Capacity.} Figure~\ref{fig:capacity} plots host memory against
 the number of concurrent sessions for three heaps, each session holding a
 checked theory, three repeats per point. The curves are straight to
@@ -1096,6 +1112,31 @@ importing \code{HOL-Analysis.Abstract\_Topology}). The re-check inserts
 \texttt{lemma memscale\_p5\_done: "True" by simp} after the first paragraph
 under the same theory name, so every later command is re-checked on the
 incremental path.
+
+\paragraph{Memory measures.} Linux gives three sizes for the physical
+memory of one process, and they differ where this experiment needs care:
+in what is shared. A mapping is anonymous (the process's own heap) or
+file-backed (an executable, a library, or for Isabelle the session heap
+image such as \code{HOL.heap}, which every \code{poly} process of that
+session maps from disk). The kernel keeps one physical copy of a
+file-backed page and lets every process that maps it share that copy
+until one writes to it. \emph{RSS} counts every physical page the process
+has mapped, shared or not, so a sum of RSS over 32 provers counts a shared
+heap page 32 times. \emph{PSS} counts a page shared by $n$ processes as
+$1/n$ for each, so summed over all processes of a tool it equals the
+physical memory they occupy; the kernel reports it per process in
+\code{/proc/<pid>/smaps\_rollup}. \emph{USS} counts only pages no other
+process maps, what the system would recover if that one process exited.
+We report the sum of PSS over the tool's processes, never a single
+process's PSS across k: as k grows each shared page is split over more
+processes, so an individual prover's PSS falls while the sum stays
+correct. Host used (\code{MemTotal} $-$ \code{MemAvailable} from
+\code{/proc/meminfo}) is the independent check: its per-session slope
+agrees with the PSS slope within 1\,\% in every series of
+Table~\ref{tab:capacity}. The cgroup counters \code{memory.current},
+\code{memory.peak} and \code{memory.events} \code{oom\_kill} of the
+systemd scope the tool runs in are what a memory limit is enforced on and
+carry the E3 result.
 
 \paragraph{Procedure (E1).} For each tool, heap and k in
 $\{1,2,4,8,16,32\}$, three repeats: P0 baseline (60\,s, 10\,s after the
