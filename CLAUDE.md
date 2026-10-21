@@ -108,7 +108,7 @@ FastAPI application providing HTTP endpoints for session management (create, acq
 
 **Key files:**
 - server/app/main.py - FastAPI app setup, middleware (request logging, error handlers), lifespan (startup/shutdown with session manager)
-- server/app/api/v1/routes/*.py - HTTP endpoints, one module per concern (health, sessions, execution, inspection, positional, automation, checkpoints, heaps); server/app/api/v1/router.py aggregates them and re-exports names for compatibility; api/v1/deps.py holds the `LeasedSession` dependency (lease check + session resolution + log context) and the admin-token / path-segment guards; api/v1/serializers.py holds response-shaping helpers. Source files are capped at 600 lines by tests/test_source_limits.py.
+- server/app/api/v1/routes/*.py - HTTP endpoints, one module per concern (health, sessions, execution, inspection, positional, automation, checkpoints, heaps, memory, fill — `POST/GET/DELETE /api/v1/sessions/{id}/fill_sorries`, the server-side sledgehammer job on every `sorry` of a submitted proof); server/app/api/v1/router.py aggregates them and re-exports names for compatibility; api/v1/deps.py holds the `LeasedSession` dependency (lease check + session resolution + log context) and the admin-token / path-segment guards; api/v1/serializers.py holds response-shaping helpers. Source files are capped at 600 lines by tests/test_source_limits.py.
 - server/app/api/v1/schemas/API_models.py - Pydantic models for requests/responses
 - server/app/services/session_manager.py - Session pool lifecycle, LRU eviction, lease management using OrderedDict for O(1) eviction
 - server/app/services/session.py - Per-session state, small-step command execution, checkpoints, rollback
@@ -124,7 +124,8 @@ Async HTTP client for end-users. Provides high-level workflows for session creat
 - client/async_client.py - PoolAsyncClient class with methods:
   - Session lifecycle: create_session(), acquire_session(), release_session(), close_session()
   - Small-step: execute_command(), enter_theory(), get_proof_state()
-  - Automation: sledgehammer() - runs Isabelle's sledgehammer on the current proof goal; returns success/suggestions/raw_output/execution_time
+  - Automation: sledgehammer() - runs Isabelle's sledgehammer on the current proof goal; returns success/suggestions/raw_output/execution_time plus outcome (`proved` | `none` | `timeout` | `error`) and method — `success` is true only when a proof was found ("No proof found" used to count as success; changed 2026-10-18)
+  - Fill job: fill_sorries() starts the server-side sledgehammer job on every `sorry` of a text (202; per-sorry results, ETA, `patched_text`), fill_status() polls it, fill_cancel() stops it
   - Big-step: verify_bigstep_text(), verify_bigstep_file()
   - Checkpointing: checkpoint_session(), rollback_to_checkpoint()
 
@@ -234,7 +235,20 @@ Set before starting the server:
 ISABELLE_POOL_SIZE=24              # Max concurrent sessions (default 24)
 ISABELLE_INITIAL_SESSIONS=8        # Pre-warm sessions on startup (default 3)
 ISABELLE_IDLE_TIMEOUT=1800         # Session idle timeout in seconds (default 1800)
-ISABELLE_MAX_CONCURRENT_SLEDGEHAMMER=4  # Cap in-flight sledgehammers (default ~cores/8); prevents gateway OOM
+ISABELLE_MAX_CONCURRENT_SLEDGEHAMMER=4  # Sledgehammer slots at memory tier `ok` (default ~cores/8); prevents
+                                   # gateway OOM. The counter is tier-aware (services/sledgehammer_slots.py):
+                                   # warning -> 1 slot, critical/external -> 0; fill-job steps park until the
+                                   # tier drops, interactive /sledgehammer calls are refused (503) at critical.
+
+# fill_sorries job (POST /api/v1/sessions/{id}/fill_sorries; services/fill_sorries.py)
+ISABELLE_FILL_TIMEOUT_S=30         # Default per-sorry sledgehammer budget (s)
+ISABELLE_FILL_MAX_TOTAL_S=600      # Default wall budget of one job (s), parking included; the rest is skipped
+ISABELLE_FILL_PARK_POLL_S=5        # A parked step re-checks the tier this often (s)
+ISABELLE_FILL_SAMPLE_S=2           # ATP memory attribution sample interval (s) while a step runs
+# LSP MCP wrapper (mcp_servers/lsp/config.py): ISABELLE_MCP_LSP_FILL_TIMEOUT_S=30,
+# ISABELLE_MCP_LSP_FILL_MAX_TOTAL_S=600, ISABELLE_MCP_LSP_FILL_PATIENCE_S=240 (isabelle_fill_sorries
+# returns the partial state with continuing: true after this; keep it <= the MCP client's tool
+# timeout - 60), ISABELLE_MCP_LSP_FILL_POLL_S=3
 
 # Per-session parallel proof checking (server/repl/src/main/scala/repl/session_manager.scala, read by Scala via sys.env)
 ISABELLE_PARALLEL_PROOFS=2         # Isabelle parallel_proofs per session (default 2): 0=sequential,
@@ -409,7 +423,7 @@ The server maintains a pool of warm Isabelle sessions. Idle sessions (older than
 - **Big-step** (verify_bigstep_text): Batch verification via isabelle build, no session reuse, good for whole-theory checking and parallelization.
 
 ### Sledgehammer Integration
-Sledgehammer is exposed end-to-end as a small-step automation primitive: the `isabelle_pool_server_sledgehammer` Query_Operation in server/repl/src/ml/REPL.ML runs Isabelle's sledgehammer as a PIDE overlay on a host command (Document_Utils.overlay_query), Backend_Probes.sledgehammer hosts it on the document's last command (the LSP-like sledgehammer_at hosts it on the command at a given line — same operation), and the FastAPI endpoint POST /api/v1/sessions/{session_id}/sledgehammer (routes/automation.py, schemas SledgehammerRequest/SledgehammerResponse) runs it on the current proof goal under a lease. Outside a proof it returns no suggestions. No text edit is made, so nothing can leak into the proof script. NOTE: the Query_Operation registrations are intentionally at the top level of REPL.ML, outside the `Repl` struct (the struct only holds the extraction functions); see commit ca73379 for the original placement conflict.
+Sledgehammer is exposed end-to-end as a small-step automation primitive: the `isabelle_pool_server_sledgehammer` Query_Operation in server/repl/src/ml/REPL.ML runs Isabelle's sledgehammer as a PIDE overlay on a host command (Document_Utils.overlay_query), Backend_Probes.sledgehammer hosts it on the document's last command (the LSP-like sledgehammer_at hosts it on the command at a given line — same operation), and the FastAPI endpoint POST /api/v1/sessions/{session_id}/sledgehammer (routes/automation.py, schemas SledgehammerRequest/SledgehammerResponse) runs it on the current proof goal under a lease. Outside a proof it returns no suggestions. No text edit is made, so nothing can leak into the proof script. `success` (and `found` of `/sledgehammer_at`) is true only for a `Try this:` line; both carry `outcome`/`method` from success_checker.classify_sledgehammer. The server-side **fill_sorries job** (merged 2026-10-21 from impl-de-sorry) builds on the same mechanism: the `isabelle_pool_server_sledgehammer_fill` Query_Operation (max_proofs, optional prover list, a `subgoals=N` line) hosted on a command by chunk-report index (Document_Utils.sledgehammer_at_command_json, SessionFillMixin in services/session_memory.py); services/fill_sorries.py runs it sequentially on every `sorry` of a submitted text, patches the proof, reports an ETA, and is started/polled/cancelled via routes/fill.py; services/sledgehammer_slots.py is the one tier-aware counter for interactive sledgehammers and fill steps (`ISABELLE_MAX_CONCURRENT_SLEDGEHAMMER` at tier ok, 1 at warning, 0 at critical — jobs park, interactive calls are refused); services/atp_attribution.py walks the gateway JVM's descendants (the solvers run in their own sessions under `bash_process`) and attributes their RSS to the session whose step runs (`sledgehammer_mb` / `_peak_mb` / `_shared_with` in `GET /api/v1/memory`). The LSP MCP exposes it as `isabelle_fill_sorries` / `isabelle_fill_status` / `isabelle_fill_cancel`. NOTE: the Query_Operation registrations are intentionally at the top level of REPL.ML, outside the `Repl` struct (the struct only holds the extraction functions); see commit ca73379 for the original placement conflict.
 
 ### Caching (Optional)
 Session caching can be enabled to reuse initialized sessions for the same import dependencies. By default disabled to avoid stale state issues.
@@ -462,8 +476,12 @@ repo_root/
 │       │   ├── theory_chunks.py   # Command preview helpers
 │       │   ├── theory_parsing.py  # Canonical theory-header parsing (also POST /parse_theory_header)
 │       │   ├── heap_pool.py       # Verified per-project heaps (isabelle build -b)
-│       │   ├── memory_monitor.py  # cgroup memory admission gate
-│       │   ├── success_checker.py # Result classification
+│       │   ├── memory_monitor.py  # cgroup memory admission gate (+ gateway_children_rss for ATP attribution)
+│       │   ├── memory_hooks.py    # run_with_memory_hooks / track_atps around backend calls (api/v1 re-exports)
+│       │   ├── fill_sorries.py    # fill_sorries job: per-session sledgehammer on every sorry, patch, ETA
+│       │   ├── sledgehammer_slots.py  # tier-aware slot counter (interactive sledgehammer + fill steps)
+│       │   ├── atp_attribution.py # solver RSS sampled from the gateway tree, attributed per session
+│       │   ├── success_checker.py # Result classification (+ classify_sledgehammer)
 │       ├── core/
 │       │   ├── config.py          # Environment-based config
 │       │   ├── logging.py         # Structured logging setup
