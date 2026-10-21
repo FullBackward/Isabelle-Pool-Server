@@ -186,21 +186,19 @@ def series_table(  # pylint: disable=too-many-locals
     over each cell's own baseline (the intercept is then the tool's fixed
     cost, not the host's standing load); sessions
     per ``budget_gb`` on the host-used slope; the JVM's growth over the series.
-    Refuses to mix scoped and unscoped IPS cells (review ac32954 S2)."""
+    Scoped and unscoped IPS cells (different cgroups) form SEPARATE series,
+    the unscoped one labelled ``<topology>-unscoped`` (review ac32954 S2;
+    a refusal here blocked the server-side analysis on one odd cell)."""
     groups: Dict[Tuple[str, str, str], List[Dict[str, Any]]] = {}
     for r in rows:
         if r["outcome"] != "ok":
             continue
-        groups.setdefault(
-            (str(r["tool"]), str(r["topology"]), str(r["heap"])), []
-        ).append(r)
+        topo = str(r["topology"])
+        if str(r["tool"]) == "ips" and not r.get("scope_used"):
+            topo += "-unscoped"
+        groups.setdefault((str(r["tool"]), topo, str(r["heap"])), []).append(r)
     out: List[Dict[str, Any]] = []
     for (tool, topo, heap), rs in sorted(groups.items()):
-        scopes = {bool(r.get("scope_used")) for r in rs}
-        if tool == "ips" and len(scopes) > 1:
-            raise ValueError(
-                f"{tool}/{heap}: scoped and unscoped IPS cells in one series — analyse them apart"
-            )
         smoke_only = any(r.get("external") for r in rs)  # review c17ec04 S1
         row: Dict[str, Any] = {
             "tool": tool,

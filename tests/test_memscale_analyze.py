@@ -257,7 +257,9 @@ def test_external_server_cells_are_smoke_only(tmp_path):
     assert "smoke only (external server)" in analyze.snippet([s], rows, 100)
 
 
-def test_mixed_scopes_are_refused(tmp_path):
+def test_mixed_scopes_form_separate_series(tmp_path):
+    """Scoped and unscoped IPS cells are different cgroups: two series rows,
+    the unscoped one labelled, never a refusal that blocks the tables."""
     root = tmp_path / "results"
     _cell(
         root,
@@ -281,11 +283,25 @@ def test_mixed_scopes_are_refused(tmp_path):
         fixed_mb=500,
         per_session_mb=800,
         host_fixed_mb=2000,
+        scope=True,
+    )
+    _cell(
+        root,
+        "ips",
+        "pool",
+        "HOL",
+        4,
+        0,
+        fixed_mb=500,
+        per_session_mb=800,
+        host_fixed_mb=2000,
         scope=False,
     )
     rows = [analyze.summarize_cell(c) for c in analyze.load_cells(root)]
-    with pytest.raises(ValueError):
-        analyze.series_table(rows)
+    series = analyze.series_table(rows)
+    assert sorted(s["topology"] for s in series) == ["pool", "pool-unscoped"]
+    assert next(s for s in series if s["topology"] == "pool")["ks"] == [1, 2]
+    assert next(s for s in series if s["topology"] == "pool-unscoped")["ks"] == [4]
 
 
 def test_fit_and_p95():
