@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import time
@@ -82,6 +83,21 @@ def manifest_of(
             return dict(json.load(fh))
     except (OSError, ValueError):
         return None
+
+
+def running_runner(lock: Path) -> Optional[int]:
+    """The pid in ``lock`` if that process is alive; None for no or stale lock."""
+    try:
+        pid = int(lock.read_text(encoding="utf-8").split()[0])
+    except (OSError, ValueError, IndexError):
+        return None
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return None
+    except PermissionError:
+        return pid
+    return pid
 
 
 def host_used_gb() -> Optional[float]:
@@ -155,6 +171,11 @@ def main(argv: Any = None) -> int:  # pylint: disable=too-many-locals
     ap.add_argument("--reps", type=int, default=None)
     ap.add_argument("--cell-timeout-s", type=float, default=7200.0)
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument(
+        "--rerun-partial",
+        action="store_true",
+        help="run cells whose manifest says partial again (default: skipped like done)",
+    )
     args = ap.parse_args(argv)
     cfg = load_config(args.config)
     tools = [t.strip() for t in args.tools.split(",") if t.strip()]
@@ -165,6 +186,34 @@ def main(argv: Any = None) -> int:  # pylint: disable=too-many-locals
     baseline_short = float(cfg["phases"].get("baseline_short_s", 10))
     plan = list(cells(cfg, tools, heaps, ks, args.reps))
     print(f"{len(plan)} cells planned", flush=True)
+    lock = Path(args.out) / "RUNNER_LOCK"
+    other = None if args.dry_run else running_runner(lock)
+    if other is not None:
+        print(
+            f"another runner (pid {other}) holds {lock}: one runner per results tree "
+            "(two runners took the same cell and shared port 8000 on 2026-10-21); "
+            "stop it, or delete the lock if that pid is not a runner",
+            flush=True,
+        )
+        return 2
+    if not args.dry_run:
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        lock.write_text(f"{os.getpid()} {time.strftime('%Y-%m-%dT%H:%M:%S')}\n")
+    try:
+        return _run_plan(args, plan, ceiling, (baseline_full, baseline_short))
+    finally:
+        if not args.dry_run:
+            lock.unlink(missing_ok=True)
+
+
+def _run_plan(  # pylint: disable=too-many-locals
+    args: argparse.Namespace,
+    plan: List[Tuple[str, str, int, int]],
+    ceiling: float,
+    baselines: Tuple[float, float],
+) -> int:
+    """The cells in order with resume, the budget rule and the ceiling stop."""
+    baseline_full, baseline_short = baselines
     done = skipped = failed = 0
     stopped_series: Set[Tuple[str, str]] = set()
     seen_series: Set[Tuple[str, str]] = set()
@@ -172,8 +221,9 @@ def main(argv: Any = None) -> int:  # pylint: disable=too-many-locals
         series = (tool, heap)
         m = manifest_of(Path(args.out), tool, heap, k, rep)
         if m and m.get("outcome") not in (None, "running"):
-            skipped += 1
-            continue
+            if not (args.rerun_partial and m.get("outcome") == "partial"):
+                skipped += 1
+                continue
         if series in stopped_series:
             print(
                 f"  skip {tool} {heap} k={k} rep={rep}: series stopped at the memory ceiling",

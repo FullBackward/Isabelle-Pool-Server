@@ -76,6 +76,10 @@ tail -f results/e1.log                                   # one line per cell
 ```
 Rerun the same command after any interruption: finished cells are skipped. Options:
 `scripts/10_run_e1.sh --tools ips,pide-b --heaps HOL --ks 1,2,4 --reps 1`.
+**One runner per results tree:** the runner holds `results/RUNNER_LOCK` and refuses to start while
+another runner is alive (two runners took the same cell and shared port 8000 on 2026-10-21; the
+analysis flags such a cell as `contaminated` and leaves it out). A `partial` cell is skipped on
+resume like a done one: `--rerun-partial` (or deleting its folder) runs it again.
 
 ## 6. E2, E3, E4
 

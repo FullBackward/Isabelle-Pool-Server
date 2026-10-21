@@ -93,7 +93,12 @@ class PIDEDriver:  # pylint: disable=too-many-instance-attributes
                 raise RuntimeError(f"PIDE MCP has no tool {required!r}: {self.tools}")
 
     async def start_session(self, i: int) -> None:
-        """``start_session(logic=heap, no_build)`` on process A or B_i."""
+        """``start_session(logic=heap, no_build)`` on process A or B_i; under
+        B a process is spawned on demand when i is past the k given at setup
+        (E3 adds sessions until the refusal, so k is open-ended there — the
+        server run of 2026-10-21 died on IndexError at the fifth session)."""
+        if self.topology == "B" and i >= len(self.procs):
+            self.procs.append(await self._spawn(f"{self.heap}-B{i}"))
         res = await self._mcp(i).call(
             "start_session",
             {"logic": self.heap, "session": f"s{i}", "no_build": self.no_build},

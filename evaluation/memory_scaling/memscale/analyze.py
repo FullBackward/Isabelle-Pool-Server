@@ -26,12 +26,15 @@ SESSION_POLY_MIN = (
 
 
 # ------------------------------------------------------------------ loading
-def load_cells(results: Path) -> List[Dict[str, Any]]:
-    """Every cell with a manifest and samples under ``results``."""
+def load_cells(
+    results: Path, skip_dirs: Tuple[str, ...] = ("smoke",)
+) -> List[Dict[str, Any]]:
+    """Every cell with a manifest and samples under ``results``, except under
+    the ``skip_dirs`` folders (the smoke cells are not matrix data)."""
     cells: List[Dict[str, Any]] = []
     for manifest in sorted(results.rglob("manifest.json")):
         samples = manifest.with_name("samples.jsonl")
-        if not samples.exists():
+        if not samples.exists() or any(p in skip_dirs for p in manifest.parts):
             continue
         with open(manifest, "r", encoding="utf-8") as fh:
             m = dict(json.load(fh))
@@ -86,6 +89,22 @@ def _host_used(r: Dict[str, Any]) -> Optional[float]:
     return None if v is None else float(v)
 
 
+def _interleaving(cell: Dict[str, Any]) -> Tuple[int, int]:
+    """(phase regressions, distinct root pids) over the samples. A second
+    runner writing into the same cell (2026-10-21: two runners, one cell, one
+    port) shows as phases going backwards and, for IPS, a second server pid."""
+    prev, back = -1, 0
+    roots: set[int] = set()
+    for r in cell["_rows"]:
+        ph = str(r.get("phase") or "")
+        n = int(ph[1:]) if ph[:1] == "P" and ph[1:].isdigit() else prev
+        if n < prev:
+            back += 1
+        prev = max(prev, n)
+        roots.update(int(p) for p in (r.get("roots") or []))
+    return back, len(roots)
+
+
 # ------------------------------------------------------------- per cell
 def summarize_cell(cell: Dict[str, Any], tail_s: float = 30.0) -> Dict[str, Any]:
     """One row per cell: medians of the last ``tail_s`` of P2/P4, the P5 peak,
@@ -128,6 +147,11 @@ def summarize_cell(cell: Dict[str, Any], tail_s: float = 30.0) -> Dict[str, Any]
         ),
         "cgroup_peak_rose": _peak_rose(p0, p5all),
     }
+    back, nroots = _interleaving(cell)
+    out["phase_regressions"], out["root_pids"] = back, nroots
+    # one late-labelled sample is the sampler's race; several, or two IPS
+    # servers in one cell, is another runner's data: not a measurement
+    out["contaminated"] = back >= 3 or (out["tool"] == "ips" and nroots > 1)
     # host used as a DELTA over the cell's own P0 (review facc4c9 S1): the
     # intercept of the fit is then the tool's fixed cost, not the host's baseline
     base = out["host_baseline_mb"]
@@ -193,7 +217,7 @@ def series_table(  # pylint: disable=too-many-locals
     a refusal here blocked the server-side analysis on one odd cell)."""
     groups: Dict[Tuple[str, str, str], List[Dict[str, Any]]] = {}
     for r in rows:
-        if r["outcome"] != "ok":
+        if r["outcome"] != "ok" or r.get("contaminated"):
             continue
         topo = str(r["topology"])
         if str(r["tool"]) == "ips" and not r.get("scope_used"):
@@ -298,7 +322,7 @@ def plots(rows: List[Dict[str, Any]], out: Path) -> List[str]:
         ("pss_settled_mb", "tool PSS after the loads"),
         (
             "host_delta_settled_mb",
-            "host used after the loads (delta over the cell's baseline)",
+            "host used after the loads (delta)",
         ),
         ("pss_peak_mb", "tool PSS peak (concurrent re-check)"),
     ):
@@ -316,6 +340,7 @@ def plots(rows: List[Dict[str, Any]], out: Path) -> List[str]:
                     and f"{r['tool']}/{r['topology']}" == label
                     and r.get(metric) is not None
                     and r["outcome"] == "ok"
+                    and not r.get("contaminated")
                 )
                 if pts:
                     ax.plot(
@@ -345,6 +370,15 @@ def snippet(
     lines.append(
         f"Cells: {len(cell_rows)} ({sum(1 for r in cell_rows if r['outcome'] == 'ok')} ok). Budget for the capacity column: {budget_gb:.0f} GB."
     )
+    bad = [r for r in cell_rows if r.get("contaminated")]
+    if bad:
+        lines.append(
+            "Excluded as contaminated (another runner's samples in the cell): "
+            + ", ".join(
+                f"{r['tool']}/{r['heap']} k={r['k']} rep={r['rep']}" for r in bad
+            )
+            + "."
+        )
     lines.append("")
     lines.append(
         "| tool | heap | k | marginal MB/session (host, settled) | fixed MB (host) | marginal MB/session (PSS, settled) | fixed MB (PSS) | peak marginal (PSS) | sessions per budget | start p50/p95 s | load p50/p95 s | re-check p50/p95 s |"

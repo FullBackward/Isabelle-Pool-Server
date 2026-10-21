@@ -19,7 +19,6 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from . import procs
 from .experiments import kill_probe, pressure, warm_hit
 from .run_cell import HERE, REPO_ROOT, load_config, make_driver
 from .workload import load_workload
@@ -56,7 +55,7 @@ async def amain(args: argparse.Namespace) -> int:
             out,
             max_sessions=args.max_sessions,
             patterns=patterns,
-            cgroup_dir=args.cgroup_dir or procs.own_cgroup_dir(),
+            cgroup_dir=args.cgroup_dir,  # IPS: its own scope wins (pressure())
             recover_wait_s=args.recover_wait_s,
         )
         print(

@@ -338,6 +338,67 @@ def test_experiment_outputs_are_not_cells(tmp_path):
     assert len(cells) == 1 and cells[0]["k"] == 1
 
 
+def test_contaminated_cell_is_excluded(tmp_path):
+    """Two runners wrote into one cell (2026-10-21): phases go backwards and a
+    second IPS server pid appears; the cell is flagged and left out of the
+    fit and the plots. One late-labelled sample (the sampler's race) is not."""
+    root = tmp_path / "results"
+    for k in (1, 2, 4):
+        _cell(
+            root,
+            "ips",
+            "pool",
+            "HOL",
+            k,
+            0,
+            fixed_mb=500,
+            per_session_mb=800,
+            host_fixed_mb=2000,
+        )
+    s = root / "ips-pool" / "HOL" / "k4" / "rep0" / "samples.jsonl"
+    rows = [json.loads(l) for l in s.read_text().splitlines() if l]
+    for r in rows:
+        r["roots"] = [1]
+    other = [dict(r, phase="P1", roots=[2]) for r in rows[:9]]
+    mixed = rows[:20] + other[:3] + rows[20:25] + other[3:6] + rows[25:30]
+    mixed += other[6:] + rows[30:]
+    s.write_text("\n".join(json.dumps(r) for r in mixed) + "\n")
+    s1 = root / "ips-pool" / "HOL" / "k1" / "rep0" / "samples.jsonl"
+    rows1 = [json.loads(l) for l in s1.read_text().splitlines() if l]
+    late = rows1[:6] + [dict(rows1[4], phase="P0")] + rows1[6:]  # one late P0 label
+    s1.write_text("\n".join(json.dumps(r) for r in late) + "\n")
+    by_k = {
+        r["k"]: r for r in (analyze.summarize_cell(c) for c in analyze.load_cells(root))
+    }
+    assert by_k[4]["contaminated"] and by_k[4]["root_pids"] == 2
+    assert by_k[4]["phase_regressions"] == 9  # every late-labelled row counts
+    assert by_k[1]["phase_regressions"] == 1 and not by_k[1]["contaminated"]
+    (series,) = analyze.series_table(list(by_k.values()))
+    assert series["ks"] == [1, 2]
+    text = analyze.snippet([series], list(by_k.values()), 100)
+    assert "Excluded as contaminated" in text and "ips/HOL k=4 rep=0" in text
+
+
+def test_smoke_cells_are_not_matrix_data(tmp_path):
+    root = tmp_path / "results"
+    _cell(
+        root, "ips", "pool", "HOL", 1, 0, fixed_mb=5, per_session_mb=8, host_fixed_mb=20
+    )
+    _cell(
+        root / "smoke",
+        "ips",
+        "pool",
+        "HOL",
+        2,
+        0,
+        fixed_mb=5,
+        per_session_mb=8,
+        host_fixed_mb=20,
+    )
+    assert [c["k"] for c in analyze.load_cells(root)] == [1]
+    assert len(analyze.load_cells(root, skip_dirs=())) == 2
+
+
 def test_fit_and_p95():
     assert analyze.fit([(1, 3), (2, 5), (3, 7)]) == (2.0, 1.0)
     assert analyze.fit([(1, 3), (1, 5)]) is None

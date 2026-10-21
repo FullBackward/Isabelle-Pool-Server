@@ -57,6 +57,7 @@ class FakeIPS:
         self.released += 1
 
     async def probe(self, i):
+        self.last_probe = {"ok": i != 7, "error": None if i != 7 else "prover died"}
         return i != 7
 
     async def stop_all(self):
@@ -96,6 +97,71 @@ def test_warm_hit_and_kill_probe(tmp_path, monkeypatch):
     assert (
         body["answers"]["7"]["ok"] is False and drv.stopped and body["outcome"] == "ok"
     )
+    assert body["answers"]["7"]["detail"]["error"] == "prover died"
+    assert "detail" not in body["answers"]["0"]  # only a failed answer carries one
+
+
+def test_pressure_samples_the_tools_own_scope(tmp_path, monkeypatch):
+    """IPS runs in its own scope with MemoryMax: that cgroup is sampled and
+    reported whatever the caller passed (the server run of 2026-10-21 reported
+    the login session's cgroup, ~98 MB, for a 48 GB experiment)."""
+    w = _workload(tmp_path)
+    monkeypatch.setattr(experiments, "_dmesg_oom", lambda: [])
+    seen = []
+
+    def fake_cgroup_memory(d):
+        seen.append(d)
+        return {"current": None, "peak": None, "max": None, "oom_kill": 0}
+
+    monkeypatch.setattr(experiments.procs, "cgroup_memory", fake_cgroup_memory)
+    drv = FakeIPS(refuse_at=2)
+    drv.cgroup_dir = "/sys/fs/cgroup/run-ips.scope"
+    body = asyncio.run(
+        experiments.pressure(
+            drv,
+            w,
+            tmp_path / "p",
+            max_sessions=5,
+            recover_wait_s=5,
+            cgroup_dir="/sys/fs/cgroup/caller.scope",
+        )
+    )
+    assert body["cgroup_dir"] == "/sys/fs/cgroup/run-ips.scope"
+    assert seen[-1] == "/sys/fs/cgroup/run-ips.scope"
+
+
+def test_pide_b_spawns_a_process_per_session_on_demand(monkeypatch):
+    """E3 under topology B adds sessions past the k given at setup: a new MCP
+    process per session, not an IndexError (server run of 2026-10-21)."""
+    from memscale import drive_pide  # pylint: disable=import-outside-toplevel
+
+    class FakeMCP:
+        server_info = {}
+
+        def __init__(self, tag):
+            self.tag = tag
+
+        async def call(self, name, args, timeout_s=0):
+            return {"session": args.get("session")}
+
+        async def close(self):
+            pass
+
+    spawned = []
+
+    async def fake_spawn(self, tag):
+        spawned.append(tag)
+        return FakeMCP(tag)
+
+    monkeypatch.setattr(drive_pide.PIDEDriver, "_spawn", fake_spawn)
+    for topo, expect in (("B", 3), ("A", 1)):
+        d = drive_pide.PIDEDriver(heap="HOL", topology=topo, k=1, command=["x"])
+        d.tools = ["start_session", "create_scratch", "edit", "stop_session"]
+        asyncio.run(d.setup())
+        for i in range(3):
+            asyncio.run(d.start_session(i))
+        assert len(d.procs) == expect and d.session_ids == {0: "s0", 1: "s1", 2: "s2"}
+    assert spawned == ["HOL-B0", "HOL-B1", "HOL-B2", "HOL-A0"]
 
 
 def test_pressure_stops_at_the_refusal_and_measures_recovery(tmp_path, monkeypatch):

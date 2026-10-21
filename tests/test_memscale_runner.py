@@ -4,6 +4,7 @@ rule and memory-ceiling stop (no tools: run_one is stubbed)."""
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -90,6 +91,50 @@ def test_resume_skips_done_cells_and_the_ceiling_stops_a_series(tmp_path, monkey
     assert ran[1] == ("ips", "HOL", 2, 0, 10.0)  # later cells: the short baseline
     assert ("ips", "HOL", 16, 0, 10.0) not in ran  # the series stopped at the ceiling
     assert ("ips", "HOL", 1, 0, 60.0) not in ran  # the done cell was skipped
+
+
+def test_one_runner_per_results_tree_and_rerun_partial(tmp_path, monkeypatch):
+    """A live RUNNER_LOCK refuses a second runner (two runners took the same
+    cell on 2026-10-21); a stale lock is ignored; --rerun-partial re-runs a
+    partial cell that resume would otherwise skip."""
+    out = tmp_path / "results"
+    cfg_path = tmp_path / "config.yaml"
+    import yaml
+
+    cfg_path.write_text(yaml.safe_dump(CFG))
+    _write_manifest(out, "ips", "HOL", 1, 0, "partial")
+    ran = []
+
+    def fake_run_one(args, tool, heap, k, rep, baseline_s):
+        ran.append((tool, heap, k, rep))
+        _write_manifest(out, tool, heap, k, rep, "ok")
+        return "ok"
+
+    monkeypatch.setattr(run_matrix, "run_one", fake_run_one)
+    monkeypatch.setattr(run_matrix, "host_used_gb", lambda: 10.0)
+    base = [
+        "--config",
+        str(cfg_path),
+        "--out",
+        str(out),
+        "--tools",
+        "ips",
+        "--heaps",
+        "HOL",
+        "--ks",
+        "1",
+    ]
+    lock = out / "RUNNER_LOCK"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    lock.write_text(f"{os.getpid()} now\n")  # this very process: alive
+    assert run_matrix.main(base) == 2 and ran == []
+    lock.write_text("999999999 stale\n")  # no such pid: stale, ignored
+    assert run_matrix.main(base) == 0
+    assert (
+        ran == [("ips", "HOL", 1, 1)] and not lock.exists()
+    )  # partial skipped, lock gone
+    assert run_matrix.main(base + ["--rerun-partial"]) == 0
+    assert ran[-1] == ("ips", "HOL", 1, 0)
 
 
 def test_dry_run_runs_nothing(tmp_path, capsys):

@@ -124,10 +124,10 @@ async def pressure(  # pylint: disable=too-many-locals,too-many-statements,too-m
         await driver.setup()
         sampler.add_roots(driver.root_pids())
         tool_cg = getattr(driver, "cgroup_dir", None)
-        if tool_cg and not cgroup_dir:
-            sampler.cgroup_dir = cgroup_dir = (
-                tool_cg  # IPS's own scope (with MemoryMax)
-            )
+        # IPS's own scope (with MemoryMax) beats the caller's cgroup: the server
+        # run of 2026-10-21 sampled the login session's cgroup (~98 MB) instead
+        cgroup_dir = tool_cg or cgroup_dir or procs.own_cgroup_dir()
+        sampler.cgroup_dir = cgroup_dir
         body["cgroup_dir"] = cgroup_dir
         body["driver"] = driver.describe()
         cg0 = procs.cgroup_memory(cgroup_dir)
@@ -292,6 +292,9 @@ async def kill_probe(
             except Exception as exc:  # pylint: disable=broad-exception-caught
                 ok = f"{type(exc).__name__}: {exc}"[:120]
             answers[str(i)] = {"ok": ok, "s": round(time.monotonic() - t0, 2)}
+            detail = getattr(driver, "last_probe", None)
+            if ok is not True and detail:  # why: the probe's own load result
+                answers[str(i)]["detail"] = detail
         body["answers"] = answers
         body["others_answered"] = (
             sum(1 for i, a in answers.items() if a["ok"] is True) >= k - 1

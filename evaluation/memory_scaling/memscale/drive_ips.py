@@ -27,6 +27,8 @@ import httpx
 
 from client.async_client import PoolAsyncClient
 
+from .workload import insert_after_first_paragraph
+
 
 def cgroup_dir_of(pid: int) -> Optional[str]:
     """``/sys/fs/cgroup<path>`` of a process's cgroup v2 membership (None for
@@ -41,6 +43,9 @@ def cgroup_dir_of(pid: int) -> Optional[str]:
     except OSError:
         return None
     return None
+
+
+PROBE_LEMMA = 'lemma memscale_probe: "True" by simp'
 
 
 class IPSDriver:  # pylint: disable=too-many-instance-attributes
@@ -76,6 +81,8 @@ class IPSDriver:  # pylint: disable=too-many-instance-attributes
         self.proc: Optional[subprocess.Popen[bytes]] = None
         self.client: Optional[PoolAsyncClient] = None
         self.sessions: Dict[int, Dict[str, str]] = {}
+        self.last_text: Dict[int, str] = {}  # what each session holds (E4 probe)
+        self.last_probe: Dict[str, Any] = {}
         self.warm_hits: Dict[int, bool] = (
             {}
         )  # P1 handed back an idle session? (c209e6c S2)
@@ -238,6 +245,7 @@ class IPSDriver:  # pylint: disable=too-many-instance-attributes
     async def load(self, i: int, text: str) -> Dict[str, Any]:
         """Whole-document load with the per-command report."""
         s = self.sessions[i]
+        self.last_text[i] = text
         try:
             res = await self._c().load_document(
                 s["session_id"],
@@ -313,15 +321,18 @@ class IPSDriver:  # pylint: disable=too-many-instance-attributes
                 pass
 
     async def probe(self, i: int) -> bool:
-        """E4: does session i still answer a small verify_chunk?"""
-        s = self.sessions[i]
-        res = await self._c().verify_chunk(
-            s["session_id"],
-            'lemma memscale_probe: "True" by simp',
-            timeout=30.0,
-            lease_id=s["lease_id"],
-        )
-        return bool(res.get("success"))
+        """E4: does session i still re-check? One more lemma after the first
+        paragraph of the text it holds, through the P5 path (load_document).
+        NOT a chunk appended to the document: after the theory's ``end`` every
+        chunk fails with "missing theory context" (server run 2026-10-21: all
+        eight answers False, kill or no kill; reproduced on the container)."""
+        text = self.last_text.get(i)
+        if text is None:
+            self.last_probe = {"ok": False, "error": "nothing loaded in this session"}
+            return False
+        res = await self.load(i, insert_after_first_paragraph(text, PROBE_LEMMA))
+        self.last_probe = res
+        return bool(res.get("ok"))
 
     async def memory_rows(self) -> Dict[str, Any]:
         """IPS's own view (/api/v1/memory) for cross-checking the sampler."""

@@ -111,7 +111,12 @@ If Isabelle is in your home directory, use `$HOME/Isabelle2026-RC2/bin` in place
    ```
    The log shows one line for each cell.
 3. If the run stops, start the same command again. The runner skips the cells that are complete.
-4. To run a part of the matrix, add options. Example:
+4. Start only one runner for one `results` folder. The runner writes `results/RUNNER_LOCK` and
+   refuses to start while another runner holds it. Two runners at the same time write into the
+   same cell and use the same port, and the analysis rejects that cell.
+5. A cell with `outcome partial` is skipped. To run it again, add `--rerun-partial` to the
+   command, or delete the folder of that cell.
+6. To run a part of the matrix, add options. Example:
    ```bash
    scripts/10_run_e1.sh --tools ips,pide-b --heaps HOL --ks 1,2,4 --reps 1
    ```
