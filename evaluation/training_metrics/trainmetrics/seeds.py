@@ -264,21 +264,31 @@ def make_seeds(  # pylint: disable=too-many-arguments,too-many-locals
 
 
 class BudgetLadder:
-    """Which budgets a seed is tried at (design T5, ≈ 1 h; review 7bedac5 S1).
-    ``counts[b]`` is the number of attempts per family at budget b. Every seed
-    gets the smallest budget while its family's count lasts; a seed that timed
-    out there (it loops) also gets each larger budget whose count for its
-    family is not used up. A seed that ended without timing out is not tried
-    again: a longer budget tells nothing about a step that does not loop."""
+    """Which budgets a seed is tried at (design T5, about 1 h; reviews 7bedac5
+    S1, beac25c S3/S4). ``counts[b]`` is the number of attempts per family at
+    budget b. Every seed gets the smallest budget while its family's count
+    lasts. The larger budgets go to seeds that loop, chosen by a seeded rank
+    (not by run order, so they spread over the files): a seed is eligible for
+    b when its rank is below ``counts[b]`` plus the eligible seeds that did not
+    loop so far. A seed climbs one budget at a time and stops at the first
+    attempt that does not time out; the slots it leaves pass on."""
 
-    def __init__(self, counts: Dict[float, int]) -> None:
+    def __init__(
+        self, counts: Dict[float, int], seeds: Sequence[Seed] = (), rng_seed: int = 0
+    ) -> None:
         if not counts:
             raise ValueError("no budgets")
-        self.smallest = min(float(b) for b in counts)
-        self.larger = sorted(float(b) for b in counts if float(b) != self.smallest)
-        self.left = {
-            (fam, float(b)): int(n) for fam in FAMILIES for b, n in counts.items()
-        }
+        self.counts = {float(b): int(n) for b, n in counts.items()}
+        self.smallest = min(self.counts)
+        self.larger = sorted(b for b in self.counts if b != self.smallest)
+        self.left = {(fam, b): n for fam in FAMILIES for b, n in self.counts.items()}
+        self.missed = {(fam, b): 0 for fam in FAMILIES for b in self.larger}
+        rng = random.Random(rng_seed)
+        self.rank: Dict[str, int] = {}
+        for fam in FAMILIES:
+            ids = sorted(s.seed_id for s in seeds if s.family == fam)
+            rng.shuffle(ids)
+            self.rank.update({sid: r for r, sid in enumerate(ids)})
 
     def _take(self, family: str, budget: float) -> bool:
         if self.left.get((family, budget), 0) <= 0:
@@ -286,10 +296,29 @@ class BudgetLadder:
         self.left[(family, budget)] -= 1
         return True
 
+    def _eligible(self, seed_id: str, family: str, budget: float) -> bool:
+        return (
+            self.rank.get(seed_id, 0)
+            < self.counts[budget] + self.missed[(family, budget)]
+        )
+
     def first(self, family: str) -> Optional[float]:
         """The smallest budget, or None when the family's count is used up."""
         return self.smallest if self._take(family, self.smallest) else None
 
-    def more(self, family: str) -> List[float]:
-        """The larger budgets still open for a seed that looped."""
-        return [b for b in self.larger if self._take(family, b)]
+    def next_budget(
+        self, seed_id: str, family: str, after: float, timed_out: bool
+    ) -> Optional[float]:
+        """The next larger budget for a seed whose attempt at ``after`` ended
+        (``timed_out``: it still loops), or None. A seed that stops passes
+        the larger slots it was eligible for on to the next seeds."""
+        later = [b for b in self.larger if b > after]
+        if not timed_out:
+            for b in later:
+                if self._eligible(seed_id, family, b) and self.left[(family, b)] > 0:
+                    self.missed[(family, b)] += 1
+            return None
+        for b in later:
+            if self._eligible(seed_id, family, b) and self._take(family, b):
+                return b
+        return None

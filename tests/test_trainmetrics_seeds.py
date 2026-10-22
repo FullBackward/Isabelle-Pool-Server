@@ -130,9 +130,52 @@ def test_synthetic_goals_when_no_additive_statement_and_unproved_blocks_skipped(
     assert len([s for s in out if s.family == "metis"]) == 1  # three positions in all
 
 
-def test_the_budget_ladder_gives_larger_budgets_only_while_counts_last():
-    ladder = seeds.BudgetLadder({5: 2, 30: 1, 120: 1})
-    assert ladder.first("subst") == 5.0 and ladder.more("subst") == [30.0, 120.0]
-    assert ladder.first("subst") == 5.0 and ladder.more("subst") == []  # used up
+def _ladder_seeds(n):
+    return [
+        seeds.Seed(f"{fam}-{k}", fam, "S", k, f"t5_seed_{k}", "x", "g", "synthetic")
+        for fam in seeds.FAMILIES
+        for k in range(n)
+    ]
+
+
+def test_the_ladder_climbs_one_budget_at_a_time_and_stops_when_a_seed_ends():
+    """Review beac25c S4."""
+    ladder = seeds.BudgetLadder({5: 2, 30: 1, 120: 1})  # no ranks: every seed eligible
+    assert ladder.first("subst") == 5.0
+    assert ladder.next_budget("subst-0", "subst", 5.0, timed_out=True) == 30.0
+    # it ended at 30 s: not tried at 120 s, and the 120 s slot passes on
+    assert ladder.next_budget("subst-0", "subst", 30.0, timed_out=False) is None
+    assert ladder.left[("subst", 120.0)] == 1 and ladder.missed[("subst", 120.0)] == 1
+    assert ladder.first("subst") == 5.0
+    assert ladder.next_budget("subst-1", "subst", 5.0, timed_out=True) == 120.0
     assert ladder.first("subst") is None  # two attempts at 5 s per family
-    assert ladder.first("metis") == 5.0 and ladder.more("metis") == [30.0, 120.0]
+    assert ladder.first("metis") == 5.0  # families count apart
+
+
+def test_the_larger_budgets_go_to_seeded_ranks_not_to_run_order():
+    """Review beac25c S3: with 10 seeds in run order, the one 120 s attempt goes
+    to the seed of rank 0, wherever it sits; a ranked seed that does not loop
+    passes its slot to the next rank."""
+    sd = _ladder_seeds(10)
+    ladder = seeds.BudgetLadder({5: 10, 120: 1}, sd, rng_seed=7)
+    order = [s for s in sd if s.family == "subst"]
+    ranked = sorted(order, key=lambda s: ladder.rank[s.seed_id])
+    got = []
+    for s in order:
+        assert ladder.first("subst") == 5.0
+        b = ladder.next_budget(s.seed_id, "subst", 5.0, timed_out=True)
+        if b is not None:
+            got.append(s.seed_id)
+    assert got == [ranked[0].seed_id]
+    assert (
+        ranked[0].seed_id != order[0].seed_id or ranked[1].seed_id != order[1].seed_id
+    )
+    # the rank-0 seed does not loop: rank 1 inherits the slot
+    ladder = seeds.BudgetLadder({5: 10, 120: 1}, sd, rng_seed=7)
+    got = []
+    for s in sorted(order, key=lambda s: ladder.rank[s.seed_id]):
+        ladder.first("subst")
+        loops = ladder.rank[s.seed_id] != 0
+        if ladder.next_budget(s.seed_id, "subst", 5.0, timed_out=loops) is not None:
+            got.append(ladder.rank[s.seed_id])
+    assert got == [1]

@@ -3,17 +3,32 @@ family and budget the fraction returned as ``timed_out`` (the guarantee) and,
 separately, the fraction with ``stuck_line`` (the diagnostic); the undo cost
 past the budget; whether the node source was unchanged; per family the seeds
 that did not loop (review 7bedac5 S1) and the corpus block after the seeds:
-verdict as in the census, and its time (recovery) against the census time."""
+verdict as in the census, and its time (recovery) against the census time.
+Memory and a dead session are their own classes, outside the fractions
+(review beac25c S1). What a timeout leaves behind (S2) comes from the
+sampler: the prover that ran the attempt (the prover process with the most CPU
+in the attempt's window; at W = 1 the attempt's own) and its RSS just before,
+at peak and just after (the session rows of /api/v1/memory are probed at most
+every 15 s, too seldom for 5 s attempts; they still give the server tier)."""
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Sequence, Tuple
+import json
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from .metrics_t12 import p50, p95
+
+OUTCOMES = ("timed_out", "failed", "kept", "error")
+APART = ("memory", "prover_died", "session_gone")  # not counted in the fractions
 
 
 def _r(x: Any, nd: int = 3) -> Any:
     return None if x is None else round(float(x), nd)
+
+
+def _frac(k: int, n: int) -> Optional[float]:
+    return round(k / n, 3) if n else None
 
 
 def attempts(files: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -26,32 +41,166 @@ def attempts(files: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
     ]
 
 
-def _cell(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+MB = 2**20
+
+
+def load_samples(path: Path) -> List[Dict[str, Any]]:
+    """The sampler rows of a cell (unreadable lines skipped)."""
+    out: List[Dict[str, Any]] = []
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            for line in fh:
+                try:
+                    out.append(json.loads(line))
+                except ValueError:
+                    continue
+    except OSError:
+        return []
+    return out
+
+
+def _polys(row: Dict[str, Any]) -> Dict[int, Dict[str, Any]]:
+    return {int(p["pid"]): p for p in row.get("procs") or [] if p.get("role") == "poly"}
+
+
+def prover_memory(
+    samples: Sequence[Dict[str, Any]], t0: float, t1: float
+) -> Optional[Dict[str, Any]]:
+    """The prover that ran during [t0, t1] and its RSS before, at peak and
+    after (MB). before = the last sample at or before t0; the prover = the one
+    with the most CPU from there to its last sample up to the first sample at or
+    after t1 (the undo is done when the response arrives); after = that
+    sample, or the prover's last sample when it exited first (the file's
+    session is closed right after its last position). None when no prover
+    worked in the window."""
+    before = next((r for r in reversed(samples) if float(r["t"]) <= t0), None)
+    after = next((r for r in samples if float(r["t"]) >= t1), None)
+    if before is None:
+        return None
+    t_end = float(after["t"]) if after is not None else t1
+    window = [r for r in samples if t0 < float(r["t"]) <= t_end]
+    pb = _polys(before)
+    last: Dict[int, Dict[str, Any]] = {}
+    for r in window:
+        last.update({pid: q for pid, q in _polys(r).items() if pid in pb})
+    busy = {
+        pid: int(q.get("cpu_ticks") or 0) - int(pb[pid].get("cpu_ticks") or 0)
+        for pid, q in last.items()
+    }
+    if not busy or max(busy.values()) <= 0:
+        return None
+    pid = max(busy, key=lambda q: busy[q])
+    rb = int(pb[pid]["rss"])
+    peak = max([rb] + [int(_polys(r)[pid]["rss"]) for r in window if pid in _polys(r)])
+    ra = int(last[pid]["rss"])
+    return {
+        "pid": pid,
+        "rss_before_mb": round(rb / MB, 1),
+        "rss_peak_mb": round(peak / MB, 1),
+        "rss_after_mb": round(ra / MB, 1),
+        "retained_mb": round((ra - rb) / MB, 1),
+        "exited": after is not None and pid not in _polys(after),
+    }
+
+
+def annotate(
+    files: Sequence[Dict[str, Any]], samples: Sequence[Dict[str, Any]]
+) -> None:
+    """Add ``prover_mem`` to every attempt of the records (in place)."""
+    if not samples:
+        return
+    for f in files:
+        for p in f.get("positions") or []:
+            for a in p.get("attempts") or []:
+                t0 = float(a.get("t_start") or 0)
+                a["prover_mem"] = prover_memory(samples, t0, t0 + float(a["wall_s"]))
+
+
+def _cell(all_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+    rows = [a for a in all_rows if a["outcome"] not in APART]
     n = len(rows)
     out: Dict[str, Any] = {"attempts": n}
-    for o in ("timed_out", "failed", "kept", "error"):
-        out[o] = sum(1 for a in rows if a["outcome"] == o)
-    out["timed_out_frac"] = _r(out["timed_out"] / n) if n else None
-    out["stuck_line_frac"] = (
-        _r(sum(1 for a in rows if a.get("stuck_line") is not None) / n) if n else None
+    for o in OUTCOMES + APART:
+        out[o] = sum(1 for a in all_rows if a["outcome"] == o)
+    out["timed_out_frac"] = _frac(out["timed_out"], n)
+    out["stuck_line_frac"] = _frac(
+        sum(1 for a in rows if a.get("stuck_line") is not None), n
     )
     undo = [float(a["undo_s"]) for a in rows if a.get("undo_s") is not None]
+    mem = [a["prover_mem"] for a in rows if a.get("prover_mem")]
+    kept_mb = [float(m["retained_mb"]) for m in mem]
+    peak_up = [float(m["rss_peak_mb"]) - float(m["rss_before_mb"]) for m in mem]
+    known = [a for a in rows if a.get("source_unchanged") is not None]
     out.update(
         {
             "undo_p50_s": _r(p50(undo)),
             "undo_p95_s": _r(p95(undo)),
             "undo_max_s": _r(max(undo) if undo else None),
+            "source_unchanged_frac": _frac(
+                sum(1 for a in known if a["source_unchanged"]), len(known)
+            ),
+            "rolled_back": sum(1 for a in rows if a.get("rolled_back")),
+            "wall_max_s": _r(max((float(a["wall_s"]) for a in rows), default=None)),
+            "retained_p50_mb": _r(p50(kept_mb), 1),
+            "retained_max_mb": _r(max(kept_mb) if kept_mb else None, 1),
+            "peak_growth_max_mb": _r(max(peak_up) if peak_up else None, 1),
+            "prover_peak_max_mb": _r(
+                max((float(m["rss_peak_mb"]) for m in mem), default=None), 1
+            ),
+            "tiers_after": sorted(
+                {
+                    str((a.get("mem_after") or {}).get("state"))
+                    for a in rows
+                    if a.get("mem_after")
+                }
+            ),
         }
     )
-    known = [a for a in rows if a.get("source_unchanged") is not None]
-    out["source_unchanged_frac"] = (
-        _r(sum(1 for a in known if a["source_unchanged"]) / len(known))
-        if known
-        else None
-    )
-    out["rolled_back"] = sum(1 for a in rows if a.get("rolled_back"))
-    out["wall_max_s"] = _r(max((float(a["wall_s"]) for a in rows), default=None))
     return out
+
+
+def _family(
+    files: Sequence[Dict[str, Any]], rows: List[Dict[str, Any]], fam: str
+) -> Dict[str, Any]:
+    first: Dict[str, Dict[str, Any]] = {}
+    for a in sorted(
+        (a for a in rows if a["family"] == fam),
+        key=lambda x: (x["seed_id"], x["budget_s"]),
+    ):
+        first.setdefault(a["seed_id"], a)  # the attempt at the smallest budget
+    not_looping = [
+        a for a in first.values() if a["outcome"] in ("failed", "kept", "error")
+    ]
+    pos = [
+        p
+        for f in files
+        for p in f.get("positions") or []
+        if not p.get("stopped")
+        and any(x["family"] == fam for x in p.get("attempts") or [])
+    ]
+    rec = [float(p["recovery_s"]) for p in pos if p.get("recovery_s") is not None]
+    cen = [float(p["census_wall_s"]) for p in pos if p.get("census_wall_s") is not None]
+    return {
+        "seeds": len(first),
+        "goal_sources": sorted({str(a.get("goal_source")) for a in first.values()}),
+        "not_looping": len(not_looping),
+        "not_looping_outcomes": {
+            o: sum(1 for a in not_looping if a["outcome"] == o)
+            for o in ("failed", "kept", "error")
+        },
+        "not_looping_errors": sorted(
+            {str(a["first_error"])[:80] for a in not_looping if a.get("first_error")}
+        )[:5],
+        "ended_apart": {
+            o: sum(1 for a in rows if a["family"] == fam and a["outcome"] == o)
+            for o in APART
+        },
+        "verdict_match_frac": _frac(
+            sum(1 for p in pos if p.get("verdict_match")), len(pos)
+        ),
+        "recovery_p50_s": _r(p50(rec)),
+        "census_p50_s": _r(p50(cen)),
+    }
 
 
 def summarize(files: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
@@ -60,49 +209,18 @@ def summarize(files: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
     by: Dict[Tuple[str, float], List[Dict[str, Any]]] = {}
     for a in rows:
         by.setdefault((a["family"], float(a["budget_s"])), []).append(a)
-    table = [
-        {"family": fam, "budget_s": b, **_cell(v)} for (fam, b), v in sorted(by.items())
-    ]
-    families: Dict[str, Any] = {}
-    for fam in sorted({a["family"] for a in rows}):
-        first: Dict[str, Dict[str, Any]] = {}
-        for a in sorted(
-            (a for a in rows if a["family"] == fam),
-            key=lambda x: (x["seed_id"], x["budget_s"]),
-        ):
-            first.setdefault(a["seed_id"], a)  # the attempt at the smallest budget
-        not_looping = [a for a in first.values() if a["outcome"] != "timed_out"]
-        pos = [
-            p
-            for f in files
-            for p in f.get("positions") or []
-            if any(x["family"] == fam for x in p.get("attempts") or [])
-        ]
-        rec = [float(p["recovery_s"]) for p in pos if p.get("recovery_s") is not None]
-        cen = [
-            float(p["census_wall_s"]) for p in pos if p.get("census_wall_s") is not None
-        ]
-        families[fam] = {
-            "seeds": len(first),
-            "goal_sources": sorted({str(a.get("goal_source")) for a in first.values()}),
-            "not_looping": len(not_looping),
-            "not_looping_outcomes": {
-                o: sum(1 for a in not_looping if a["outcome"] == o)
-                for o in ("failed", "kept", "error")
-            },
-            "verdict_match_frac": (
-                _r(sum(1 for p in pos if p.get("verdict_match")) / len(pos))
-                if pos
-                else None
-            ),
-            "recovery_p50_s": _r(p50(rec)),
-            "census_p50_s": _r(p50(cen)),
-        }
     return {
         "files": len(files),
         "acquire_errors": sum(1 for f in files if f.get("acquire_error")),
         "enter_errors": sum(1 for f in files if f.get("enter_error")),
         "positions": sum(len(f.get("positions") or []) for f in files),
-        "table": table,
-        "families": families,
+        "stopped_files": {f["stem"]: f["stopped"] for f in files if f.get("stopped")},
+        "table": [
+            {"family": fam, "budget_s": b, **_cell(v)}
+            for (fam, b), v in sorted(by.items())
+        ],
+        "families": {
+            fam: _family(files, rows, fam)
+            for fam in sorted({a["family"] for a in rows})
+        },
     }

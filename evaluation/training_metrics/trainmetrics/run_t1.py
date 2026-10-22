@@ -157,11 +157,17 @@ async def run_cell(  # pylint: disable=too-many-locals,too-many-arguments
     body["acquire_errors"] = sum(1 for r in records if r.acquire_error)
     body["enter_errors"] = sum(1 for r in records if r.enter_error)
     body["block_errors"] = sum(1 for r in records for b in r.blocks if b.error)
+    body["error_kinds"] = sorted(
+        {b.error_kind for r in records for b in r.blocks if b.error_kind}
+    )
     spec.out_dir.mkdir(parents=True, exist_ok=True)
     with open(spec.out_dir / "replays.jsonl", "w", encoding="utf-8") as fh:
         for rr in sorted(records, key=lambda x: (x.worker, x.t_start)):
             fh.write(json.dumps(rr.as_dict()) + "\n")
-    body["outcome"] = "ok"
+    ran = [r for r in records if not r.acquire_error and not r.enter_error]
+    body["outcome"] = (
+        "ok" if ran else "empty"
+    )  # nothing replayed is no result (beac25c note)
     return body
 
 

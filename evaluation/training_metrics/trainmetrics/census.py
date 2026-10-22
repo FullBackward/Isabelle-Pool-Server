@@ -68,6 +68,7 @@ def summarize(records: Sequence[ReplayRecord]) -> List[Dict[str, Any]]:
                         "wall_s": b.wall_s,
                         "statuses": b.statuses,
                         "error": b.error,
+                        "error_kind": b.error_kind,
                     }
                     for b in rr.blocks
                 ],

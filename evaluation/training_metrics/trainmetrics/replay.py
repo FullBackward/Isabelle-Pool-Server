@@ -117,6 +117,9 @@ class BlockRecord:  # pylint: disable=too-many-instance-attributes
     t_start: float = 0.0
     error: Optional[str] = None
     statuses: Dict[str, int] = field(default_factory=dict)
+    # memory | prover_died from the response; session_gone for a 404 (review beac25c S1)
+    error_kind: Optional[str] = None
+    first_error: Optional[str] = None  # the first error message of the report (S5)
 
 
 @dataclass
@@ -145,6 +148,21 @@ class ReplayRecord:  # pylint: disable=too-many-instance-attributes
     def as_dict(self) -> Dict[str, Any]:
         """JSON form."""
         return asdict(self)
+
+
+def http_status(exc: BaseException) -> Optional[int]:
+    """The HTTP status of a client error, if it has one."""
+    status = getattr(getattr(exc, "response", None), "status_code", None)
+    return int(status) if isinstance(status, int) else None
+
+
+def first_error(commands: List[Dict[str, Any]]) -> Optional[str]:
+    """The first error message of a chunk report (truncated)."""
+    for c in commands:
+        for m in c.get("messages") or []:
+            if m.get("sev") == "error":
+                return str(m.get("text"))[:200]
+    return None
 
 
 def _statuses(commands: List[Dict[str, Any]]) -> Dict[str, int]:
@@ -201,6 +219,8 @@ async def verify_block(  # pylint: disable=too-many-arguments,too-many-locals
         )
     except Exception as exc:  # pylint: disable=broad-exception-caught
         rec.error = f"{type(exc).__name__}: {exc}"[:300]
+        if http_status(exc) == 404:  # the session is gone (its prover died)
+            rec.error_kind = "session_gone"
         rec.wall_s = round(time.monotonic() - t0, 4)
         return rec
     rec.wall_s = round(time.monotonic() - t0, 4)
@@ -214,6 +234,8 @@ async def verify_block(  # pylint: disable=too-many-arguments,too-many-locals
     rec.stuck_line = res.get("stuck_line")
     rec.execution_time = res.get("execution_time")
     rec.proved = is_proved(res)
+    rec.error_kind = res.get("error_kind")
+    rec.first_error = first_error(commands)
     if res.get("error"):
         rec.error = str(res.get("error"))[:300]
     return rec
@@ -302,6 +324,8 @@ async def close_all(
             try:  # closed, not released: the SessionRef invariant
                 await client.close_session(s.session_id, lease_id=s.lease_id)
             except Exception as exc:  # pylint: disable=broad-exception-caught
+                if http_status(exc) == 404:  # already gone: nothing left to close
+                    continue
                 last[s.session_id] = f"{type(exc).__name__}: {exc}"[:200]
                 still.append(s)
         pending = still

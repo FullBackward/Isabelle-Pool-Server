@@ -25,7 +25,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence
 from .census import load_census, load_config
 from .corpus import CorpusFile, corpus_sha, load_corpus, load_paths, sha256_text
 from .harness import cell_arg_parser, run_with_server
-from .metrics_t5 import summarize
+from .metrics_t5 import annotate, load_samples, summarize
 from .replay import (
     BlockRecord,
     SessionRef,
@@ -44,7 +44,9 @@ class SeedAttempt:  # pylint: disable=too-many-instance-attributes
     family: str
     goal_source: str
     budget_s: float
-    outcome: str  # timed_out | failed | kept | error
+    outcome: (
+        str  # timed_out | failed | kept | error | memory | prover_died | session_gone
+    )
     wall_s: float
     undo_s: Optional[float]  # wall time past the budget (timed-out attempts)
     stuck_line: Optional[int]
@@ -54,6 +56,10 @@ class SeedAttempt:  # pylint: disable=too-many-instance-attributes
     source_unchanged: Optional[bool]  # None: the source could not be read
     rolled_back: bool = False
     t_start: float = 0.0
+    error_kind: Optional[str] = None
+    first_error: Optional[str] = None  # why a seed failed (review beac25c S5)
+    mem_before: Optional[Dict[str, Any]] = None  # the session's row + server tier (S2)
+    mem_after: Optional[Dict[str, Any]] = None
 
 
 @dataclass
@@ -68,6 +74,7 @@ class PositionRecord:  # pylint: disable=too-many-instance-attributes
     block: Optional[Dict[str, Any]] = None
     verdict_match: Optional[bool] = None
     recovery_s: Optional[float] = None
+    stopped: Optional[str] = None  # the session died here (review beac25c S1)
 
 
 @dataclass
@@ -85,6 +92,7 @@ class T5FileRecord:  # pylint: disable=too-many-instance-attributes
     prefix_proved: int = 0
     prefix_wall_s: float = 0.0
     positions: List[PositionRecord] = field(default_factory=list)
+    stopped: Optional[str] = None  # prover_died | session_gone: the file ended there
     unclosed: List[Dict[str, Any]] = field(default_factory=list)
     t_start: float = 0.0
     t_end: float = 0.0
@@ -94,10 +102,16 @@ class T5FileRecord:  # pylint: disable=too-many-instance-attributes
         return asdict(self)
 
 
+DEAD = ("prover_died", "session_gone")  # the session is gone: the file stops
+
+
 def classify(rec: BlockRecord) -> str:
-    """timed_out (the bound fired), error (no report at all), kept (the seed
+    """memory / prover_died / session_gone (their own classes, review beac25c
+    S1), timed_out (the bound fired), error (no report at all), kept (the seed
     stayed in the document: success, or an open proof), failed (ended with an
     error and was discarded)."""
+    if rec.error_kind in ("memory",) + DEAD:
+        return str(rec.error_kind)
     if rec.timed_out:
         return "timed_out"
     if rec.n_commands is None:
@@ -115,10 +129,32 @@ async def _source_hash(client: Any, sess: SessionRef) -> Optional[str]:
     return sha256_text(str((res or {}).get("source", "")))
 
 
+async def session_memory(client: Any, session_id: str) -> Optional[Dict[str, Any]]:
+    """The session's row of ``GET /api/v1/memory`` (rss_mb, heap_mb and when
+    they were sampled: the probe runs after a call at most every 15 s) and the
+    server's tier and used memory (review beac25c S2)."""
+    try:
+        m = await client.memory_status()
+    except Exception:  # pylint: disable=broad-exception-caught
+        return None
+    rows: List[Dict[str, Any]] = list(m.get("sessions") or [])
+    row: Dict[str, Any] = next(
+        (r for r in rows if r.get("session_id") == session_id), {}
+    )
+    return {
+        "state": m.get("state"),
+        "used_mb": (m.get("memory") or {}).get("used_mb"),
+        "rss_mb": row.get("rss_mb"),
+        "heap_mb": row.get("heap_mb"),
+        "sampled_at": row.get("mem_sampled_at"),
+    }
+
+
 async def attempt(
     client: Any, sess: SessionRef, seed: Seed, budget_s: float, before: Optional[str]
 ) -> SeedAttempt:
-    """One seed under ``budget_s``; a kept seed is rolled back (S2)."""
+    """One seed under ``budget_s``; a kept seed is rolled back (7bedac5 S2)."""
+    mem_before = await session_memory(client, sess.session_id)
     rec = await verify_block(
         client,
         sess,
@@ -143,7 +179,12 @@ async def attempt(
         error=rec.error,
         source_unchanged=None,
         t_start=rec.t_start,
+        error_kind=rec.error_kind,
+        first_error=rec.first_error,
+        mem_before=mem_before,
     )
+    if out.outcome in DEAD:
+        return out
     if out.outcome == "kept":
         try:
             await client.rollback(sess.session_id, lease_id=sess.lease_id)
@@ -153,6 +194,7 @@ async def attempt(
     after = await _source_hash(client, sess)
     if before is not None and after is not None:
         out.source_unchanged = before == after
+    out.mem_after = await session_memory(client, sess.session_id)
     return out
 
 
@@ -176,13 +218,16 @@ async def run_position(  # pylint: disable=too-many-arguments,too-many-positiona
     )
     before = await _source_hash(client, sess)
     for seed in at:
-        first = ladder.first(seed.family)
-        if first is None:
-            continue
-        pos.attempts.append(await attempt(client, sess, seed, first, before))
-        if pos.attempts[-1].outcome == "timed_out":
-            for b in ladder.more(seed.family):
-                pos.attempts.append(await attempt(client, sess, seed, b, before))
+        b: Optional[float] = ladder.first(seed.family)
+        while b is not None:  # one budget at a time (review beac25c S4)
+            a = await attempt(client, sess, seed, b, before)
+            pos.attempts.append(a)
+            if a.outcome in DEAD:
+                pos.stopped = a.outcome
+                return pos
+            b = ladder.next_budget(
+                seed.seed_id, seed.family, b, a.outcome == "timed_out"
+            )
     blk = await verify_block(
         client,
         sess,
@@ -194,6 +239,9 @@ async def run_position(  # pylint: disable=too-many-arguments,too-many-positiona
         census_partial=bool(row.get("count_partial")),
     )
     pos.block = asdict(blk)
+    if blk.error_kind in DEAD:
+        pos.stopped = blk.error_kind
+        return pos
     pos.verdict_match = blk.proved == pos.census_proved
     pos.recovery_s = blk.wall_s
     return pos
@@ -250,6 +298,9 @@ async def run_file(  # pylint: disable=too-many-arguments,too-many-locals
                 rec.positions.append(
                     await run_position(client, sess, cf, by_pos[i], ladder, census_file)
                 )
+                rec.stopped = rec.positions[-1].stopped
+                if rec.stopped:  # a dead session: no more rollouts on it (B1)
+                    break
                 continue
             row = rows[i] if i < len(rows) else {}
             blk = await verify_block(
@@ -265,6 +316,9 @@ async def run_file(  # pylint: disable=too-many-arguments,too-many-locals
             rec.prefix_blocks += 1
             rec.prefix_proved += int(blk.proved)
             rec.prefix_wall_s = round(rec.prefix_wall_s + blk.wall_s, 4)
+            if blk.error_kind in DEAD:
+                rec.stopped = blk.error_kind
+                break
     finally:
         rec.unclosed = await close_all(client, [sess])
         if not rec.unclosed:
@@ -297,7 +351,7 @@ async def run_cell(  # pylint: disable=too-many-arguments,too-many-locals
         facts_cap=int(t5.get("metis_facts_max", 40)),
     )
     counts = {float(b): int(n) for b, n in dict(t5["budgets"]).items()}
-    ladder = BudgetLadder(counts)
+    ladder = BudgetLadder(counts, seeds, rng_seed=seed)
     body = body if body is not None else {}
     body.update(
         {
@@ -348,12 +402,17 @@ async def run_cell(  # pylint: disable=too-many-arguments,too-many-locals
     if sampler is not None:
         sampler.phase("stop")
     dicts = [r.as_dict() for r in records]
+    if sampler is not None:  # the sampler's rows after the last attempt (S2)
+        await asyncio.sleep(2.0)
+        annotate(dicts, load_samples(out_dir / "samples.jsonl"))
     with open(out_dir / "positions.jsonl", "w", encoding="utf-8") as fh:
         for d in dicts:
             fh.write(json.dumps(d) + "\n")
     body["unclosed_sessions"] = [u for r in records for u in r.unclosed]
+    body["stopped_files"] = {r.stem: r.stopped for r in records if r.stopped}
     body["summary"] = summarize(dicts)
-    body["outcome"] = "ok"
+    # no position run is no result (review beac25c note): not "ok", rc 1
+    body["outcome"] = "ok" if body["summary"]["positions"] else "empty"
     return body
 
 

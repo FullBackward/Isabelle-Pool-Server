@@ -14,7 +14,7 @@ sys.path.insert(
     0, str(Path(__file__).resolve().parents[1] / "evaluation" / "training_metrics")
 )
 
-from trainmetrics import corpus, metrics_t5, run_t5  # noqa: E402
+from trainmetrics import corpus, metrics_t5, replay, run_t5  # noqa: E402
 from trainmetrics.replay import BlockRecord  # noqa: E402
 
 THY = """theory Seeded
@@ -55,6 +55,7 @@ class FakeServer:
         self.closed = []
         self.rollbacks = 0
         self.n = 0
+        self.mem = 0.0
 
     async def acquire_session(self, **kw):
         assert kw["reuse_dirty"] is False
@@ -80,7 +81,18 @@ class FakeServer:
             return {
                 "success": False,
                 "timed_out": False,
-                "commands": [{"status": "ok"}, {"status": "failed"}],
+                "commands": [
+                    {"status": "ok"},
+                    {
+                        "status": "failed",
+                        "messages": [
+                            {
+                                "sev": "error",
+                                "text": "Failed to apply initial proof method",
+                            }
+                        ],
+                    },
+                ],
             }
         if "metis" in chunk:  # kept: an open proof stays in the document
             self.docs[sid].append(chunk)
@@ -104,6 +116,19 @@ class FakeServer:
     async def close_session(self, sid, lease_id=None):
         self.closed.append(sid)
         return {}
+
+    async def memory_status(self):
+        self.mem += 100.0
+        rows = [
+            {
+                "session_id": sid,
+                "rss_mb": self.mem,
+                "heap_mb": 1.0,
+                "mem_sampled_at": 1e12,
+            }
+            for sid in self.docs
+        ]
+        return {"state": "ok", "memory": {"used_mb": 1000.0}, "sessions": rows}
 
 
 def _setup(tmp_path):
@@ -232,3 +257,183 @@ def test_failed_seeds_and_a_refused_acquisition(tmp_path):
 
 def test_parse_budgets():
     assert run_t5.parse_budgets("5:2, 30:1") == {5.0: 2, 30.0: 1}
+
+
+class _Gone(Exception):
+    def __init__(self):
+        super().__init__("404 Not Found")
+        self.response = type("R", (), {"status_code": 404})()
+
+
+def test_a_dead_prover_stops_the_file_and_is_counted_apart(tmp_path):
+    """Review beac25c S1 / plan_v1.6 B1: no failed rollouts from a dead session."""
+    cf, census, t5 = _setup(tmp_path)
+
+    class Dying(FakeServer):
+        dead = False
+
+        async def verify_chunk(self, sid, chunk, timeout=None, *, lease_id=None):
+            if self.dead:
+                raise _Gone()
+            if "metis" in chunk:
+                self.dead = True
+                return {
+                    "success": False,
+                    "timed_out": False,
+                    "error_kind": "prover_died",
+                    "commands": [{"status": "failed"}],
+                }
+            return await super().verify_chunk(sid, chunk, timeout, lease_id=lease_id)
+
+        async def close_session(self, sid, lease_id=None):
+            raise _Gone()  # already gone: close_all must not wait for it
+
+    out = tmp_path / "c"
+    body = asyncio.run(
+        run_t5.run_cell(Dying(), t5, [cf], census, heap="HOL", seed=1, out_dir=out)
+    )
+    s = body["summary"]
+    assert body["stopped_files"] == {"Seeded": "prover_died"}
+    assert (
+        body["unclosed_sessions"] == [] and s["stopped_files"] == body["stopped_files"]
+    )
+    metis = s["families"]["metis"]
+    assert metis["ended_apart"]["prover_died"] == 1 and metis["not_looping"] == 0
+    for r in s["table"]:
+        assert r["attempts"] == r["timed_out"] + r["failed"] + r["kept"] + r["error"]
+    files = [json.loads(x) for x in (out / "positions.jsonl").read_text().splitlines()]
+    assert metrics_t5.attempts(files)[-1]["outcome"] == "prover_died"  # nothing after
+
+
+def test_why_a_seed_failed_and_the_memory_it_left_are_recorded(tmp_path):
+    """Review beac25c S2 / S5."""
+    cf, census, t5 = _setup(tmp_path)
+    out = tmp_path / "c"
+    asyncio.run(
+        run_t5.run_cell(
+            FakeServer(metis="failed"),
+            t5,
+            [cf],
+            census,
+            heap="HOL",
+            seed=1,
+            out_dir=out,
+        )
+    )
+    files = [json.loads(x) for x in (out / "positions.jsonl").read_text().splitlines()]
+    metis = [a for a in metrics_t5.attempts(files) if a["family"] == "metis"]
+    assert all(
+        a["first_error"] == "Failed to apply initial proof method" for a in metis
+    )
+    assert all(a["mem_after"]["state"] == "ok" for a in metis)  # the server tier
+    summary = metrics_t5.summarize(files)
+    fam = summary["families"]["metis"]
+    assert fam["not_looping_errors"] == ["Failed to apply initial proof method"]
+    row = next(r for r in summary["table"] if r["family"] == "metis")
+    assert row["tiers_after"] == ["ok"] and row["retained_max_mb"] is None  # no sampler
+
+
+def _sample(t, provers):
+    procs = [
+        {"pid": pid, "role": "poly", "rss": int(mb * 2**20), "cpu_ticks": ticks}
+        for pid, (mb, ticks) in provers.items()
+    ]
+    return {
+        "t": t,
+        "procs": procs + [{"pid": 1, "role": "jvm", "rss": 1, "cpu_ticks": 9}],
+    }
+
+
+def test_the_prover_that_ran_the_attempt_and_its_retained_memory():
+    """Review beac25c S2: the busy prover's RSS before, at peak and after; an
+    idle prover beside it (a leftover session) is not picked."""
+    samples = [
+        _sample(100.0, {10: (1000, 0), 20: (3000, 50)}),
+        _sample(101.0, {10: (1500, 100), 20: (3000, 50)}),
+        _sample(102.0, {10: (4000, 200), 20: (3000, 50)}),
+        _sample(103.0, {10: (3500, 210), 20: (3000, 50)}),
+    ]
+    m = metrics_t5.prover_memory(samples, 100.5, 102.5)
+    assert m["pid"] == 10 and m["rss_before_mb"] == 1000.0
+    assert m["rss_peak_mb"] == 4000.0 and m["rss_after_mb"] == 3500.0
+    assert m["retained_mb"] == 2500.0
+    assert metrics_t5.prover_memory(samples, 99.0, 100.5) is None  # nothing before
+    # the busy prover exits before the first sample after the attempt (its file's
+    # session closed): its last sample is "after", not an idle neighbour's
+    gone = samples[:3] + [_sample(103.0, {20: (3000, 50)})]
+    m = metrics_t5.prover_memory(gone, 100.5, 102.5)
+    assert m["pid"] == 10 and m["rss_after_mb"] == 4000.0 and m["exited"]
+    idle = [_sample(t, {20: (3000, 50)}) for t in (100.0, 101.0, 102.0, 103.0)]
+    assert metrics_t5.prover_memory(idle, 100.5, 102.5) is None  # nobody worked
+    files = [
+        {
+            "stem": "S",
+            "positions": [
+                {
+                    "position": 1,
+                    "attempts": [
+                        {
+                            "seed_id": "subst-0",
+                            "family": "subst",
+                            "budget_s": 1.0,
+                            "outcome": "timed_out",
+                            "wall_s": 2.0,
+                            "t_start": 100.5,
+                        }
+                    ],
+                }
+            ],
+        }
+    ]
+    metrics_t5.annotate(files, samples)
+    row = metrics_t5.summarize(files)["table"][0]
+    assert row["retained_max_mb"] == 2500.0 and row["peak_growth_max_mb"] == 3000.0
+
+
+def test_a_memory_error_is_its_own_class():
+    rec = BlockRecord("s", 0, "x", 2, None, 5.0, "override", error_kind="memory")
+    assert run_t5.classify(rec) == "memory"
+    gone = BlockRecord(
+        "s", 0, "x", None, None, 5.0, "override", error_kind="session_gone"
+    )
+    assert run_t5.classify(gone) == "session_gone"
+
+
+def test_verify_block_marks_a_gone_session_and_keeps_the_error_kind():
+    class Gone:
+        async def verify_chunk(self, sid, chunk, timeout=None, *, lease_id=None):
+            raise _Gone()
+
+    class Memory:
+        async def verify_chunk(self, sid, chunk, timeout=None, *, lease_id=None):
+            msgs = [
+                {"sev": "warning", "text": "w"},
+                {"sev": "error", "text": "Out of memory"},
+            ]
+            return {
+                "success": False,
+                "error_kind": "memory",
+                "commands": [{"status": "failed", "messages": msgs}],
+            }
+
+    sess = replay.SessionRef("s1", "l1")
+    kw = {"stem": "S", "index": 0, "block_sha": "h", "census_commands": 1}
+    rec = asyncio.run(replay.verify_block(Gone(), sess, "x", **kw))
+    assert rec.error_kind == "session_gone" and rec.n_commands is None
+    rec = asyncio.run(replay.verify_block(Memory(), sess, "x", **kw))
+    assert rec.error_kind == "memory" and rec.first_error == "Out of memory"
+
+
+def test_an_empty_cell_is_not_ok(tmp_path):
+    cf, census, t5 = _setup(tmp_path)
+
+    class Refusing(FakeServer):
+        async def acquire_session(self, **kw):
+            raise RuntimeError("503 gateway_unavailable")
+
+    body = asyncio.run(
+        run_t5.run_cell(
+            Refusing(), t5, [cf], census, heap="HOL", seed=1, out_dir=tmp_path / "e"
+        )
+    )
+    assert body["outcome"] == "empty"

@@ -231,6 +231,14 @@ def test_a_refused_acquire_is_recorded_per_file(tmp_path):
     body = asyncio.run(run_t1.run_cell(cl, spec, files, _census(files)))
     assert body["acquire_errors"] == 1 and body["replays"] == 2
     assert cl.closed == ["s1"] and body["open_sessions"] == {}
+    assert body["outcome"] == "ok"  # one file ran
+
+    class RefusingAll(FakeClient):
+        async def acquire_session(self, **kw):
+            raise RuntimeError("503 gateway_unavailable")
+
+    body = asyncio.run(run_t1.run_cell(RefusingAll(), spec, files, _census(files)))
+    assert body["outcome"] == "empty"  # nothing replayed is no result (beac25c note)
 
 
 FAKE_CELL = r"""
