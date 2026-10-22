@@ -1,5 +1,8 @@
 # Training-reader metrics (plan 2026-10-22, v1.1). Paths relative to the repository root.
-corpus: evaluation/HOL_corpus/processed      # D1: 94 HOL-Analysis theories
+corpus: evaluation/training_metrics/results/corpus/processed   # D1: the 94 theories of corpus_stems.txt, prepared
+                                             # from the Isabelle under test by scripts/00a_prepare_corpus.sh
+                                             # (owner decision 2026-10-22: the evaluation/HOL_corpus snapshot is
+                                             # untracked and from an older release)
 smoke_files: [Uncountable_Sets, Integral_Test, Sum_Topology]   # server smoke: three small corpus files (D1, review S1)
 local_smoke:                                 # local live gates (owner, 2026-10-22: no HOL-Analysis heap in the container)
   field: HOL

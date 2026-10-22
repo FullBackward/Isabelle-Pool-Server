@@ -148,9 +148,16 @@ def snippet_t12(
         "PSS peak GB |",
         "|---|---|---|---|---|---|---|---|---|---|---|---|",
     ]
+    if any(s.get("external") for s in series):
+        lines.insert(
+            len(lines) - 2,
+            "Cells run against an external server (`--ips-external`) show no host CPU or PSS: "
+            "the server's tree holds other clients' sessions too.\n",
+        )
     for s in series:
-        util = s.get("host_cpu_util")
-        pss = s.get("pss_peak_mb")
+        ext = s.get("external")  # other clients in the tree: no resource columns
+        util = None if ext else s.get("host_cpu_util")
+        pss = None if ext else s.get("pss_peak_mb")
         lines.append(
             f"| {s['workers']} | {_f(s['census_work_rate'], 2)} | {_f(s['speedup'], 2)} | "
             f"{_f(s['efficiency'], 2)} | {_f(s['chunks_per_min'])} | "

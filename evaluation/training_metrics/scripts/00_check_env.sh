@@ -20,7 +20,7 @@ heap_present() {  # the heap file in the user or the system heap directory
 }
 check "python $PY" "\"$PY\" -c 'import httpx, yaml'" "pip install -e '.[mcp,eval]' -e ./client"
 check "package imports" "\"$PY\" -c 'import trainmetrics.census, client.async_client, memscale.sampler'" "run from a full checkout"
-check "corpus present" "ls \"$REPO/evaluation/HOL_corpus/processed\"/*.thy" "the corpus ships with the repository"
+check "corpus prepared" "ls \"$HERE/results/corpus/processed\"/*.thy" "run scripts/00a_prepare_corpus.sh (builds it from this Isabelle's src/HOL/Analysis)"
 check "isabelle ($ISABELLE)" "$ISABELLE version" "export PATH=\$HOME/Isabelle2026-RC2/bin:\$PATH (or /opt/isabelle/bin)"
 check "heap $HEAP built" "heap_present" "on the SERVER: isabelle build -b $HEAP (memory_scaling scripts/01_build_heaps.sh); on the Mac never build, use HEAP=HOL"
 if [ "${EXTERNAL:-0}" = "1" ]; then

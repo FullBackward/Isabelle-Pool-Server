@@ -16,9 +16,9 @@ from typing import Any, Dict, List, Optional, Sequence
 
 import yaml
 
-from . import EXPERIMENT_DIR
+from . import EXPERIMENT_DIR, REPO_ROOT
 from .corpus import CorpusFile, corpus_sha, load_corpus, load_paths, sha256_text
-from .replay import BUDGET_MAX_S, ReplayRecord, SessionRef, replay_file
+from .replay import BUDGET_MAX_S, ReplayRecord, SessionRef, close_all, replay_file
 
 CENSUS_VERSION = 1
 
@@ -104,6 +104,30 @@ def partial_by_stem(census: Dict[str, Any]) -> Dict[str, List[bool]]:
     }
 
 
+def corpus_manifest(corpus_dir: str) -> Optional[Dict[str, Any]]:
+    """The prepared corpus's MANIFEST.json facts (beside ``processed/``): which
+    Isabelle the theories came from and their checksum; None when absent."""
+    root = Path(corpus_dir)
+    if not root.is_absolute():
+        root = REPO_ROOT / root
+    path = root.parent / "MANIFEST.json"
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            m = dict(json.load(fh))
+    except (OSError, ValueError):
+        return None
+    return {
+        k: m.get(k)
+        for k in (
+            "isabelle_version",
+            "isabelle_id",
+            "source_dir",
+            "corpus_sha256",
+            "missing",
+        )
+    }
+
+
 def load_census(path: str) -> Dict[str, Any]:
     """A census.json."""
     with open(path, "r", encoding="utf-8") as fh:
@@ -122,13 +146,14 @@ async def _census_session(
     return SessionRef(str(acq["session_id"]), str(acq["lease_id"]), worker=0)
 
 
-async def run_census(  # pylint: disable=too-many-locals
+async def run_census(  # pylint: disable=too-many-locals,too-many-arguments
     client: Any,
     files: Sequence[CorpusFile],
     *,
     field: str,
     session_theories: List[str],
     rotate_every: int = 0,
+    unclosed: Optional[List[Dict[str, Any]]] = None,
 ) -> List[ReplayRecord]:
     """Replay every file once at the maximum budget. With ``rotate_every``
     = k a fresh session is taken every k files — the T1 workers' condition (k
@@ -139,10 +164,10 @@ async def run_census(  # pylint: disable=too-many-locals
     try:
         for n, cf in enumerate(files, 1):
             if rotate_every and sess.nodes >= rotate_every:
-                try:
-                    await client.close_session(sess.session_id, lease_id=sess.lease_id)
-                except Exception:  # pylint: disable=broad-exception-caught
-                    pass
+                if unclosed is not None:  # retry while busy, report what stays open
+                    unclosed.extend(await close_all(client, [sess]))
+                else:
+                    await close_all(client, [sess])
                 sess = await _census_session(client, field, session_theories)
             rr = await replay_file(client, sess, cf, budget_s=BUDGET_MAX_S)
             records.append(rr)
@@ -154,10 +179,9 @@ async def run_census(  # pylint: disable=too-many-locals
                 flush=True,
             )
     finally:
-        try:
-            await client.close_session(sess.session_id, lease_id=sess.lease_id)
-        except Exception:  # pylint: disable=broad-exception-caught
-            pass
+        left = await close_all(client, [sess])
+        if unclosed is not None:
+            unclosed.extend(left)
     return records
 
 
@@ -221,12 +245,14 @@ async def _main_async(  # pylint: disable=too-many-locals
                 report = await client.memory_status()  # limits and state
             except Exception as exc:  # pylint: disable=broad-exception-caught
                 report = {"error": f"{type(exc).__name__}: {exc}"[:200]}
+            unclosed: List[Dict[str, Any]] = []
             records = await run_census(
                 client,
                 files,
                 field=field,
                 session_theories=list(cfg["session"]["theories"]),
                 rotate_every=int(cfg.get("files_per_worker", 0)),
+                unclosed=unclosed,
             )
         driver_info = driver.describe()
     finally:
@@ -244,6 +270,10 @@ async def _main_async(  # pylint: disable=too-many-locals
             "wall_s": round(time.time() - t0, 1),
             "budget_s": BUDGET_MAX_S,
             "rotate_every": int(cfg.get("files_per_worker", 0)),
+            "corpus_manifest": (
+                corpus_manifest(cfg["corpus"]) if not args.local_smoke else None
+            ),
+            "unclosed_sessions": unclosed,
             "server_report": report,
             "driver": driver_info,
             "environment": environment_block(cfg.get("isabelle_home"), isabelle_cmd()),

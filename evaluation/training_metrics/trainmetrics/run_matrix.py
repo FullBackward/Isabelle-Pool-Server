@@ -12,15 +12,15 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import signal
 import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Sequence, Set, Tuple
 
 from . import EXPERIMENT_DIR
 from .census import load_config
+from .procctl import cgroup_busy, group_alive, group_tree, kill_group, kill_server
 from .run_t1 import cell_dir
 
 
@@ -62,60 +62,6 @@ def running_runner(lock: Path) -> Optional[int]:
     return pid
 
 
-def _group_states(pgid: int) -> Optional[List[str]]:
-    """States of the processes in process group ``pgid`` from ``/proc`` (None
-    where there is no ``/proc``, e.g. macOS)."""
-    try:
-        names = os.listdir("/proc")
-    except OSError:
-        return None
-    states: List[str] = []
-    for name in names:
-        if not name.isdigit():
-            continue
-        try:
-            with open(f"/proc/{name}/stat", "r", encoding="utf-8") as fh:
-                fields = fh.read().rpartition(")")[2].split()
-        except OSError:
-            continue
-        if len(fields) > 2 and fields[2] == str(pgid):
-            states.append(fields[0])
-    return states
-
-
-def group_alive(pgid: int) -> bool:
-    """Does any LIVE process of the process group still exist? A zombie is
-    dead (it holds no port and no memory) and waits only for its reaper,
-    which in a container can lag (container gate of fix 0df4258/830f9ac)."""
-    states = _group_states(pgid)
-    if states is not None:
-        return any(s != "Z" for s in states)
-    try:
-        os.killpg(pgid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
-
-
-def kill_group(pgid: int, grace_s: float = 60.0) -> None:
-    """SIGTERM to the whole group, up to ``grace_s`` for it to exit, then SIGKILL."""
-    try:
-        os.killpg(pgid, signal.SIGTERM)
-    except ProcessLookupError:
-        return
-    deadline = time.monotonic() + grace_s
-    while time.monotonic() < deadline:
-        if not group_alive(pgid):
-            return
-        time.sleep(0.5)
-    try:
-        os.killpg(pgid, signal.SIGKILL)
-    except ProcessLookupError:
-        pass
-
-
 def child_cmd(args: argparse.Namespace, w: int, rep: int) -> List[str]:
     """The run_t1 command line for one cell."""
     cmd = [
@@ -153,6 +99,7 @@ def run_one(args: argparse.Namespace, w: int, rep: int) -> str:
     log_dir.mkdir(parents=True, exist_ok=True)
     log = log_dir / f"t1-w{w}-rep{rep}.log"
     t0 = time.monotonic()
+    snapshot: Set[int] = set()
     with open(log, "w", encoding="utf-8") as fh:
         # its own process group, so a timeout stops the cell AND what it started
         # (review 830f9ac B1: subprocess.run(timeout=...) kills the child only)
@@ -166,17 +113,27 @@ def run_one(args: argparse.Namespace, w: int, rep: int) -> str:
             rc = proc.wait(timeout=args.cell_timeout_s)
         except subprocess.TimeoutExpired:
             rc = -1
+            # the server's whole tree (gateway JVM, provers: other groups) while
+            # it is intact, before the cell is stopped (review 5141144 S1)
+            pgid = (
+                (manifest_of(Path(args.out), w, rep) or {}).get("server") or {}
+            ).get("pgid")
+            snapshot = group_tree(int(pgid)) if pgid else set()
             kill_group(
                 proc.pid, grace_s=args.term_grace_s
             )  # SIGTERM: the cell stops its server
             proc.wait()
     m = manifest_of(Path(args.out), w, rep) or {}
-    server_pgid = (m.get("server") or {}).get("pgid")
-    if server_pgid and group_alive(int(server_pgid)):
-        # the cell died before its finally (SIGKILL, OOM): its server survived in
-        # its own session; never let the next cell meet it on the port
-        kill_group(int(server_pgid), grace_s=args.term_grace_s)
-        print(f"  killed the leftover server group {server_pgid} of W={w} rep={rep}")
+    srv = m.get("server") or {}
+    if srv.get("pgid") and not srv.get("external"):
+        pgid = int(srv["pgid"])
+        if not snapshot:
+            snapshot = group_tree(pgid)
+        if group_alive(pgid) or snapshot or cgroup_busy(srv.get("cgroup_dir")):
+            # the cell died before its finally (SIGKILL, OOM), or its server did
+            # not stop: never let the next cell meet it (port, memory)
+            done = kill_server(pgid, snapshot, srv.get("cgroup_dir"), args.term_grace_s)
+            print(f"  stopped the leftover server of W={w} rep={rep}: {done}")
     outcome = str(m.get("outcome") or ("timeout" if rc == -1 else "error"))
     if rc == -1:
         outcome = "timeout"

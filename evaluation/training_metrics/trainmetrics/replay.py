@@ -5,9 +5,10 @@ recording every block. Used by the census and by every later experiment."""
 
 from __future__ import annotations
 
+import asyncio
 import time
 from dataclasses import asdict, dataclass, field
-from typing import Any, Dict, List, Optional, Protocol, Tuple
+from typing import Any, Dict, List, Optional, Protocol, Sequence, Tuple
 
 from .corpus import CorpusFile
 
@@ -270,3 +271,40 @@ async def replay_file(  # pylint: disable=too-many-arguments
         )
     rr.t_end = time.time()
     return rr
+
+
+CLOSE_DEADLINE_S = 60.0  # within the matrix runner's SIGTERM grace (90 s)
+
+
+async def close_all(
+    client: Any, sessions: Sequence[SessionRef], deadline_s: float = CLOSE_DEADLINE_S
+) -> List[Dict[str, Any]]:
+    """Close every session, retrying while the server refuses (a session is
+    still busy with a cancelled request: SessionBusyError) until
+    ``deadline_s``; returns the sessions that stayed open, with their lease, so
+    they can be closed by hand (live check of fix 0df4258/830f9ac: a SIGTERM'd
+    cell left two leases on the container). Shared by the T1 cells and the
+    census's session rotation (review 1d9d674 S2)."""
+    pending = list(sessions)
+    deadline = time.monotonic() + deadline_s
+    last: Dict[str, str] = {}
+    while pending:
+        still: List[SessionRef] = []
+        for s in pending:
+            try:  # closed, not released: the SessionRef invariant
+                await client.close_session(s.session_id, lease_id=s.lease_id)
+            except Exception as exc:  # pylint: disable=broad-exception-caught
+                last[s.session_id] = f"{type(exc).__name__}: {exc}"[:200]
+                still.append(s)
+        pending = still
+        if not pending or time.monotonic() >= deadline:
+            break
+        await asyncio.sleep(1.0)
+    return [
+        {
+            "session_id": s.session_id,
+            "lease_id": s.lease_id,
+            "error": last.get(s.session_id),
+        }
+        for s in pending
+    ]

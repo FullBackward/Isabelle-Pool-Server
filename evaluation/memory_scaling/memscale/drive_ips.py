@@ -122,7 +122,10 @@ class IPSDriver:  # pylint: disable=too-many-instance-attributes
         """The server that answered must be the one configured here: its own
         report's pool size equals the ISABELLE_POOL_SIZE we started it with
         (training-metrics review 0df4258 B1: a busy port made a run measure a
-        different server while its manifest claimed a fresh one)."""
+        different server while its manifest claimed a fresh one). A second
+        layer only: a foreign server with the same configuration passes it —
+        the busy-port refusal before the start and the exit check while waiting
+        are what identify the server (review 5141144 S2)."""
         want = self.env.get("ISABELLE_POOL_SIZE")
         got = self.server_report.get("max_pool_size")
         if want is not None and str(got) != str(want):

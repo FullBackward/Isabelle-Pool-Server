@@ -198,3 +198,24 @@ def test_timed_out_calls_are_not_in_the_latency_and_zero_counts_have_no_class(
     ] == 125.0
     text = analyze.snippet_t12(metrics_t12.series_t1(list(rows.values())), t2, census)
     assert "1 with no command" in text and "1: 125.0 ms" in text
+
+
+def test_external_server_cells_show_no_resource_columns(tmp_path):
+    """Review 1d9d674 S1: an external server's tree holds other clients."""
+    files = _corpus(tmp_path)
+    census = _census(files)
+    root = tmp_path / "results"
+    _cell_tree(root, 1, 0, census)
+    m = root / "t1" / "w1" / "rep0" / "manifest.json"
+    d = json.loads(m.read_text())
+    d["server"] = {"external": True}
+    m.write_text(json.dumps(d))
+    rows = [
+        metrics_t12.summarize_cell(c, census) for c in metrics_t12.load_t1_cells(root)
+    ]
+    series = metrics_t12.series_t1(rows)
+    assert rows[0]["external"] and series[0]["external"]
+    text = analyze.snippet_t12(series, [], census)
+    assert "external server" in text
+    row = next(x for x in text.splitlines() if x.startswith("| 1 |"))
+    assert row.rstrip().endswith("| - | - |")  # host CPU and PSS blanked

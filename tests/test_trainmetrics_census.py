@@ -273,3 +273,34 @@ def test_census_rotates_its_session_like_the_t1_workers(corpus_dir, tmp_path):
     assert cl.closed == ["s1", "s2"]
     body = census.write_census(tmp_path / "c", files, records, {})
     assert [f["nodes_on_session"] for f in body["files"]] == [1, 2, 1]
+
+
+def test_census_rotation_retries_a_busy_close(corpus_dir):
+    """Review 1d9d674 S2: the rotation close goes through close_all."""
+
+    class Busy(FakeClient):
+        def __init__(self):
+            super().__init__()
+            self.tries = 0
+
+        async def close_session(self, sid, lease_id=None):
+            if sid == "s1":
+                self.tries += 1
+                if self.tries < 2:
+                    raise RuntimeError("409 SessionBusyError")
+            return await super().close_session(sid, lease_id)
+
+    files = corpus.load_corpus(str(corpus_dir))
+    cl = Busy()
+    left = []
+    asyncio.run(
+        census.run_census(
+            cl,
+            files,
+            field="HOL",
+            session_theories=["Main"],
+            rotate_every=1,
+            unclosed=left,
+        )
+    )
+    assert cl.closed == ["s1", "s2"] and cl.tries == 2 and left == []

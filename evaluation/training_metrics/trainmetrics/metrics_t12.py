@@ -161,8 +161,15 @@ def summarize_cell(  # pylint: disable=too-many-locals
     )
     census_time = sum(times.get(rr["stem"], 0.0) for rr in replays)
     acq = [float(a["acquire_s"]) for a in cell.get("acquire") or []]
+    external = bool(
+        (cell.get("server") or {}).get("external")
+        or (cell.get("driver") or {}).get("external")
+    )
     row: Dict[str, Any] = {
         "workers": cell.get("workers"),
+        # an external server's tree holds other clients' sessions too: its memory
+        # and CPU columns are not the cell's (review 1d9d674 S1)
+        "external": external,
         "rep": cell.get("rep"),
         "outcome": cell.get("outcome"),
         "census_match": cell.get("census_id") == census.get("census_id"),
@@ -247,7 +254,11 @@ def series_t1(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
     for w in sorted(by_w):
         rs = by_w[w]
-        s: Dict[str, Any] = {"workers": w, "repeats": len(rs)}
+        s: Dict[str, Any] = {
+            "workers": w,
+            "repeats": len(rs),
+            "external": any(r.get("external") for r in rs),
+        }
         for k in SERIES_KEYS:
             vals = [float(r[k]) for r in rs if r.get(k) is not None]
             s[k] = _r(p50(vals), 4)
