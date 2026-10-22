@@ -116,8 +116,14 @@ def _own_cgroup() -> Optional[str]:
 
 def cgroup_kill(cgroup_dir: Optional[str]) -> bool:
     """Write ``1`` to ``<cgroup_dir>/cgroup.kill`` (cgroup v2: SIGKILL to every
-    process in the cgroup). Never the runner's own cgroup. True when written."""
-    if not cgroup_dir or cgroup_dir == _own_cgroup():
+    process in the cgroup). Never the runner's own cgroup nor one of its
+    ancestors (a mis-scoped server could sit in the user's slice; review
+    afd3de9 S2). True when written."""
+    if not cgroup_dir:
+        return False
+    own = _own_cgroup()
+    target = cgroup_dir.rstrip("/")
+    if own is not None and (own == target or own.startswith(target + "/")):
         return False
     path = os.path.join(cgroup_dir, "cgroup.kill")
     if not os.path.exists(path):

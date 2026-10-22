@@ -200,18 +200,24 @@ def test_is_proved_definition():
 def test_census_end_to_end(corpus_dir, tmp_path):
     files = corpus.load_corpus(str(corpus_dir))
     cl = FakeClient()
-    records = asyncio.run(
-        census.run_census(cl, files, field="HOL-Analysis", session_theories=["Main"])
+    records = asyncio.run(census.run_census(cl, files, field="HOL-Analysis"))
+    acquires = [c[1] for c in cl.calls if c[0] == "acquire"]
+    # a session per file, acquired with the file's own imports (D6)
+    assert [a["theories"] for a in acquires] == [
+        ["HOL-Analysis.Abstract_Topology"],
+        ["Main"],
+    ]
+    assert all(
+        a["field"] == "HOL-Analysis" and a["reuse_dirty"] is False for a in acquires
     )
-    acquire = cl.calls[0][1]
-    assert acquire["field"] == "HOL-Analysis" and acquire["reuse_dirty"] is False
     assert all(c[2] == replay.BUDGET_MAX_S for c in cl.calls if c[0] == "verify")
-    assert cl.closed == ["s1"]
+    assert cl.closed == ["s1", "s2"] and [r.nodes_on_session for r in records] == [1, 1]
     body = census.write_census(tmp_path / "out", files, records, {"url": "x"})
     on_disk = census.load_census(str(tmp_path / "out" / "census.json"))
     assert on_disk["census_id"] == body["census_id"] and len(body["census_id"]) == 64
     assert on_disk["totals"]["files"] == 2 and on_disk["totals"]["blocks"] == 4
     assert on_disk["totals"]["proved_blocks"] == 4
+    assert all("acquire_s" in f for f in on_disk["files"])
     counts = census.counts_by_stem(on_disk)
     assert counts["A"] == [b["n_commands"] for b in on_disk["files"][0]["blocks"]]
     assert (tmp_path / "out" / "replays.jsonl").read_text().count("\n") == 2
@@ -226,9 +232,7 @@ def test_partial_census_counts_get_the_maximum_budget(corpus_dir, tmp_path):
     assert replay.budget_for(3, partial=True) == replay.BUDGET_MAX_S
     files = corpus.load_corpus(str(corpus_dir))
     cl = FakeClient(fail_block="a2")  # block A[1] times out
-    records = asyncio.run(
-        census.run_census(cl, files, field="HOL", session_theories=["Main"])
-    )
+    records = asyncio.run(census.run_census(cl, files, field="HOL"))
     body = census.write_census(tmp_path / "c", files, records, {})
     a_rows = body["files"][0]["blocks"]
     assert [b["count_partial"] for b in a_rows] == [False, True, False]
@@ -258,25 +262,25 @@ def test_server_env_makes_the_log_dir_absolute():
     )
 
 
-def test_census_rotates_its_session_like_the_t1_workers(corpus_dir, tmp_path):
-    """Review c9c9197 S4: a fresh session every k files, nodes recorded."""
-    (corpus_dir / "C.thy").write_text(THY_B.replace("theory B", "theory C"))
+def test_a_refused_acquire_is_recorded_and_the_census_goes_on(corpus_dir):
+    """D6: a file whose session cannot be acquired is recorded, not fatal."""
+
+    class Refusing(FakeClient):
+        async def acquire_session(self, **kw):
+            if kw["theories"] == ["Main"]:
+                raise RuntimeError("503 memory_pressure")
+            return await super().acquire_session(**kw)
+
     files = corpus.load_corpus(str(corpus_dir))
-    cl = FakeClient()
-    records = asyncio.run(
-        census.run_census(
-            cl, files, field="HOL", session_theories=["Main"], rotate_every=2
-        )
-    )
-    assert [r.session_id for r in records] == ["s1", "s1", "s2"]
-    assert [r.nodes_on_session for r in records] == [1, 2, 1]
-    assert cl.closed == ["s1", "s2"]
-    body = census.write_census(tmp_path / "c", files, records, {})
-    assert [f["nodes_on_session"] for f in body["files"]] == [1, 2, 1]
+    cl = Refusing()
+    records = asyncio.run(census.run_census(cl, files, field="HOL"))
+    assert records[0].blocks and records[0].acquire_error is None
+    assert "memory_pressure" in records[1].acquire_error and records[1].blocks == []
+    assert cl.closed == ["s1"]
 
 
-def test_census_rotation_retries_a_busy_close(corpus_dir):
-    """Review 1d9d674 S2: the rotation close goes through close_all."""
+def test_census_retries_a_busy_close(corpus_dir):
+    """Review 1d9d674 S2: each file's close goes through close_all."""
 
     class Busy(FakeClient):
         def __init__(self):
@@ -293,14 +297,13 @@ def test_census_rotation_retries_a_busy_close(corpus_dir):
     files = corpus.load_corpus(str(corpus_dir))
     cl = Busy()
     left = []
-    asyncio.run(
-        census.run_census(
-            cl,
-            files,
-            field="HOL",
-            session_theories=["Main"],
-            rotate_every=1,
-            unclosed=left,
-        )
-    )
+    asyncio.run(census.run_census(cl, files, field="HOL", unclosed=left))
     assert cl.closed == ["s1", "s2"] and cl.tries == 2 and left == []
+
+
+def test_the_census_gate():
+    """Review afd3de9 B1: a census that proves too little fails."""
+    assert census.proved_gate({"blocks": 100, "proved_blocks": 95}, 0.9) is None
+    msg = census.proved_gate({"blocks": 100, "proved_blocks": 13}, 0.9)
+    assert msg is not None and "13 of 100" in msg
+    assert census.proved_gate({"blocks": 0, "proved_blocks": 0}, 0.0) is None

@@ -133,6 +133,9 @@ class ReplayRecord:  # pylint: disable=too-many-instance-attributes
     blocks: List[BlockRecord] = field(default_factory=list)
     t_start: float = 0.0
     t_end: float = 0.0
+    acquire_s: float = 0.0  # a session per file (D6): its acquisition time
+    acquire_error: Optional[str] = None
+    unclosed: List[Dict[str, Any]] = field(default_factory=list)
 
     def as_dict(self) -> Dict[str, Any]:
         """JSON form."""
@@ -308,3 +311,100 @@ async def close_all(
         }
         for s in pending
     ]
+
+
+ACQUIRE_TIMEOUT_S = 900.0
+
+
+async def _close_task_result(client: Any, task: "asyncio.Future[Any]") -> None:
+    """Let an acquire the caller stopped waiting for finish (the server completes
+    it anyway) and close the session it returned; then cancel it if still running."""
+    try:
+        await asyncio.wait({task}, timeout=CLOSE_DEADLINE_S)
+    except asyncio.CancelledError:  # pragma: no cover - a second stop
+        pass
+    if task.done() and not task.cancelled() and task.exception() is None:
+        acq = task.result()
+        await close_all(
+            client, [SessionRef(str(acq["session_id"]), str(acq["lease_id"]))]
+        )
+    else:
+        task.cancel()
+
+
+async def replay_file_fresh(  # pylint: disable=too-many-arguments,too-many-locals
+    client: Any,
+    cf: CorpusFile,
+    *,
+    heap: str,
+    worker: int = 0,
+    census_counts: Optional[List[Optional[int]]] = None,
+    census_partial: Optional[List[bool]] = None,
+    budget_s: Optional[float] = None,
+    label: str = "trainmetrics",
+    registry: Optional[Dict[str, str]] = None,
+    on_change: Optional[Any] = None,
+) -> ReplayRecord:
+    """Replay ``cf`` on a session of its own (owner decision D6, review afd3de9
+    B1): IPS fixes a session's theory context when it is acquired, so the
+    session is acquired with the file's imports, the file is replayed, and the
+    session is closed. ``registry`` (session id -> lease) holds the open
+    session while it exists, ``on_change(registry)`` is called on every change
+    so the caller can put the leases on disk. A stop (cancellation) during the
+    acquire lets it finish and closes what it returned; during the replay the
+    close retries while the session is busy; then the stop propagates."""
+    reg = registry if registry is not None else {}
+    t0 = time.monotonic()
+    started = time.time()
+    task = asyncio.ensure_future(
+        client.acquire_session(
+            theories=list(cf.imports),
+            field=heap,
+            reuse_dirty=False,  # SessionRef invariant: a fresh session per file
+            label=label,
+        )
+    )
+    try:
+        acq = await asyncio.wait_for(asyncio.shield(task), timeout=ACQUIRE_TIMEOUT_S)
+    except asyncio.CancelledError:
+        await _close_task_result(client, task)
+        raise
+    except Exception as exc:  # pylint: disable=broad-exception-caught
+        if not task.done():
+            await _close_task_result(client, task)
+        return ReplayRecord(
+            stem=cf.stem,
+            theory_name="",
+            session_id="",
+            worker=worker,
+            nodes_on_session=0,
+            acquire_s=round(time.monotonic() - t0, 4),
+            acquire_error=f"{type(exc).__name__}: {exc}"[:300],
+            t_start=started,
+            t_end=time.time(),
+        )
+    acquire_s = round(time.monotonic() - t0, 4)
+    sess = SessionRef(str(acq["session_id"]), str(acq["lease_id"]), worker=worker)
+    reg[sess.session_id] = sess.lease_id
+    if on_change is not None:
+        on_change(reg)
+    unclosed: List[Dict[str, Any]] = []
+    try:
+        rr = await replay_file(
+            client,
+            sess,
+            cf,
+            census_counts,
+            census_partial=census_partial,
+            budget_s=budget_s,
+        )
+    finally:
+        unclosed = await close_all(client, [sess])
+        if not unclosed:
+            reg.pop(sess.session_id, None)
+        if on_change is not None:
+            on_change(reg)
+    rr.acquire_s = acquire_s
+    rr.unclosed = unclosed
+    rr.t_start = started
+    return rr

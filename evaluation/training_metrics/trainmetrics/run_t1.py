@@ -15,22 +15,13 @@ import signal
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Sequence
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from . import EXPERIMENT_DIR
 from .census import counts_by_stem, load_census, load_config, partial_by_stem
 from .corpus import CorpusFile, assignment, corpus_sha, load_corpus, load_paths
-from .replay import (
-    BUDGET_MAX_S,
-    CLOSE_DEADLINE_S,
-    ReplayRecord,
-    SessionRef,
-    close_all,
-    replay_file,
-)
+from .replay import BUDGET_MAX_S, ReplayRecord, replay_file_fresh
 from .serve import isabelle_cmd, make_driver
-
-ACQUIRE_TIMEOUT_S = 900.0
 
 
 @dataclass
@@ -42,7 +33,6 @@ class CellSpec:  # pylint: disable=too-many-instance-attributes
     seed: int
     quota: int
     heap: str  # the session's heap (Isabelle session name)
-    session_theories: List[str]
     out_dir: Path
     local_smoke: bool = False
     extra: Dict[str, Any] = field(default_factory=dict)
@@ -54,93 +44,43 @@ def cell_dir(out: Path, workers: int, rep: int) -> Path:
 
 
 def usable_stems(files: Sequence[CorpusFile], census: Dict[str, Any]) -> List[str]:
-    """Stems in the corpus AND entered without error in the census (a file whose
-    header fails cannot be replayed; it is excluded and listed)."""
-    entered = {f["stem"] for f in census["files"] if not f.get("enter_error")}
-    return sorted(cf.stem for cf in files if cf.stem in entered)
-
-
-async def _acquire(client: Any, spec: CellSpec, w: int) -> Dict[str, Any]:
-    t0 = time.monotonic()
-    res = await asyncio.wait_for(
-        client.acquire_session(
-            theories=spec.session_theories,
-            field=spec.heap,
-            reuse_dirty=False,  # SessionRef invariant (review 86afb15 S2)
-            label=f"trainmetrics-t1-w{w}",
-        ),
-        timeout=ACQUIRE_TIMEOUT_S,
-    )
-    return {
-        "worker": w,
-        "session_id": str(res["session_id"]),
-        "lease_id": str(res["lease_id"]),
-        "acquire_s": round(time.monotonic() - t0, 3),
-        "reused": res.get("reused"),
+    """Stems in the corpus AND acquired and entered without error in the census
+    (a file whose session or header fails cannot be replayed; it is excluded
+    and listed)."""
+    entered = {
+        f["stem"]
+        for f in census["files"]
+        if not f.get("enter_error") and not f.get("acquire_error")
     }
-
-
-async def _close_acquired(client: Any, acquired: Sequence[Dict[str, Any]]) -> None:
-    for a in acquired:
-        try:
-            await client.close_session(a["session_id"], lease_id=a["lease_id"])
-        except Exception:  # pylint: disable=broad-exception-caught
-            pass
-
-
-def _finished(tasks: Sequence["asyncio.Task[Dict[str, Any]]"]) -> List[Dict[str, Any]]:
-    return [
-        t.result()
-        for t in tasks
-        if t.done() and not t.cancelled() and t.exception() is None
-    ]
-
-
-async def acquire_all(client: Any, spec: CellSpec) -> List[Dict[str, Any]]:
-    """All W sessions, or none: when one acquire fails (pool full, a memory
-    refusal, the timeout), every session already acquired is closed before the
-    error is raised, so an external server keeps no leases (review 830f9ac S1).
-    The acquires are tasks a cancellation does not abort: when the cell is
-    stopped (SIGTERM) during acquisition, in-flight acquires are allowed to
-    finish (up to CLOSE_DEADLINE_S) and every session they returned is closed —
-    an acquire cancelled mid-request is completed by the server anyway, and its
-    lease would otherwise be lost (live check of fix 0df4258/830f9ac)."""
-    tasks = [
-        asyncio.ensure_future(_acquire(client, spec, w)) for w in range(spec.workers)
-    ]
-    try:
-        await asyncio.wait(tasks)  # cancelling the cell does not cancel these
-    except asyncio.CancelledError:
-        await asyncio.wait(tasks, timeout=CLOSE_DEADLINE_S)
-        await _close_acquired(client, _finished(tasks))
-        for t in tasks:
-            t.cancel()
-        raise
-    errors = [t.exception() for t in tasks if t.exception() is not None]
-    if errors:
-        await _close_acquired(client, _finished(tasks))
-        raise errors[0]  # type: ignore[misc]
-    return [t.result() for t in tasks]
+    return sorted(cf.stem for cf in files if cf.stem in entered)
 
 
 async def _worker(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     client: Any,
-    sess: SessionRef,
+    spec: CellSpec,
+    worker: int,
     stems: List[str],
     files: Dict[str, CorpusFile],
-    counts: Dict[str, List[Optional[int]]],
-    partial: Dict[str, List[bool]],
+    census: Tuple[Dict[str, List[Optional[int]]], Dict[str, List[bool]]],
     sink: List[ReplayRecord],
+    registry: Dict[str, str],
+    on_change: Optional[Callable[[Dict[str, str]], Any]],
 ) -> None:
-    for stem in stems:
-        rr = await replay_file(
-            client,
-            sess,
-            files[stem],
-            counts.get(stem),
-            census_partial=partial.get(stem),
+    counts, partial = census
+    for stem in stems:  # a session per file, with the file's imports (D6)
+        sink.append(
+            await replay_file_fresh(
+                client,
+                files[stem],
+                heap=spec.heap,
+                worker=worker,
+                census_counts=counts.get(stem),
+                census_partial=partial.get(stem),
+                label=f"trainmetrics-t1-w{worker}",
+                registry=registry,
+                on_change=on_change,
+            )
         )
-        sink.append(rr)
 
 
 async def run_cell(  # pylint: disable=too-many-locals,too-many-arguments
@@ -153,16 +93,18 @@ async def run_cell(  # pylint: disable=too-many-locals,too-many-arguments
     body: Optional[Dict[str, Any]] = None,
     checkpoint: Optional[Callable[[Dict[str, Any]], Any]] = None,
 ) -> Dict[str, Any]:
-    """Acquire W sessions, start the clock, replay, close. Fills ``body`` (the
+    """W workers replay their assigned files concurrently, each file on a
+    fresh session acquired with its own imports (D6, review afd3de9 B1). The
+    window opens when the workers start and so includes the per-file
+    acquisitions (reported per replay as ``acquire_s``). Fills ``body`` (the
     caller's manifest dict, so a cancelled cell keeps what it had) and returns
-    it; ``checkpoint(body)`` is called once the sessions exist, so their ids
-    and leases are on disk before any work (a killed cell's leases can be
-    closed); writes ``replays.jsonl`` into ``spec.out_dir``."""
+    it; ``body["open_sessions"]`` (session id -> lease) is kept current and
+    ``checkpoint(body)`` called on every change, so a killed cell's leases are
+    on disk; writes ``replays.jsonl`` into ``spec.out_dir``."""
     by_stem = {cf.stem: cf for cf in files}
     stems = usable_stems(files, census)
     excluded = sorted(set(by_stem) - set(stems))
     plan = assignment(stems, spec.seed, spec.workers, spec.quota)
-    counts, partial = counts_by_stem(census), partial_by_stem(census)
     body = body if body is not None else {}
     body.update(
         {
@@ -177,37 +119,44 @@ async def run_cell(  # pylint: disable=too-many-locals,too-many-arguments
             "corpus_sha": corpus_sha(files),
             "assignment": plan,
             "excluded_stems": excluded,
+            "session_per_file": True,
             "outcome": "running",
             **spec.extra,
         }
     )
-    if sampler is not None:
-        sampler.phase("acquire")
-    acquired = await acquire_all(client, spec)
-    body["acquire"] = list(acquired)
-    if checkpoint is not None:
-        checkpoint(body)
-    sessions = [
-        SessionRef(a["session_id"], a["lease_id"], worker=a["worker"]) for a in acquired
-    ]
+    registry: Dict[str, str] = {}
+    body["open_sessions"] = registry
+
+    def changed(_reg: Dict[str, str]) -> None:
+        if checkpoint is not None:
+            checkpoint(body)
+
     records: List[ReplayRecord] = []
-    try:
-        if sampler is not None:
-            sampler.phase("run")
-        body["window_start"] = time.time()  # after all sessions, before any enter
-        await asyncio.gather(
-            *(
-                _worker(client, s, plan[s.worker], by_stem, counts, partial, records)
-                for s in sessions
+    if sampler is not None:
+        sampler.phase("run")
+    body["window_start"] = time.time()  # the workers start; acquisitions are inside
+    await asyncio.gather(
+        *(
+            _worker(
+                client,
+                spec,
+                w,
+                plan[w],
+                by_stem,
+                (counts_by_stem(census), partial_by_stem(census)),
+                records,
+                registry,
+                changed,
             )
+            for w in range(spec.workers)
         )
-        body["window_end"] = time.time()
-        if sampler is not None:
-            sampler.phase("stop")
-    finally:
-        body["unclosed_sessions"] = await close_all(client, sessions)
-    body["nodes_per_session"] = {str(s.worker): s.nodes for s in sessions}
+    )
+    body["window_end"] = time.time()
+    if sampler is not None:
+        sampler.phase("stop")
+    body["unclosed_sessions"] = [u for r in records for u in r.unclosed]
     body["replays"] = len(records)
+    body["acquire_errors"] = sum(1 for r in records if r.acquire_error)
     body["enter_errors"] = sum(1 for r in records if r.enter_error)
     body["block_errors"] = sum(1 for r in records for b in r.blocks if b.error)
     spec.out_dir.mkdir(parents=True, exist_ok=True)
@@ -253,7 +202,6 @@ async def amain(args: argparse.Namespace) -> int:  # pylint: disable=too-many-lo
         seed=int(cfg["seed"]) + args.rep,  # seed per repeat (review 86afb15 S1)
         quota=args.quota or int(cfg["files_per_worker"]),
         heap=field_name,
-        session_theories=list(cfg["session"]["theories"]),
         out_dir=out_dir,
         local_smoke=bool(args.local_smoke),
         extra={"census_path": args.census, "ips_env": ips.get("env", {})},

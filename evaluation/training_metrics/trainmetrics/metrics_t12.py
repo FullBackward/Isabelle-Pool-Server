@@ -78,26 +78,6 @@ def zero_count_blocks(census: Dict[str, Any]) -> int:
     )
 
 
-def census_node_trend(census: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """Census time per command by the file's node position on its session
-    (1 = first file entered on a fresh session): the baseline's own drift as
-    nodes accumulate (review c9c9197 S4)."""
-    by_pos: Dict[int, List[float]] = {}
-    for f in census["files"]:
-        pos = f.get("nodes_on_session")
-        cmds = sum(int(b.get("n_commands") or 0) for b in f["blocks"])
-        if pos is None or cmds < 1:
-            continue
-        t = float(f.get("enter_s") or 0) + sum(
-            float(b.get("wall_s") or 0) for b in f["blocks"]
-        )
-        by_pos.setdefault(int(pos), []).append(1000 * t / cmds)
-    return [
-        {"node": k, "files": len(v), "ms_per_command_p50": _r(p50(v), 2)}
-        for k, v in sorted(by_pos.items())
-    ]
-
-
 def census_index(
     census: Dict[str, Any],
 ) -> Tuple[Dict[str, float], Dict[Tuple[str, int], Tuple[Optional[int], bool]]]:
@@ -105,9 +85,9 @@ def census_index(
     times: Dict[str, float] = {}
     blocks: Dict[Tuple[str, int], Tuple[Optional[int], bool]] = {}
     for f in census["files"]:
-        times[f["stem"]] = float(f.get("enter_s") or 0) + sum(
-            float(b.get("wall_s") or 0) for b in f["blocks"]
-        )
+        times[f["stem"]] = (
+            float(f.get("acquire_s") or 0) + float(f.get("enter_s") or 0)
+        ) + sum(float(b.get("wall_s") or 0) for b in f["blocks"])
         for b in f["blocks"]:
             blocks[(f["stem"], int(b["index"]))] = (
                 b.get("n_commands"),
@@ -155,12 +135,15 @@ def summarize_cell(  # pylint: disable=too-many-locals
         if w["verify_s"] > 0
     )
     replay_time = sum(
-        float(rr.get("enter_s") or 0)
+        float(rr.get("acquire_s") or 0)
+        + float(rr.get("enter_s") or 0)
         + sum(float(b.get("wall_s") or 0) for b in rr.get("blocks") or [])
         for rr in replays
     )
     census_time = sum(times.get(rr["stem"], 0.0) for rr in replays)
-    acq = [float(a["acquire_s"]) for a in cell.get("acquire") or []]
+    acq = [
+        float(r.get("acquire_s") or 0) for r in replays if not r.get("acquire_error")
+    ]
     external = bool(
         (cell.get("server") or {}).get("external")
         or (cell.get("driver") or {}).get("external")
@@ -186,11 +169,12 @@ def summarize_cell(  # pylint: disable=too-many-locals
             4,
         ),
         "errors": sum(1 for b in blocks if b.get("error"))
-        + sum(1 for rr in replays if rr.get("enter_error")),
+        + sum(1 for rr in replays if rr.get("enter_error") or rr.get("acquire_error")),
         "window_s": _r(window_s, 2),
         "chunks_per_min": _r(rate_verify * 60, 1),
         "commands_per_min": _r(cmds_verify * 60, 1),
-        "chunks_per_min_incl_enter": _r(
+        # over the cell window: per-file acquisition and enter included (D6)
+        "chunks_per_min_incl_setup": _r(
             verified / window_s * 60 if window_s else None, 1
         ),
         "slowdown_vs_census": _r(
@@ -205,10 +189,6 @@ def summarize_cell(  # pylint: disable=too-many-locals
         "enter_p50_s": _r(p50([float(r.get("enter_s") or 0) for r in replays]), 3),
         "acquire_p50_s": _r(p50(acq), 3),
         "acquire_max_s": _r(max(acq) if acq else None, 3),
-        "nodes_per_session_max": max(
-            (int(v) for v in (cell.get("nodes_per_session") or {}).values()),
-            default=None,
-        ),
     }
     if t0 and t1:
         win = window_summary(load_samples(cell["_samples_path"]), t0, t1)
@@ -230,7 +210,7 @@ SERIES_KEYS = (
     "census_work_rate",
     "chunks_per_min",
     "commands_per_min",
-    "chunks_per_min_incl_enter",
+    "chunks_per_min_incl_setup",
     "slowdown_vs_census",
     "latency_p50_s",
     "latency_p95_s",

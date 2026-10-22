@@ -15,7 +15,7 @@ sys.path.insert(
     0, str(Path(__file__).resolve().parents[1] / "evaluation" / "training_metrics")
 )
 
-from trainmetrics import corpus, run_matrix, run_t1, samples  # noqa: E402
+from trainmetrics import corpus, replay, run_matrix, run_t1, samples  # noqa: E402
 
 THY = """theory {name}
   imports Main
@@ -147,29 +147,29 @@ def _census(files, bad=()):
     }
 
 
-def test_run_cell_acquires_first_then_replays_and_closes(tmp_path):
+def test_run_cell_gives_every_file_its_own_session(tmp_path):
+    """D6 (review afd3de9 B1): each replay acquires a session with the file's
+    imports, replays and closes it; the window opens when the workers start."""
     files = _corpus(tmp_path)
     census = _census(files, bad=("C",))
     spec = run_t1.CellSpec(
-        workers=2,
-        rep=1,
-        seed=7,
-        quota=2,
-        heap="HOL",
-        session_theories=["Main"],
-        out_dir=tmp_path / "cell",
+        workers=2, rep=1, seed=7, quota=2, heap="HOL", out_dir=tmp_path / "cell"
     )
     cl, smp = FakeClient(), FakeSampler()
+    t_before = time.time()
     body = asyncio.run(run_t1.run_cell(cl, spec, files, census, smp))
     assert body["outcome"] == "ok" and body["excluded_stems"] == ["C"]
     assert body["assignment"] == corpus.assignment(["A", "B"], 7, 2, 2)
-    assert body["window_start"] >= max(cl.acquired_at)  # clock after all acquires
-    assert body["window_start"] <= min(cl.entered_at)  # and before the first enter
-    assert [p[0] for p in smp.phases] == ["acquire", "run", "stop"]
-    assert sorted(cl.closed) == ["s1", "s2"] and body["replays"] == 4
-    assert body["nodes_per_session"] == {"0": 2, "1": 2}
-    lines = (tmp_path / "cell" / "replays.jsonl").read_text().splitlines()
-    assert len(lines) == 4 and all(json.loads(x)["blocks"] for x in lines)
+    assert t_before <= body["window_start"] <= min(cl.acquired_at)  # acquires inside
+    assert [p[0] for p in smp.phases] == ["run", "stop"]
+    assert body["replays"] == 4 and sorted(cl.closed) == ["s1", "s2", "s3", "s4"]
+    assert body["open_sessions"] == {} and body["unclosed_sessions"] == []
+    assert all(len(v) == 1 for v in cl.names.values())  # one node per session
+    lines = [
+        json.loads(x)
+        for x in (tmp_path / "cell" / "replays.jsonl").read_text().splitlines()
+    ]
+    assert len(lines) == 4 and all(x["blocks"] and x["acquire_s"] > 0 for x in lines)
 
 
 def test_matrix_runner_order_resume_and_lock(tmp_path, monkeypatch, capsys):
@@ -215,8 +215,8 @@ def test_matrix_runner_order_resume_and_lock(tmp_path, monkeypatch, capsys):
     assert cmd[-4:] == ["--url", "http://h:1", "--quota", "2"]
 
 
-def test_a_failed_acquire_closes_the_sessions_already_acquired(tmp_path):
-    """Review 830f9ac S1: all W sessions or none."""
+def test_a_refused_acquire_is_recorded_per_file(tmp_path):
+    """A refusal (pool full, memory) costs that file only; nothing leaks."""
 
     class Refusing(FakeClient):
         async def acquire_session(self, **kw):
@@ -226,15 +226,11 @@ def test_a_failed_acquire_closes_the_sessions_already_acquired(tmp_path):
             return await super().acquire_session(**kw)
 
     files = _corpus(tmp_path)
-    spec = run_t1.CellSpec(2, 0, 7, 1, "HOL", ["Main"], tmp_path / "cell")
+    spec = run_t1.CellSpec(2, 0, 7, 1, "HOL", tmp_path / "cell")
     cl = Refusing()
-    try:
-        asyncio.run(run_t1.run_cell(cl, spec, files, _census(files)))
-    except RuntimeError as exc:
-        assert "memory_pressure" in str(exc)
-    else:
-        raise AssertionError("the refusal must propagate")
-    assert cl.closed == ["s1"]
+    body = asyncio.run(run_t1.run_cell(cl, spec, files, _census(files)))
+    assert body["acquire_errors"] == 1 and body["replays"] == 2
+    assert cl.closed == ["s1"] and body["open_sessions"] == {}
 
 
 FAKE_CELL = r"""
@@ -290,19 +286,19 @@ def test_close_all_retries_a_busy_session_and_reports_what_stays_open():
 
     cl = Busy()
     sessions = [
-        run_t1.SessionRef("slow", "l1"),
-        run_t1.SessionRef("never", "l2"),
-        run_t1.SessionRef("ok", "l3"),
+        replay.SessionRef("slow", "l1"),
+        replay.SessionRef("never", "l2"),
+        replay.SessionRef("ok", "l3"),
     ]
-    left = asyncio.run(run_t1.close_all(cl, sessions, deadline_s=2.5))
+    left = asyncio.run(replay.close_all(cl, sessions, deadline_s=2.5))
     assert sorted(cl.closed) == ["ok", "slow"] and cl.tries["slow"] == 3
     assert [x["session_id"] for x in left] == ["never"] and left[0]["lease_id"] == "l2"
     assert "SessionBusyError" in left[0]["error"]
 
 
-def test_run_cell_checkpoints_the_leases_before_any_work(tmp_path):
+def test_run_cell_checkpoints_the_open_leases(tmp_path):
     files = _corpus(tmp_path)
-    spec = run_t1.CellSpec(2, 0, 7, 1, "HOL", ["Main"], tmp_path / "cell")
+    spec = run_t1.CellSpec(2, 0, 7, 1, "HOL", tmp_path / "cell")
     seen = []
     body = {"environment": {"x": 1}}
     out = asyncio.run(
@@ -312,17 +308,17 @@ def test_run_cell_checkpoints_the_leases_before_any_work(tmp_path):
             files,
             _census(files),
             body=body,
-            checkpoint=lambda b: seen.append([a["lease_id"] for a in b["acquire"]]),
+            checkpoint=lambda b: seen.append(dict(b["open_sessions"])),
         )
     )
     assert out is body and body["environment"] == {"x": 1}  # the caller's dict, kept
-    assert seen == [["l1", "l2"]] and body["unclosed_sessions"] == []
+    assert any(seen) and seen[-1] == {}  # leases on disk while open, none at the end
+    assert {lease for s in seen for lease in s.values()} == {"l1", "l2"}
 
 
 def test_a_cell_stopped_during_acquisition_closes_what_the_server_created(tmp_path):
-    """Live check of fix 0df4258/830f9ac: SIGTERM while acquiring. The server
-    completes an acquire whose request the client stopped waiting for; the
-    acquires are let finish and their sessions closed before the cell stops."""
+    """Live check of fix 0df4258/830f9ac, now per file: a stop while acquiring
+    lets the acquire finish (the server completes it anyway) and closes it."""
 
     class Slow(FakeClient):
         async def acquire_session(self, **kw):
@@ -330,7 +326,7 @@ def test_a_cell_stopped_during_acquisition_closes_what_the_server_created(tmp_pa
             return await super().acquire_session(**kw)
 
     files = _corpus(tmp_path)
-    spec = run_t1.CellSpec(2, 0, 7, 1, "HOL", ["Main"], tmp_path / "cell")
+    spec = run_t1.CellSpec(2, 0, 7, 1, "HOL", tmp_path / "cell")
     cl = Slow()
 
     async def go():

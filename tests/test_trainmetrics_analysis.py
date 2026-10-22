@@ -136,7 +136,7 @@ def test_metrics_and_analysis_on_a_synthetic_tree(tmp_path):
     r1 = next(r for r in rows if r["workers"] == 1)
     # 6 verified chunks in 0.6 s of verify time -> 600/min; slowdown = (3*0.05+6*0.1)/(3*(0.1+0.4))
     assert r1["chunks_per_min"] == 600.0 and r1["commands_per_min"] == 1200.0
-    assert r1["chunks_per_min_incl_enter"] == 6.0 and r1["slowdown_vs_census"] == 0.5
+    assert r1["chunks_per_min_incl_setup"] == 6.0 and r1["slowdown_vs_census"] == 0.5
     assert r1["cpu_cores_mean"] == 4.0 and r1["host_cpu_util"] == 0.5
     assert r1["census_match"] and r1["timeout_rate"] == 0.0
     series = metrics_t12.series_t1(rows)
@@ -172,12 +172,10 @@ def _write(tmp_path, census):
 def test_timed_out_calls_are_not_in_the_latency_and_zero_counts_have_no_class(
     tmp_path,
 ):
-    """Review c9c9197 S2/S3/S4."""
+    """Review c9c9197 S2/S3."""
     files = _corpus(tmp_path)
     census = _census(files)
     census["files"][1]["blocks"][0]["n_commands"] = 0  # a comment-only block
-    for pos, f in enumerate(census["files"], 1):
-        f["nodes_on_session"] = pos
     root = tmp_path / "results"
     _cell_tree(root, 1, 0, census, wall=0.1)
     _cell_tree(root, 4, 0, census, wall=9.0, timed_out=True)
@@ -192,12 +190,8 @@ def test_timed_out_calls_are_not_in_the_latency_and_zero_counts_have_no_class(
     assert metrics_t12.zero_count_blocks(census) == 1
     t2 = metrics_t12.t2_table(cells, census, [1])
     assert sum(r["n"] for r in t2) == 5  # 6 blocks, the zero-command one has no class
-    trend = metrics_t12.census_node_trend(census)
-    assert [t["node"] for t in trend] == [1, 2, 3] and trend[0][
-        "ms_per_command_p50"
-    ] == 125.0
     text = analyze.snippet_t12(metrics_t12.series_t1(list(rows.values())), t2, census)
-    assert "1 with no command" in text and "1: 125.0 ms" in text
+    assert "1 with no command" in text
 
 
 def test_external_server_cells_show_no_resource_columns(tmp_path):

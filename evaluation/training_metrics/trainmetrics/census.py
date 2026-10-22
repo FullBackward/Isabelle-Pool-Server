@@ -18,7 +18,7 @@ import yaml
 
 from . import EXPERIMENT_DIR, REPO_ROOT
 from .corpus import CorpusFile, corpus_sha, load_corpus, load_paths, sha256_text
-from .replay import BUDGET_MAX_S, ReplayRecord, SessionRef, close_all, replay_file
+from .replay import BUDGET_MAX_S, ReplayRecord, replay_file_fresh
 
 CENSUS_VERSION = 1
 
@@ -48,7 +48,8 @@ def summarize(records: Sequence[ReplayRecord]) -> List[Dict[str, Any]]:
             {
                 "stem": rr.stem,
                 "theory_name": rr.theory_name,
-                "nodes_on_session": rr.nodes_on_session,
+                "acquire_s": rr.acquire_s,
+                "acquire_error": rr.acquire_error,
                 "enter_s": rr.enter_s,
                 "enter_error": rr.enter_error,
                 "blocks": [
@@ -80,7 +81,9 @@ def totals(files: Sequence[Dict[str, Any]]) -> Dict[str, int]:
     blocks = [b for f in files for b in f["blocks"]]
     return {
         "files": len(files),
-        "files_entered": sum(1 for f in files if not f["enter_error"]),
+        "files_entered": sum(
+            1 for f in files if not f["enter_error"] and not f.get("acquire_error")
+        ),
         "blocks": len(blocks),
         "commands": sum(int(b["n_commands"] or 0) for b in blocks),
         "proved_blocks": sum(1 for b in blocks if b["proved"]),
@@ -88,6 +91,21 @@ def totals(files: Sequence[Dict[str, Any]]) -> Dict[str, int]:
         "partial_count_blocks": sum(1 for b in blocks if b.get("count_partial")),
         "error_blocks": sum(1 for b in blocks if b["error"]),
     }
+
+
+def proved_gate(tot: Dict[str, Any], need: float) -> Optional[str]:
+    """None when the census proved at least ``need`` of its blocks, else the
+    failure line (review afd3de9 B1: a census run without the files' imports
+    proved 13 of 383 blocks and still said ok)."""
+    blocks = int(tot.get("blocks") or 0)
+    proved = int(tot.get("proved_blocks") or 0)
+    frac = proved / blocks if blocks else 0.0
+    if blocks and frac < need:
+        return (
+            f"CENSUS FAILED THE GATE: {proved} of {blocks} blocks proved ({frac:.1%}) "
+            f"< {need:.0%} (config census_min_proved_fraction)"
+        )
+    return None
 
 
 def counts_by_stem(census: Dict[str, Any]) -> Dict[str, List[Optional[int]]]:
@@ -134,54 +152,32 @@ def load_census(path: str) -> Dict[str, Any]:
         return dict(json.load(fh))
 
 
-async def _census_session(
-    client: Any, field: str, session_theories: List[str]
-) -> SessionRef:
-    acq = await client.acquire_session(
-        theories=session_theories,
-        field=field,
-        reuse_dirty=False,
-        label="trainmetrics-census",
-    )
-    return SessionRef(str(acq["session_id"]), str(acq["lease_id"]), worker=0)
-
-
-async def run_census(  # pylint: disable=too-many-locals,too-many-arguments
+async def run_census(
     client: Any,
     files: Sequence[CorpusFile],
     *,
     field: str,
-    session_theories: List[str],
-    rotate_every: int = 0,
     unclosed: Optional[List[Dict[str, Any]]] = None,
 ) -> List[ReplayRecord]:
-    """Replay every file once at the maximum budget. With ``rotate_every``
-    = k a fresh session is taken every k files — the T1 workers' condition (k
-    files per session), so the census baseline does not drift with a node count
-    the cells never reach (review c9c9197 S4); 0 = one session for all."""
-    sess = await _census_session(client, field, session_theories)
+    """Replay every file once at the maximum budget, each on a fresh session
+    acquired with the file's own imports (D6, review afd3de9 B1) — the same
+    condition as every T1 worker; sessions that stay open are listed."""
     records: List[ReplayRecord] = []
-    try:
-        for n, cf in enumerate(files, 1):
-            if rotate_every and sess.nodes >= rotate_every:
-                if unclosed is not None:  # retry while busy, report what stays open
-                    unclosed.extend(await close_all(client, [sess]))
-                else:
-                    await close_all(client, [sess])
-                sess = await _census_session(client, field, session_theories)
-            rr = await replay_file(client, sess, cf, budget_s=BUDGET_MAX_S)
-            records.append(rr)
-            proved = sum(1 for b in rr.blocks if b.proved)
-            print(
-                f"[census {n}/{len(files)}] {cf.stem}: {len(rr.blocks)} blocks, "
-                f"{proved} proved, enter {rr.enter_s:.1f}s"
-                + (f", ENTER ERROR {rr.enter_error}" if rr.enter_error else ""),
-                flush=True,
-            )
-    finally:
-        left = await close_all(client, [sess])
+    for n, cf in enumerate(files, 1):
+        rr = await replay_file_fresh(
+            client, cf, heap=field, budget_s=BUDGET_MAX_S, label="trainmetrics-census"
+        )
+        records.append(rr)
         if unclosed is not None:
-            unclosed.extend(left)
+            unclosed.extend(rr.unclosed)
+        proved = sum(1 for b in rr.blocks if b.proved)
+        err = rr.acquire_error or rr.enter_error
+        print(
+            f"[census {n}/{len(files)}] {cf.stem}: {len(rr.blocks)} blocks, "
+            f"{proved} proved, acquire {rr.acquire_s:.1f}s, enter {rr.enter_s:.1f}s"
+            + (f", ERROR {err}" if err else ""),
+            flush=True,
+        )
     return records
 
 
@@ -250,8 +246,6 @@ async def _main_async(  # pylint: disable=too-many-locals
                 client,
                 files,
                 field=field,
-                session_theories=list(cfg["session"]["theories"]),
-                rotate_every=int(cfg.get("files_per_worker", 0)),
                 unclosed=unclosed,
             )
         driver_info = driver.describe()
@@ -269,7 +263,7 @@ async def _main_async(  # pylint: disable=too-many-locals
             "field": field,
             "wall_s": round(time.time() - t0, 1),
             "budget_s": BUDGET_MAX_S,
-            "rotate_every": int(cfg.get("files_per_worker", 0)),
+            "session_per_file": True,
             "corpus_manifest": (
                 corpus_manifest(cfg["corpus"]) if not args.local_smoke else None
             ),
@@ -280,6 +274,14 @@ async def _main_async(  # pylint: disable=too-many-locals
         },
     )
     print(json.dumps({"census_id": body["census_id"], **body["totals"]}))
+    # the gate that would have caught the import bug (review afd3de9 B1): a
+    # census that proves too little measured the wrong thing
+    msg = proved_gate(body["totals"], float(cfg.get("census_min_proved_fraction", 0.0)))
+    if msg:
+        print(
+            f"{msg}; inspect {Path(args.out) / 'census.json'} before running any cell"
+        )
+        return 3
     return 0
 
 

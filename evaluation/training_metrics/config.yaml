@@ -15,8 +15,10 @@ files_per_worker: 8                          # D2
 workers: [1, 2, 4, 8, 16, 32]                # T1
 repeats: 3
 session:
-  field: HOL-Analysis                        # the heap every session runs on
-  theories: [Main]                           # wrapper imports; each replay enters its own header
+  field: HOL-Analysis                        # the heap every session runs on; each file gets a session of its
+                                             # own, acquired with the file's imports (D6: IPS fixes a session's
+                                             # theory context at acquisition)
+census_min_proved_fraction: 0.9              # the census (and so the smoke) fails below this proved share
 sample_interval_s: 1                         # memscale sampler (memory + CPU)
 t2_workers: [1, 8]                           # T2 latency tables come from these T1 cells
 ips:

@@ -97,3 +97,19 @@ def test_kill_server_stops_the_whole_tree_across_sessions():
     while time.monotonic() < deadline and procctl._alive([jvm]):
         time.sleep(0.2)
     assert not procctl._alive([jvm]) and done["sigkilled"] >= 1
+
+
+def test_cgroup_kill_refuses_the_runners_own_cgroup_and_its_ancestors(
+    tmp_path, monkeypatch
+):
+    """Review afd3de9 S2."""
+    for d in ("slice", "slice/run.scope", "other.scope"):
+        (tmp_path / d).mkdir(parents=True, exist_ok=True)
+        (tmp_path / d / "cgroup.kill").write_text("")
+    monkeypatch.setattr(
+        procctl, "_own_cgroup", lambda: str(tmp_path / "slice" / "run.scope")
+    )
+    assert not procctl.cgroup_kill(str(tmp_path / "slice" / "run.scope"))  # its own
+    assert not procctl.cgroup_kill(str(tmp_path / "slice") + "/")  # an ancestor
+    assert procctl.cgroup_kill(str(tmp_path / "other.scope"))  # a sibling scope
+    assert (tmp_path / "slice" / "cgroup.kill").read_text() == ""

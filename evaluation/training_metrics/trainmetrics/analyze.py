@@ -15,7 +15,6 @@ from typing import Any, Dict, List, Optional, Sequence
 from . import EXPERIMENT_DIR
 from .census import load_census, load_config
 from .metrics_t12 import (
-    census_node_trend,
     load_t1_cells,
     series_t1,
     summarize_cell,
@@ -68,9 +67,9 @@ def plots(
         )
         ax.plot(
             ws,
-            [s["chunks_per_min_incl_enter"] for s in series],
+            [s["chunks_per_min_incl_setup"] for s in series],
             marker="s",
-            label="including enter",
+            label="including acquire + enter",
         )
         ax.set_xlabel("workers W")
         ax.set_ylabel("verified chunks / min")
@@ -144,7 +143,7 @@ def snippet_t12(
         "do not depend on the file mix. Latencies exclude timed-out calls (rate beside).",
         "",
         "| W | census work rate | speedup | efficiency | chunks/min (verify only) | commands/min | "
-        "chunks/min (incl. enter) | slowdown vs census | p50 / p95 s | timeout rate | host CPU % | "
+        "chunks/min (incl. acquire + enter) | slowdown vs census | p50 / p95 s | timeout rate | host CPU % | "
         "PSS peak GB |",
         "|---|---|---|---|---|---|---|---|---|---|---|---|",
     ]
@@ -161,7 +160,7 @@ def snippet_t12(
         lines.append(
             f"| {s['workers']} | {_f(s['census_work_rate'], 2)} | {_f(s['speedup'], 2)} | "
             f"{_f(s['efficiency'], 2)} | {_f(s['chunks_per_min'])} | "
-            f"{_f(s['commands_per_min'])} | {_f(s['chunks_per_min_incl_enter'])} | "
+            f"{_f(s['commands_per_min'])} | {_f(s['chunks_per_min_incl_setup'])} | "
             f"{_f(s['slowdown_vs_census'], 2)} | "
             f"{_f(s['latency_p50_s'], 3)} / {_f(s['latency_p95_s'], 3)} | "
             f"{_f(s['timeout_rate'], 4)} | {_f(100 * util if util is not None else None)} | "
@@ -191,17 +190,6 @@ def snippet_t12(
             "",
             f"Per-call floor (p50 of single-command chunks at W={floor['workers']}): "
             f"{_f(floor['latency_p50_s'], 3)} s.",
-        ]
-    trend = census_node_trend(census)
-    if trend:
-        lines += [
-            "",
-            "Census time per command by the file's position on its session (the baseline's "
-            "drift as nodes accumulate): "
-            + ", ".join(
-                f"{t['node']}: {_f(t['ms_per_command_p50'], 1)} ms" for t in trend
-            )
-            + ".",
         ]
     return "\n".join(lines) + "\n"
 
