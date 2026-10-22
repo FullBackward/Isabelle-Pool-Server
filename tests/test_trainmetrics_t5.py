@@ -10,12 +10,21 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(
     0, str(Path(__file__).resolve().parents[1] / "evaluation" / "training_metrics")
 )
 
 from trainmetrics import corpus, metrics_t5, replay, run_t5  # noqa: E402
 from trainmetrics.replay import BlockRecord  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _no_settle_pause(monkeypatch):
+    """The fake server has no prover to sample: no 1.5 s pause per attempt."""
+    monkeypatch.setattr(run_t5, "SETTLE_S", 0.0)
+
 
 THY = """theory Seeded
   imports Main
@@ -182,6 +191,7 @@ def test_a_w1_cell_on_a_fake_server(tmp_path):
     assert [a["budget_s"] for a in metis] == [5.0, 5.0] and srv.rollbacks == 2
     assert all(a["outcome"] == "kept" and a["rolled_back"] for a in metis)
     assert all(a["source_unchanged"] for a in atts)
+    assert all(a["t_settled"] >= a["t_start"] + a["wall_s"] for a in atts)  # 1676d29 B1
     assert all(
         p["verdict_match"] and p["recovery_s"] is not None for p in f["positions"]
     )
@@ -345,49 +355,51 @@ def _sample(t, provers):
 
 
 def test_the_prover_that_ran_the_attempt_and_its_retained_memory():
-    """Review beac25c S2: the busy prover's RSS before, at peak and after; an
-    idle prover beside it (a leftover session) is not picked."""
+    """Review beac25c S2 / 1676d29 B1: the busy prover's RSS before, at peak and
+    in the quiet pause after the call; an idle prover beside it (a leftover
+    session) is not picked; a row after the pause (the next call, the session
+    closing) is not "after"."""
     samples = [
         _sample(100.0, {10: (1000, 0), 20: (3000, 50)}),
         _sample(101.0, {10: (1500, 100), 20: (3000, 50)}),
         _sample(102.0, {10: (4000, 200), 20: (3000, 50)}),
-        _sample(103.0, {10: (3500, 210), 20: (3000, 50)}),
+        _sample(103.0, {10: (3500, 210), 20: (3000, 50)}),  # in the pause
+        _sample(104.0, {10: (900, 260), 20: (3000, 50)}),  # the session closing
+        _sample(105.0, {20: (3000, 50)}),  # gone
     ]
-    m = metrics_t5.prover_memory(samples, 100.5, 102.5)
-    assert m["pid"] == 10 and m["rss_before_mb"] == 1000.0
+    m = metrics_t5.prover_memory(samples, 100.5, 102.5, 103.8)
+    assert m["pid"] == 10 and m["rss_before_mb"] == 1000.0 and m["censored"] is None
     assert m["rss_peak_mb"] == 4000.0 and m["rss_after_mb"] == 3500.0
     assert m["retained_mb"] == 2500.0
-    assert metrics_t5.prover_memory(samples, 99.0, 100.5) is None  # nothing before
-    # the busy prover exits before the first sample after the attempt (its file's
-    # session closed): its last sample is "after", not an idle neighbour's
-    gone = samples[:3] + [_sample(103.0, {20: (3000, 50)})]
-    m = metrics_t5.prover_memory(gone, 100.5, 102.5)
-    assert m["pid"] == 10 and m["rss_after_mb"] == 4000.0 and m["exited"]
+    assert (
+        metrics_t5.prover_memory(samples, 99.0, 100.5, 101.0) is None
+    )  # nothing before
+    # the reviewer's live case: no row in the pause, the next one sees the close
+    m = metrics_t5.prover_memory(samples, 100.5, 103.2, 103.9)
+    assert m["censored"] == "no_row_in_pause" and m["retained_mb"] is None
+    # the prover gone in the pause's row
+    m = metrics_t5.prover_memory(samples, 100.5, 104.5, 105.5)
+    assert m["censored"] == "prover_gone" and m["retained_mb"] is None
+    # a record without a pause (older code) is censored, not guessed
+    assert metrics_t5.prover_memory(samples, 100.5, 102.5)["censored"] == "no_pause"
     idle = [_sample(t, {20: (3000, 50)}) for t in (100.0, 101.0, 102.0, 103.0)]
-    assert metrics_t5.prover_memory(idle, 100.5, 102.5) is None  # nobody worked
+    assert metrics_t5.prover_memory(idle, 100.5, 102.5, 103.5) is None  # nobody worked
+    att = {"seed_id": "subst-0", "family": "subst", "budget_s": 1.0}
+    att.update({"outcome": "timed_out", "wall_s": 2.0, "t_start": 100.5})
+    late = dict(att, seed_id="subst-1", t_start=100.5, wall_s=2.7, t_settled=103.9)
     files = [
         {
             "stem": "S",
             "positions": [
-                {
-                    "position": 1,
-                    "attempts": [
-                        {
-                            "seed_id": "subst-0",
-                            "family": "subst",
-                            "budget_s": 1.0,
-                            "outcome": "timed_out",
-                            "wall_s": 2.0,
-                            "t_start": 100.5,
-                        }
-                    ],
-                }
+                {"position": 1, "attempts": [dict(att, t_settled=103.8)]},
+                {"position": 2, "attempts": [late]},
             ],
         }
     ]
     metrics_t5.annotate(files, samples)
     row = metrics_t5.summarize(files)["table"][0]
-    assert row["retained_max_mb"] == 2500.0 and row["peak_growth_max_mb"] == 3000.0
+    assert row["retained_max_mb"] == 2500.0 and row["retained_p50_mb"] == 2500.0
+    assert row["retained_censored"] == 1 and row["peak_growth_max_mb"] == 3000.0
 
 
 def test_a_memory_error_is_its_own_class():

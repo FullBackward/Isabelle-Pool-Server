@@ -63,23 +63,22 @@ def _polys(row: Dict[str, Any]) -> Dict[int, Dict[str, Any]]:
     return {int(p["pid"]): p for p in row.get("procs") or [] if p.get("role") == "poly"}
 
 
-def prover_memory(
-    samples: Sequence[Dict[str, Any]], t0: float, t1: float
-) -> Optional[Dict[str, Any]]:
-    """The prover that ran during [t0, t1] and its RSS before, at peak and
-    after (MB). before = the last sample at or before t0; the prover = the one
-    with the most CPU from there to its last sample up to the first sample at or
-    after t1 (the undo is done when the response arrives); after = that
-    sample, or the prover's last sample when it exited first (the file's
-    session is closed right after its last position). None when no prover
-    worked in the window."""
-    before = next((r for r in reversed(samples) if float(r["t"]) <= t0), None)
-    after = next((r for r in samples if float(r["t"]) >= t1), None)
-    if before is None:
-        return None
-    t_end = float(after["t"]) if after is not None else t1
-    window = [r for r in samples if t0 < float(r["t"]) <= t_end]
-    pb = _polys(before)
+def _after_row(
+    samples: Sequence[Dict[str, Any]], t1: float, t_limit: Optional[float]
+) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """The last row in the quiet pause [t1, t_limit] and why it is censored."""
+    first_after = next((r for r in samples if float(r["t"]) >= t1), None)
+    if t_limit is None:
+        return first_after, "no_pause"
+    quiet = [r for r in samples if t1 <= float(r["t"]) <= t_limit]
+    return (quiet[-1], None) if quiet else (first_after, "no_row_in_pause")
+
+
+def _busiest(
+    pb: Dict[int, Dict[str, Any]], window: Sequence[Dict[str, Any]]
+) -> Optional[Tuple[int, Dict[int, Dict[str, Any]]]]:
+    """The prover with the most CPU from ``pb`` (before) to its last row in
+    ``window``, and every prover's last row; None when none worked."""
     last: Dict[int, Dict[str, Any]] = {}
     for r in window:
         last.update({pid: q for pid, q in _polys(r).items() if pid in pb})
@@ -89,8 +88,38 @@ def prover_memory(
     }
     if not busy or max(busy.values()) <= 0:
         return None
-    pid = max(busy, key=lambda q: busy[q])
-    rb = int(pb[pid]["rss"])
+    return max(busy, key=lambda q: busy[q]), last
+
+
+def prover_memory(
+    samples: Sequence[Dict[str, Any]],
+    t0: float,
+    t1: float,
+    t_limit: Optional[float] = None,
+) -> Optional[Dict[str, Any]]:
+    """The prover that ran during [t0, t1] and its RSS before, at peak and
+    after (MB). before = the last sample at or before t0; after = the last
+    sample in [t1, t_limit], the quiet pause after the call before the next call
+    on the session (review 1676d29 B1: a later row sees the next call or the
+    session closing); the prover = the one with the most CPU from before to
+    after. ``censored`` names why "after" cannot be trusted (no row in the
+    pause, no pause recorded, the prover gone) and then ``retained_mb`` is
+    None. ``retained_mb`` can be negative: Poly/ML may compact its heap during
+    a long loop and end it smaller than it began (seen live). None when no
+    prover worked in the window."""
+    before = next((r for r in reversed(samples) if float(r["t"]) <= t0), None)
+    if before is None:
+        return None
+    after, censored = _after_row(samples, t1, t_limit)
+    stop = float(after["t"]) if after is not None else t1
+    window = [r for r in samples if t0 < float(r["t"]) <= stop]
+    found = _busiest(_polys(before), window)
+    if found is None:
+        return None
+    pid, last = found
+    if after is None or pid not in _polys(after):
+        censored = censored or "prover_gone"
+    rb = int(_polys(before)[pid]["rss"])
     peak = max([rb] + [int(_polys(r)[pid]["rss"]) for r in window if pid in _polys(r)])
     ra = int(last[pid]["rss"])
     return {
@@ -98,8 +127,8 @@ def prover_memory(
         "rss_before_mb": round(rb / MB, 1),
         "rss_peak_mb": round(peak / MB, 1),
         "rss_after_mb": round(ra / MB, 1),
-        "retained_mb": round((ra - rb) / MB, 1),
-        "exited": after is not None and pid not in _polys(after),
+        "retained_mb": None if censored else round((ra - rb) / MB, 1),
+        "censored": censored,
     }
 
 
@@ -113,7 +142,11 @@ def annotate(
         for p in f.get("positions") or []:
             for a in p.get("attempts") or []:
                 t0 = float(a.get("t_start") or 0)
-                a["prover_mem"] = prover_memory(samples, t0, t0 + float(a["wall_s"]))
+                t1 = t0 + float(a["wall_s"])
+                lim = a.get("t_settled")
+                a["prover_mem"] = prover_memory(
+                    samples, t0, t1, None if lim is None else float(lim)
+                )
 
 
 def _cell(all_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -128,7 +161,7 @@ def _cell(all_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     )
     undo = [float(a["undo_s"]) for a in rows if a.get("undo_s") is not None]
     mem = [a["prover_mem"] for a in rows if a.get("prover_mem")]
-    kept_mb = [float(m["retained_mb"]) for m in mem]
+    kept_mb = [float(m["retained_mb"]) for m in mem if m.get("retained_mb") is not None]
     peak_up = [float(m["rss_peak_mb"]) - float(m["rss_before_mb"]) for m in mem]
     known = [a for a in rows if a.get("source_unchanged") is not None]
     out.update(
@@ -143,6 +176,7 @@ def _cell(all_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
             "wall_max_s": _r(max((float(a["wall_s"]) for a in rows), default=None)),
             "retained_p50_mb": _r(p50(kept_mb), 1),
             "retained_max_mb": _r(max(kept_mb) if kept_mb else None, 1),
+            "retained_censored": sum(1 for m in mem if m.get("censored")),
             "peak_growth_max_mb": _r(max(peak_up) if peak_up else None, 1),
             "prover_peak_max_mb": _r(
                 max((float(m["rss_peak_mb"]) for m in mem), default=None), 1

@@ -60,6 +60,9 @@ class SeedAttempt:  # pylint: disable=too-many-instance-attributes
     first_error: Optional[str] = None  # why a seed failed (review beac25c S5)
     mem_before: Optional[Dict[str, Any]] = None  # the session's row + server tier (S2)
     mem_after: Optional[Dict[str, Any]] = None
+    t_settled: Optional[float] = (
+        None  # end of the quiet pause after the call (1676d29 B1)
+    )
 
 
 @dataclass
@@ -103,6 +106,9 @@ class T5FileRecord:  # pylint: disable=too-many-instance-attributes
 
 
 DEAD = ("prover_died", "session_gone")  # the session is gone: the file stops
+# after each attempt, no call on the session for this long (outside every timed
+# span), so the 1 Hz sampler has a row of the prover as the attempt left it
+SETTLE_S = 1.5
 
 
 def classify(rec: BlockRecord) -> str:
@@ -185,6 +191,8 @@ async def attempt(
     )
     if out.outcome in DEAD:
         return out
+    await asyncio.sleep(SETTLE_S)
+    out.t_settled = time.time()
     if out.outcome == "kept":
         try:
             await client.rollback(sess.session_id, lease_id=sess.lease_id)

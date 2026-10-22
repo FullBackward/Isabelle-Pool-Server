@@ -271,7 +271,10 @@ class BudgetLadder:
     (not by run order, so they spread over the files): a seed is eligible for
     b when its rank is below ``counts[b]`` plus the eligible seeds that did not
     loop so far. A seed climbs one budget at a time and stops at the first
-    attempt that does not time out; the slots it leaves pass on."""
+    attempt that does not time out; the slots it leaves pass on. The counts are
+    maxima (review 1676d29 S2): a slot passed to a rank whose seed has already
+    run is lost, so a cell can run fewer larger-budget attempts; the T5 table
+    reports the attempts that ran."""
 
     def __init__(
         self, counts: Dict[float, int], seeds: Sequence[Seed] = (), rng_seed: int = 0
