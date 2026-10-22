@@ -263,19 +263,33 @@ def make_seeds(  # pylint: disable=too-many-arguments,too-many-locals
     return sorted(seeds, key=lambda s: (s.stem, s.position, s.seed_id))
 
 
-def budget_plan(
-    seeds: Sequence[Seed], counts: Dict[float, int]
-) -> Dict[str, List[float]]:
-    """seed id -> the budgets it is tried at: for each budget b, the first
-    ``counts[b]`` seeds of each family (in seed-id order) — every seed at the
-    smallest budget, a subset at the larger ones (design T5, ≈ 1 h)."""
-    out: Dict[str, List[float]] = {s.seed_id: [] for s in seeds}
-    for fam in FAMILIES:
-        fam_seeds = sorted(
-            (s for s in seeds if s.family == fam),
-            key=lambda s: int(s.seed_id.split("-")[1]),
-        )
-        for b in sorted(counts):
-            for s in fam_seeds[: counts[b]]:
-                out[s.seed_id].append(float(b))
-    return out
+class BudgetLadder:
+    """Which budgets a seed is tried at (design T5, ≈ 1 h; review 7bedac5 S1).
+    ``counts[b]`` is the number of attempts per family at budget b. Every seed
+    gets the smallest budget while its family's count lasts; a seed that timed
+    out there (it loops) also gets each larger budget whose count for its
+    family is not used up. A seed that ended without timing out is not tried
+    again: a longer budget tells nothing about a step that does not loop."""
+
+    def __init__(self, counts: Dict[float, int]) -> None:
+        if not counts:
+            raise ValueError("no budgets")
+        self.smallest = min(float(b) for b in counts)
+        self.larger = sorted(float(b) for b in counts if float(b) != self.smallest)
+        self.left = {
+            (fam, float(b)): int(n) for fam in FAMILIES for b, n in counts.items()
+        }
+
+    def _take(self, family: str, budget: float) -> bool:
+        if self.left.get((family, budget), 0) <= 0:
+            return False
+        self.left[(family, budget)] -= 1
+        return True
+
+    def first(self, family: str) -> Optional[float]:
+        """The smallest budget, or None when the family's count is used up."""
+        return self.smallest if self._take(family, self.smallest) else None
+
+    def more(self, family: str) -> List[float]:
+        """The larger budgets still open for a seed that looped."""
+        return [b for b in self.larger if self._take(family, b)]

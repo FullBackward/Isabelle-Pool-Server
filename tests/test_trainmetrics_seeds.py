@@ -130,14 +130,9 @@ def test_synthetic_goals_when_no_additive_statement_and_unproved_blocks_skipped(
     assert len([s for s in out if s.family == "metis"]) == 1  # three positions in all
 
 
-def test_budget_plan_tries_a_prefix_of_each_family_at_the_larger_budgets(tmp_path):
-    path = tmp_path / "Seeded.thy"
-    path.write_text(THY)
-    cf = corpus.load_file(path)
-    out = seeds.make_seeds([cf], _census(cf), per_family=2, rng_seed=1, max_files=1)
-    plan = seeds.budget_plan(out, {5: 2, 30: 1, 120: 0})
-    assert all(plan[s.seed_id][0] == 5.0 for s in out)
-    for fam in seeds.FAMILIES:
-        at30 = [sid for sid, bs in plan.items() if sid.startswith(fam) and 30.0 in bs]
-        assert len(at30) == 1
-    assert not any(120.0 in bs for bs in plan.values())
+def test_the_budget_ladder_gives_larger_budgets_only_while_counts_last():
+    ladder = seeds.BudgetLadder({5: 2, 30: 1, 120: 1})
+    assert ladder.first("subst") == 5.0 and ladder.more("subst") == [30.0, 120.0]
+    assert ladder.first("subst") == 5.0 and ladder.more("subst") == []  # used up
+    assert ladder.first("subst") is None  # two attempts at 5 s per family
+    assert ladder.first("metis") == 5.0 and ladder.more("metis") == [30.0, 120.0]
