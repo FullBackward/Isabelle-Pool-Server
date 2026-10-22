@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
 from collections import Counter
 from pathlib import Path
@@ -16,7 +17,7 @@ sys.path.insert(
     0, str(Path(__file__).resolve().parents[1] / "evaluation" / "training_metrics")
 )
 
-from trainmetrics import census, corpus, replay  # noqa: E402
+from trainmetrics import census, corpus, replay, serve  # noqa: E402
 
 THY_A = """theory A
   imports "HOL-Analysis.Abstract_Topology"
@@ -245,3 +246,12 @@ def test_partial_census_counts_get_the_maximum_budget(corpus_dir, tmp_path):
     sources = [(b.budget_source, b.budget_s) for b in rr.blocks]
     assert sources[1] == ("census_partial", replay.BUDGET_MAX_S)
     assert sources[0][0] == "census" and sources[2][0] == "census"
+
+
+def test_server_env_makes_the_log_dir_absolute():
+    env = serve.server_env({"ISABELLE_SERVER_LOG_DIR": "results/ips-logs", "X": 1})
+    assert os.path.isabs(env["ISABELLE_SERVER_LOG_DIR"]) and env["X"] == "1"
+    assert (
+        serve.server_env({"ISABELLE_SERVER_LOG_DIR": "/abs"})["ISABELLE_SERVER_LOG_DIR"]
+        == "/abs"
+    )

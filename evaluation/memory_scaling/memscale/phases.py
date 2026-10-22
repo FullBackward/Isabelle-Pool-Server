@@ -106,8 +106,15 @@ class Cell:  # pylint: disable=too-many-instance-attributes
         return path
 
 
-def environment_block(isabelle_home: Optional[str] = None) -> Dict[str, Any]:
-    """Host, kernel, Isabelle version/id, repo commit — Appendix D material."""
+def environment_block(
+    isabelle_home: Optional[str] = None,
+    isabelle_cmd: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """Host, kernel, Isabelle version/id, repo commit — Appendix D material.
+    ``isabelle_cmd`` replaces the ``isabelle`` executable by a command prefix
+    (e.g. ``docker exec <container> isabelle``), so a run from the Mac against
+    the container records the container's Isabelle facts (training-metrics
+    review 77fc8fc S2); ``isabelle_cmd_used`` says which was asked."""
     env: Dict[str, Any] = {
         "hostname": platform.node(),
         "kernel": platform.release(),
@@ -115,16 +122,29 @@ def environment_block(isabelle_home: Optional[str] = None) -> Dict[str, Any]:
         "cpu_count": os.cpu_count(),
         "python": platform.python_version(),
     }
-    isa = (
-        os.path.join(isabelle_home, "bin", "isabelle") if isabelle_home else "isabelle"
+    isa_cmd: List[str] = (
+        list(isabelle_cmd)
+        if isabelle_cmd
+        else [
+            (
+                os.path.join(isabelle_home, "bin", "isabelle")
+                if isabelle_home
+                else "isabelle"
+            )
+        ]
     )
+    env["isabelle_cmd_used"] = " ".join(isa_cmd)
     for key, args in (
         ("isabelle_version", ["version"]),
         ("isabelle_id", ["version", "-i"]),
     ):
         try:
             env[key] = subprocess.run(
-                [isa, *args], capture_output=True, text=True, timeout=60, check=False
+                [*isa_cmd, *args],
+                capture_output=True,
+                text=True,
+                timeout=60,
+                check=False,
             ).stdout.strip()
         except (OSError, subprocess.SubprocessError):
             env[key] = None
@@ -135,7 +155,7 @@ def environment_block(isabelle_home: Optional[str] = None) -> Dict[str, Any]:
     ):  # plan review S6: the launch environment both tools share
         try:
             env[key] = subprocess.run(
-                [isa, "getenv", "-b", var],
+                [*isa_cmd, "getenv", "-b", var],
                 capture_output=True,
                 text=True,
                 timeout=60,

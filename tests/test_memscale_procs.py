@@ -182,6 +182,22 @@ def test_cpu_columns(fake, tmp_path):
     assert row["sum"]["total"]["cpu_ticks"] >= 1000 and row["clk_tck"] > 0
 
 
+def test_cgroup_cpu(fake, tmp_path):
+    """Review a66fa6e S2: the scope's cpu.stat, exact CPU of everything in it."""
+    cg = Path(procs.CGROUP_ROOT) / "user.slice" / "exp.scope"
+    (cg / "cpu.stat").write_text(
+        "usage_usec 5000000\nuser_usec 4000000\nsystem_usec 1000000\nnr_periods 0\n"
+    )
+    assert procs.cgroup_cpu() == {
+        "usage_usec": 5000000,
+        "user_usec": 4000000,
+        "system_usec": 1000000,
+    }
+    assert procs.cgroup_cpu(str(tmp_path / "nowhere"))["usage_usec"] is None
+    row = sampler.Sampler(str(tmp_path / "s.jsonl"), root_pids=[200]).sample_once()
+    assert row["cgroup_cpu"]["usage_usec"] == 5000000
+
+
 def test_workload_helpers(tmp_path):
     thy = tmp_path / "W.thy"
     thy.write_text(

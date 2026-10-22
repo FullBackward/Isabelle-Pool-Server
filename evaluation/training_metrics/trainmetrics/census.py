@@ -170,14 +170,15 @@ def write_census(
     return body
 
 
-async def _main_async(args: argparse.Namespace) -> int:
-    from memscale.phases import (  # pylint: disable=import-outside-toplevel
-        environment_block,
-    )
+async def _main_async(  # pylint: disable=too-many-locals
+    args: argparse.Namespace,
+) -> int:
+    # pylint: disable=import-outside-toplevel
+    from memscale.phases import environment_block
 
-    from client.async_client import (  # pylint: disable=import-outside-toplevel
-        PoolAsyncClient,
-    )
+    from client.async_client import PoolAsyncClient
+
+    from .serve import isabelle_cmd, make_driver
 
     cfg = load_config(args.config)
     only = [s for s in args.files.split(",") if s] if args.files else None
@@ -190,19 +191,25 @@ async def _main_async(args: argparse.Namespace) -> int:
     if not files:
         print("no corpus files")
         return 2
-    url = args.url or cfg["ips"]["url"]
-    async with PoolAsyncClient(url) as client:
-        try:
-            report = await client.memory_status()  # limits and state, for the manifest
-        except Exception as exc:  # pylint: disable=broad-exception-caught
-            report = {"error": f"{type(exc).__name__}: {exc}"[:200]}
-        t0 = time.time()
-        records = await run_census(
-            client,
-            files,
-            field=field,
-            session_theories=list(cfg["session"]["theories"]),
-        )
+    driver = make_driver(cfg, field, args.url, bool(args.ips_external))
+    t0 = time.time()
+    try:
+        await driver.setup()  # a fresh server unless external (as the T1 cells)
+        async with PoolAsyncClient(driver.url, timeout=BUDGET_MAX_S + 120.0) as client:
+            try:
+                report = await client.memory_status()  # limits and state
+            except Exception as exc:  # pylint: disable=broad-exception-caught
+                report = {"error": f"{type(exc).__name__}: {exc}"[:200]}
+            records = await run_census(
+                client,
+                files,
+                field=field,
+                session_theories=list(cfg["session"]["theories"]),
+            )
+        driver_info = driver.describe()
+    finally:
+        await driver.stop_all()
+    url = driver.url
     body = write_census(
         Path(args.out),
         files,
@@ -215,7 +222,8 @@ async def _main_async(args: argparse.Namespace) -> int:
             "wall_s": round(time.time() - t0, 1),
             "budget_s": BUDGET_MAX_S,
             "server_report": report,
-            "environment": environment_block(cfg.get("isabelle_home")),
+            "driver": driver_info,
+            "environment": environment_block(cfg.get("isabelle_home"), isabelle_cmd()),
         },
     )
     print(json.dumps({"census_id": body["census_id"], **body["totals"]}))
@@ -230,6 +238,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ap.add_argument("--config", default=str(EXPERIMENT_DIR / "config.yaml"))
     ap.add_argument("--files", default="", help="comma-separated stems (smoke)")
     ap.add_argument("--url", default=None)
+    ap.add_argument(
+        "--ips-external",
+        action="store_true",
+        help="use the server at --url / the config url instead of starting one",
+    )
     ap.add_argument(
         "--local-smoke",
         action="store_true",

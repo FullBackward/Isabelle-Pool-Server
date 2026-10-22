@@ -14,8 +14,15 @@ repeats: 3
 session:
   field: HOL-Analysis                        # the heap every session runs on
   theories: [Main]                           # wrapper imports; each replay enters its own header
+sample_interval_s: 1                         # memscale sampler (memory + CPU)
+t2_workers: [1, 8]                           # T2 latency tables come from these T1 cells
 ips:
   url: http://127.0.0.1:8000
+  external: false                            # the runner starts a fresh server per cell unless --ips-external
+  start_cmd: [python, -m, server.app.main]
+  ready_timeout_s: 300
+  scope: auto                                # own systemd user scope when available (memscale)
+  root_patterns: ["server.app.main"]         # how the sampler finds an external server
   env:                                       # recorded in every manifest; the server must be started with them
     ISABELLE_POOL_SIZE: "40"
     ISABELLE_INITIAL_SESSIONS: "0"
@@ -25,6 +32,8 @@ ips:
     ISABELLE_IDLE_TIMEOUT: "1800"
     ISABELLE_MAX_CONCURRENT_BIGSTEP_BUILDS: "4"   # D4 (T4); the server reports the value it runs with
     ISABELLE_MEMORY_BUILD_ESTIMATE_MB: "4096"
+    ISABELLE_ENABLE_MEMORY_MANAGEMENT: "true"
+    ISABELLE_SERVER_LOG_DIR: results/ips-logs   # relative to evaluation/training_metrics; made absolute by the runner
 budget:                                      # design B3: min(max_s, max(min_s, per_command_s * n))
   per_command_s: 2
   min_s: 30

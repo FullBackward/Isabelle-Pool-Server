@@ -97,6 +97,7 @@ class Sampler:  # pylint: disable=too-many-instance-attributes
             "host_cpu": procs.host_cpu(),  # clock ticks; deltas give utilisation
             "clk_tck": procs.clk_tck(),
             "cgroup": procs.cgroup_memory(self.cgroup_dir),
+            "cgroup_cpu": procs.cgroup_cpu(self.cgroup_dir),  # exact, incl. exited
             "sum": sums,
             "procs": [r.as_dict() for r in rows],
             "cgroup_dir": self.cgroup_dir or procs.own_cgroup_dir(),

@@ -304,3 +304,13 @@ def test_the_tools_scope_cgroup_reaches_the_sampler_and_the_manifest(tmp_path):
         == m["environment"]["cgroup_dir"]
         == "/sys/fs/cgroup/user.slice/exp.scope"
     )
+
+
+def test_environment_block_takes_an_isabelle_command_prefix():
+    """Training-metrics review 77fc8fc S2: a prefix such as `docker exec C
+    isabelle` replaces the executable for every Isabelle fact."""
+    env = phases.environment_block(isabelle_cmd=["echo", "PREFIX"])
+    assert env["isabelle_cmd_used"] == "echo PREFIX"
+    assert env["isabelle_version"] == "PREFIX version"
+    assert env["isabelle_id"] == "PREFIX version -i"
+    assert env["ml_options"] == "PREFIX getenv -b ML_OPTIONS"

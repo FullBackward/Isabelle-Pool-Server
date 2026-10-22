@@ -274,7 +274,12 @@ def snapshot(
 
 
 def sum_rows(rows: Iterable[ProcRow]) -> Dict[str, Dict[str, int]]:
-    """Totals and per-role totals (bytes) of ``rss``/``pss``/``uss``."""
+    """Totals and per-role totals (bytes) of ``rss``/``pss``/``uss``, and of
+    ``cpu_ticks`` as a SNAPSHOT only: ticks are cumulative per process, so a
+    process that exits takes its history out of the sum and a new one brings
+    its CPU since birth. Utilisation is computed from per-pid deltas (clamped
+    at 0) or from the cgroup's ``cpu.stat``, never from deltas of these totals
+    (training-metrics review a66fa6e S1)."""
     total = {"rss": 0, "pss": 0, "uss": 0, "count": 0, "cpu_ticks": 0}
     by_role: Dict[str, Dict[str, int]] = {}
     for r in rows:
@@ -319,6 +324,28 @@ def own_cgroup_dir() -> Optional[str]:
             rel = line[3:].strip()
             return CGROUP_ROOT + (rel if rel != "/" else "")
     return None
+
+
+def cgroup_cpu(cg_dir: Optional[str] = None) -> Dict[str, Optional[int]]:
+    """``{usage_usec, user_usec, system_usec}`` of a cgroup v2 directory's
+    ``cpu.stat``: exact CPU time of everything that ran in the cgroup, including
+    processes that exited between samples (review a66fa6e S2)."""
+    cg_dir = cg_dir or own_cgroup_dir()
+    out: Dict[str, Optional[int]] = {
+        "usage_usec": None,
+        "user_usec": None,
+        "system_usec": None,
+    }
+    if not cg_dir:
+        return out
+    for line in (_read(f"{cg_dir}/cpu.stat") or "").splitlines():
+        parts = line.split()
+        if len(parts) == 2 and parts[0] in out:
+            try:
+                out[parts[0]] = int(parts[1])
+            except ValueError:
+                pass
+    return out
 
 
 def cgroup_memory(cg_dir: Optional[str] = None) -> Dict[str, Optional[int]]:
