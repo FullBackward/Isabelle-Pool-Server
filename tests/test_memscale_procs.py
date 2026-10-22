@@ -132,14 +132,16 @@ def test_host_and_cgroup_memory(fake):
 
 
 def test_sampler_writes_rows_with_phase_and_patterns(fake, tmp_path):
+    """Count-based (plan review 2026-10-22 S1): explicit samples, no thread, so
+    the assertions do not depend on the 1 s interval under load."""
     out = tmp_path / "samples.jsonl"
     s = sampler.Sampler(
         str(out), patterns=["server.app.main", "pide_mcp"], interval_s=0.02
     )
-    with s:
-        s.phase("P1")
-        s.add_roots([300])
-        s.phase("P2")
+    s.phase("P1")
+    s.add_roots([300])
+    s.phase("P2")
+    s.sample_once()
     rows = sampler.load_rows(str(out))
     assert rows[0]["phase"] == "P1" and rows[0]["roots"] == [100, 200]
     p2 = [r for r in rows if r["phase"] == "P2"]
@@ -149,8 +151,35 @@ def test_sampler_writes_rows_with_phase_and_patterns(fake, tmp_path):
     )  # the stranger counted now
     assert p2[0]["host"]["used"] > 0 and p2[0]["cgroup"]["oom_kill"] == 2
     assert {p["role"] for p in p2[0]["procs"]} >= {"jvm", "poly", "python"}
-    assert s.rows_written == len(rows) >= 2
+    assert s.rows_written == len(rows) == 3
     json.dumps(rows[0])  # serialisable
+
+
+def test_sampler_thread_writes_rows(fake, tmp_path):
+    out = tmp_path / "samples.jsonl"
+    with sampler.Sampler(str(out), patterns=["server.app.main"], interval_s=0.02) as s:
+        s.phase("P1")
+    rows = sampler.load_rows(str(out))
+    assert rows and s.rows_written == len(rows) and s.errors == 0
+
+
+def test_cpu_columns(fake, tmp_path):
+    """Per-process utime+stime and host busy/total ticks (training-metrics
+    stage 1); new keys only, the memory columns are unchanged."""
+    proc_root = Path(procs.PROC_ROOT)
+    (proc_root / "200" / "stat").write_text(
+        "200 (bash) S 1 200 1 0 -1 0 0 0 0 0 750 250 0 0\n"
+    )
+    (proc_root / "stat").write_text(
+        "cpu  1000 0 500 8000 500 0 0 0 0 0\ncpu0 1 0 0 0 0 0 0 0 0 0\n"
+    )
+    assert procs.cpu_ticks(200) == 1000 and procs.cpu_ticks(99999) is None
+    assert procs.host_cpu() == {"busy": 1500, "total": 10000}
+    assert procs.clk_tck() > 0
+    row = sampler.Sampler(str(tmp_path / "s.jsonl"), root_pids=[200]).sample_once()
+    by_pid = {p["pid"]: p for p in row["procs"]}
+    assert by_pid[200]["cpu_ticks"] == 1000 and row["host_cpu"]["total"] == 10000
+    assert row["sum"]["total"]["cpu_ticks"] >= 1000 and row["clk_tck"] > 0
 
 
 def test_workload_helpers(tmp_path):

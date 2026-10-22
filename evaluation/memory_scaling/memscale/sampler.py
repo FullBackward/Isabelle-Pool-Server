@@ -94,6 +94,8 @@ class Sampler:  # pylint: disable=too-many-instance-attributes
             "phase": phase,
             "roots": sorted(roots),
             "host": procs.host_memory(),
+            "host_cpu": procs.host_cpu(),  # clock ticks; deltas give utilisation
+            "clk_tck": procs.clk_tck(),
             "cgroup": procs.cgroup_memory(self.cgroup_dir),
             "sum": sums,
             "procs": [r.as_dict() for r in rows],

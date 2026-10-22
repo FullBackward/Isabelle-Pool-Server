@@ -46,6 +46,7 @@ class ProcRow:  # pylint: disable=too-many-instance-attributes
     uss: int
     shared: int
     pss_estimated: bool = False  # no Pss line: pss = rss (review 2e1935e S2)
+    cpu_ticks: Optional[int] = None  # utime + stime (clock ticks), for CPU deltas
 
     def as_dict(self) -> Dict[str, object]:
         """JSON row."""
@@ -59,6 +60,7 @@ class ProcRow:  # pylint: disable=too-many-instance-attributes
             "uss": self.uss,
             "shared": self.shared,
             "pss_estimated": self.pss_estimated,
+            "cpu_ticks": self.cpu_ticks,
         }
 
 
@@ -85,6 +87,43 @@ def read_stat(pid: int) -> Optional[Tuple[int, str, str]]:
         return int(fields[1]), comm, fields[0]
     except ValueError:
         return None
+
+
+def cpu_ticks(pid: int) -> Optional[int]:
+    """``utime + stime`` of ``/proc/<pid>/stat`` in clock ticks (fields 14 and
+    15; counted after the last ``)`` like :func:`read_stat`)."""
+    stat = _read(f"{PROC_ROOT}/{pid}/stat")
+    if not stat:
+        return None
+    fields = stat.rpartition(")")[2].split()
+    try:
+        return int(fields[11]) + int(fields[12])
+    except (IndexError, ValueError):
+        return None
+
+
+def clk_tck() -> int:
+    """Clock ticks per second (``SC_CLK_TCK``; 100 when unavailable)."""
+    try:
+        return int(os.sysconf("SC_CLK_TCK"))
+    except (AttributeError, ValueError, OSError):
+        return 100
+
+
+def host_cpu() -> Dict[str, Optional[int]]:
+    """``{busy, total}`` clock ticks of the host from the ``cpu`` line of
+    ``/proc/stat`` (``idle`` and ``iowait`` are the idle part)."""
+    text = _read(f"{PROC_ROOT}/stat") or ""
+    for line in text.splitlines():
+        if line.startswith("cpu "):
+            try:
+                vals = [int(x) for x in line.split()[1:]]
+            except ValueError:
+                break
+            total = sum(vals[:8])
+            idle = sum(vals[3:5]) if len(vals) >= 5 else vals[3]
+            return {"busy": total - idle, "total": total}
+    return {"busy": None, "total": None}
 
 
 def process_table() -> Dict[int, Tuple[int, str, str]]:
@@ -228,6 +267,7 @@ def snapshot(
                 mem["uss"],
                 mem["shared"],
                 bool(mem.get("pss_estimated")),
+                cpu_ticks(pid),
             )
         )
     return rows
@@ -235,14 +275,19 @@ def snapshot(
 
 def sum_rows(rows: Iterable[ProcRow]) -> Dict[str, Dict[str, int]]:
     """Totals and per-role totals (bytes) of ``rss``/``pss``/``uss``."""
-    total = {"rss": 0, "pss": 0, "uss": 0, "count": 0}
+    total = {"rss": 0, "pss": 0, "uss": 0, "count": 0, "cpu_ticks": 0}
     by_role: Dict[str, Dict[str, int]] = {}
     for r in rows:
-        for key, val in (("rss", r.rss), ("pss", r.pss), ("uss", r.uss)):
+        for key, val in (
+            ("rss", r.rss),
+            ("pss", r.pss),
+            ("uss", r.uss),
+            ("cpu_ticks", r.cpu_ticks or 0),
+        ):
             total[key] += val
-            by_role.setdefault(r.role, {"rss": 0, "pss": 0, "uss": 0, "count": 0})[
-                key
-            ] += val
+            by_role.setdefault(
+                r.role, {"rss": 0, "pss": 0, "uss": 0, "count": 0, "cpu_ticks": 0}
+            )[key] += val
         total["count"] += 1
         by_role[r.role]["count"] += 1
     return {"total": total, **by_role}
