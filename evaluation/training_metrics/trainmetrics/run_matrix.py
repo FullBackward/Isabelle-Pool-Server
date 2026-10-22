@@ -18,8 +18,8 @@ import time
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Sequence, Set, Tuple
 
-from . import EXPERIMENT_DIR
 from .census import load_config
+from .harness import cell_arg_parser
 from .procctl import cgroup_busy, group_alive, group_tree, kill_group, kill_server
 from .run_t1 import cell_dir
 
@@ -169,20 +169,10 @@ def run_plan(args: argparse.Namespace, plan: List[Tuple[int, int]]) -> int:
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     """CLI entry point."""
-    ap = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
-    )
-    ap.add_argument("--config", default=str(EXPERIMENT_DIR / "config.yaml"))
-    ap.add_argument(
-        "--census", default=str(EXPERIMENT_DIR / "results/census/census.json")
-    )
-    ap.add_argument("--out", default=str(EXPERIMENT_DIR / "results"))
+    ap = cell_arg_parser(__doc__)
     ap.add_argument("--workers", default="", help="comma-separated W (config)")
     ap.add_argument("--reps", type=int, default=None)
     ap.add_argument("--quota", type=int, default=0)
-    ap.add_argument("--url", default=None)
-    ap.add_argument("--ips-external", action="store_true")
-    ap.add_argument("--local-smoke", action="store_true")
     ap.add_argument("--cell-timeout-s", type=float, default=7200.0)
     ap.add_argument(
         "--term-grace-s",
