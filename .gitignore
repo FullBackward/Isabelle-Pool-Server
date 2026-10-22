@@ -295,3 +295,5 @@ evaluation/memory_scaling/results/*
 evaluation/memory_scaling/results/runner-logs/
 evaluation/memory_scaling/results/ips-logs/
 evaluation/memory_scaling/results/pide-logs/
+evaluation/training_metrics/results/*
+!evaluation/training_metrics/results/.gitkeep

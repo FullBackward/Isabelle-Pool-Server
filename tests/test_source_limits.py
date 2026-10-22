@@ -5,6 +5,7 @@ MAX_LINES, except the files in ALLOWED_OVER — the pre-existing offenders,
 each pinned at its size when the gate was introduced so it can only shrink
 (the "ratchet"). Splitting one of them: delete its entry.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -13,7 +14,13 @@ import pytest
 
 MAX_LINES = 600
 ROOT = Path(__file__).resolve().parent.parent
-SCANNED = ("server", "client", "mcp_servers", "evaluation/memory_scaling")
+SCANNED = (
+    "server",
+    "client",
+    "mcp_servers",
+    "evaluation/memory_scaling",
+    "evaluation/training_metrics",
+)
 
 # path (posix, repo-relative) -> ceiling. Ratchet down as they are split.
 ALLOWED_OVER = {
@@ -35,7 +42,9 @@ def _sources():
             yield p
 
 
-@pytest.mark.parametrize("path", list(_sources()), ids=lambda p: p.relative_to(ROOT).as_posix())
+@pytest.mark.parametrize(
+    "path", list(_sources()), ids=lambda p: p.relative_to(ROOT).as_posix()
+)
 def test_source_file_size(path: Path):
     rel = path.relative_to(ROOT).as_posix()
     n = _line_count(path)
@@ -51,6 +60,6 @@ def test_allowlist_entries_still_exist_and_still_need_it():
     for rel, ceiling in ALLOWED_OVER.items():
         p = ROOT / rel
         assert p.exists(), f"{rel} in ALLOWED_OVER no longer exists — remove the entry"
-        assert _line_count(p) > MAX_LINES, (
-            f"{rel} is now under {MAX_LINES} lines — remove it from ALLOWED_OVER"
-        )
+        assert (
+            _line_count(p) > MAX_LINES
+        ), f"{rel} is now under {MAX_LINES} lines — remove it from ALLOWED_OVER"

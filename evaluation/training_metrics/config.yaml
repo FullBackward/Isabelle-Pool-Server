@@ -1,0 +1,33 @@
+# Training-reader metrics (plan 2026-10-22, v1.1). Paths relative to the repository root.
+corpus: evaluation/HOL_corpus/processed      # D1: 94 HOL-Analysis theories
+smoke_files: [Uncountable_Sets, Integral_Test, Sum_Topology]   # server smoke: three small corpus files (D1, review S1)
+local_smoke:                                 # local live gates (owner, 2026-10-22: no HOL-Analysis heap in the container)
+  field: HOL
+  files:                                     # Main-only theories that check on the HOL heap
+    - evaluation/memory_scaling/workloads/CTL.thy
+    - evaluation/Server_Concurrency.thy
+    - examples/mcp_lsp_demo.thy
+seed: 20261022                               # assignment shuffle (D2)
+files_per_worker: 8                          # D2
+workers: [1, 2, 4, 8, 16, 32]                # T1
+repeats: 3
+session:
+  field: HOL-Analysis                        # the heap every session runs on
+  theories: [Main]                           # wrapper imports; each replay enters its own header
+ips:
+  url: http://127.0.0.1:8000
+  env:                                       # recorded in every manifest; the server must be started with them
+    ISABELLE_POOL_SIZE: "40"
+    ISABELLE_INITIAL_SESSIONS: "0"
+    ISABELLE_PARALLEL_PROOFS: "2"
+    ISABELLE_SESSION_THREADS: "4"            # recorded only: a no-op per CLAUDE.md
+    ISABELLE_MAX_LEASE_AGE: "7200"
+    ISABELLE_IDLE_TIMEOUT: "1800"
+    ISABELLE_MAX_CONCURRENT_BIGSTEP_BUILDS: "4"   # D4 (T4); the server reports the value it runs with
+    ISABELLE_MEMORY_BUILD_ESTIMATE_MB: "4096"
+budget:                                      # design B3: min(max_s, max(min_s, per_command_s * n))
+  per_command_s: 2
+  min_s: 30
+  max_s: 600
+  no_census_s: 120
+isabelle_home: null                          # null: `isabelle` on PATH
