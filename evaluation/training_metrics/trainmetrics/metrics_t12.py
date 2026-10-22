@@ -60,6 +60,44 @@ def load_t1_cells(results: Path) -> List[Dict[str, Any]]:
     return out
 
 
+def size_class(n: Optional[int]) -> Optional[str]:
+    """The T2 size class of a census command count; None for no count or 0
+    commands (a comment-only block, an error reply; review c9c9197 S3)."""
+    if n is None or int(n) < 1:
+        return None
+    return next(c for c, lo, hi in CLASSES if lo <= int(n) <= hi)
+
+
+def zero_count_blocks(census: Dict[str, Any]) -> int:
+    """Census rows with no command (left out of the T2 classes)."""
+    return sum(
+        1
+        for f in census["files"]
+        for b in f["blocks"]
+        if b.get("n_commands") is not None and int(b["n_commands"]) < 1
+    )
+
+
+def census_node_trend(census: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Census time per command by the file's node position on its session
+    (1 = first file entered on a fresh session): the baseline's own drift as
+    nodes accumulate (review c9c9197 S4)."""
+    by_pos: Dict[int, List[float]] = {}
+    for f in census["files"]:
+        pos = f.get("nodes_on_session")
+        cmds = sum(int(b.get("n_commands") or 0) for b in f["blocks"])
+        if pos is None or cmds < 1:
+            continue
+        t = float(f.get("enter_s") or 0) + sum(
+            float(b.get("wall_s") or 0) for b in f["blocks"]
+        )
+        by_pos.setdefault(int(pos), []).append(1000 * t / cmds)
+    return [
+        {"node": k, "files": len(v), "ms_per_command_p50": _r(p50(v), 2)}
+        for k, v in sorted(by_pos.items())
+    ]
+
+
 def census_index(
     census: Dict[str, Any],
 ) -> Tuple[Dict[str, float], Dict[Tuple[str, int], Tuple[Optional[int], bool]]]:
@@ -101,7 +139,9 @@ def summarize_cell(  # pylint: disable=too-many-locals
     times, _ = census_index(census)
     replays = cell.get("_replays") or []
     blocks = [b for rr in replays for b in rr.get("blocks") or []]
-    walls = [float(b.get("wall_s") or 0) for b in blocks]
+    # one latency definition for T1 and T2: timed-out calls excluded, their
+    # rate reported beside (review c9c9197 S2)
+    walls = [float(b.get("wall_s") or 0) for b in blocks if not b.get("timed_out")]
     workers = _worker_stats(replays)
     t0, t1 = cell.get("window_start"), cell.get("window_end")
     window_s = (t1 - t0) if t0 and t1 else None
@@ -149,6 +189,10 @@ def summarize_cell(  # pylint: disable=too-many-locals
         "slowdown_vs_census": _r(
             replay_time / census_time if census_time > 0 else None, 3
         ),
+        # census-equivalent work per second of window: how many W = 1 census
+        # replays of the same files proceed in parallel; mix-independent, the
+        # base of speedup and efficiency (review c9c9197 S5)
+        "census_work_rate": _r(census_time / window_s if window_s else None, 4),
         "latency_p50_s": _r(p50(walls), 4),
         "latency_p95_s": _r(p95(walls), 4),
         "enter_p50_s": _r(p50([float(r.get("enter_s") or 0) for r in replays]), 3),
@@ -176,6 +220,7 @@ def summarize_cell(  # pylint: disable=too-many-locals
 
 
 SERIES_KEYS = (
+    "census_work_rate",
     "chunks_per_min",
     "commands_per_min",
     "chunks_per_min_incl_enter",
@@ -192,7 +237,9 @@ SERIES_KEYS = (
 
 
 def series_t1(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Per W: medians over the ok repeats, speedup and efficiency vs W = 1."""
+    """Per W: medians over the ok repeats; speedup and efficiency against
+    W = 1 on the census-equivalent work rate, which does not depend on the
+    file mix (raw chunks/min stay as a column; review c9c9197 S5)."""
     by_w: Dict[int, List[Dict[str, Any]]] = {}
     for r in rows:
         if r.get("outcome") == "ok":
@@ -207,8 +254,8 @@ def series_t1(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         out.append(s)
     base = next((s for s in out if s["workers"] == 1), None)
     for s in out:
-        b = base["chunks_per_min"] if base else None
-        speed = s["chunks_per_min"] / b if b and s["chunks_per_min"] else None
+        b = base["census_work_rate"] if base else None
+        speed = s["census_work_rate"] / b if b and s["census_work_rate"] else None
         s["speedup"] = _r(speed, 3)
         s["efficiency"] = _r(speed / s["workers"] if speed else None, 3)
     return out
@@ -227,9 +274,9 @@ def t2_table(  # pylint: disable=too-many-locals
         for rr in cell.get("_replays") or []:
             for b in rr.get("blocks") or []:
                 n, partial = idx.get((rr["stem"], int(b["index"])), (None, False))
-                if n is None or partial:
+                cls = size_class(n)
+                if n is None or cls is None or partial:  # no row / command / full count
                     continue
-                cls = next(c for c, lo, hi in CLASSES if lo <= int(n) <= hi)
                 acc.setdefault((w, cls), []).append(
                     (float(b.get("wall_s") or 0), bool(b.get("timed_out")), int(n))
                 )

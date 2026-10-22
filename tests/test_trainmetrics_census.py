@@ -116,7 +116,8 @@ class FakeClient:
 
     async def acquire_session(self, **kw):
         self.calls.append(("acquire", kw))
-        return {"session_id": "s1", "lease_id": "l1"}
+        n = sum(1 for c in self.calls if c[0] == "acquire")
+        return {"session_id": f"s{n}", "lease_id": f"l{n}"}
 
     async def close_session(self, sid, lease_id=None):
         self.closed.append(sid)
@@ -255,3 +256,20 @@ def test_server_env_makes_the_log_dir_absolute():
         serve.server_env({"ISABELLE_SERVER_LOG_DIR": "/abs"})["ISABELLE_SERVER_LOG_DIR"]
         == "/abs"
     )
+
+
+def test_census_rotates_its_session_like_the_t1_workers(corpus_dir, tmp_path):
+    """Review c9c9197 S4: a fresh session every k files, nodes recorded."""
+    (corpus_dir / "C.thy").write_text(THY_B.replace("theory B", "theory C"))
+    files = corpus.load_corpus(str(corpus_dir))
+    cl = FakeClient()
+    records = asyncio.run(
+        census.run_census(
+            cl, files, field="HOL", session_theories=["Main"], rotate_every=2
+        )
+    )
+    assert [r.session_id for r in records] == ["s1", "s1", "s2"]
+    assert [r.nodes_on_session for r in records] == [1, 2, 1]
+    assert cl.closed == ["s1", "s2"]
+    body = census.write_census(tmp_path / "c", files, records, {})
+    assert [f["nodes_on_session"] for f in body["files"]] == [1, 2, 1]

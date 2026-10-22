@@ -6,6 +6,7 @@
 set -u
 source "$(dirname "$0")/_py.sh"
 OUT=results/smoke
+rm -rf "$OUT"   # start clean: the runner skips ok cells, so stale cells would pass a smoke of new code (review c9c9197 S1)
 if [ "${1:-}" = "--local" ]; then
   MODE=(--local-smoke --ips-external)
 else

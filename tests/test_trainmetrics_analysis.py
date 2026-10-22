@@ -142,7 +142,13 @@ def test_metrics_and_analysis_on_a_synthetic_tree(tmp_path):
     series = metrics_t12.series_t1(rows)
     s2 = next(s for s in series if s["workers"] == 2)
     assert s2["repeats"] == 2 and s2["chunks_per_min"] == pytest.approx(800.0)
-    assert s2["speedup"] == pytest.approx(800 / 600, abs=1e-3)
+    # speedup on the census work rate (review c9c9197 S5): W=1 does 1.5 census-s
+    # in 60 s, W=2 3.0 census-s in 60 s -> 2.0, whatever chunks/min say
+    assert r1["census_work_rate"] == 0.025
+    assert s2["speedup"] == pytest.approx(2.0) and s2["efficiency"] == pytest.approx(
+        1.0
+    )
+    assert s2["chunks_per_min"] == pytest.approx(800.0)  # raw rate kept as a column
     t2 = metrics_t12.t2_table(cells, census, [1, 2])
     by = {(r["workers"], r["class"]): r for r in t2}
     assert by[(1, "2-9")]["n"] == 5  # 6 blocks, one with a partial census count
@@ -153,12 +159,42 @@ def test_metrics_and_analysis_on_a_synthetic_tree(tmp_path):
     )
     assert (root / "tables" / "t1_series.csv").exists()
     text = (root / "REPORT_SNIPPET.md").read_text()
-    assert (
-        "| 1 | 600.0 |" in text and "Per-call floor" not in text
-    )  # no 1-command class
+    assert "| 600.0 |" in text and "Per-call floor" not in text  # no 1-command class
+    assert "census work rate" in text and "1 with no command" not in text
 
 
 def _write(tmp_path, census):
     p = tmp_path / "census.json"
     p.write_text(json.dumps(census))
     return str(p)
+
+
+def test_timed_out_calls_are_not_in_the_latency_and_zero_counts_have_no_class(
+    tmp_path,
+):
+    """Review c9c9197 S2/S3/S4."""
+    files = _corpus(tmp_path)
+    census = _census(files)
+    census["files"][1]["blocks"][0]["n_commands"] = 0  # a comment-only block
+    for pos, f in enumerate(census["files"], 1):
+        f["nodes_on_session"] = pos
+    root = tmp_path / "results"
+    _cell_tree(root, 1, 0, census, wall=0.1)
+    _cell_tree(root, 4, 0, census, wall=9.0, timed_out=True)
+    cells = metrics_t12.load_t1_cells(root)
+    rows = {
+        r["workers"]: r for r in (metrics_t12.summarize_cell(c, census) for c in cells)
+    }
+    assert rows[4]["timeout_rate"] == 1.0 and rows[4]["latency_p50_s"] is None
+    assert rows[1]["latency_p50_s"] == 0.1
+    assert metrics_t12.size_class(0) is None and metrics_t12.size_class(None) is None
+    assert metrics_t12.size_class(1) == "1" and metrics_t12.size_class(12) == "10+"
+    assert metrics_t12.zero_count_blocks(census) == 1
+    t2 = metrics_t12.t2_table(cells, census, [1])
+    assert sum(r["n"] for r in t2) == 5  # 6 blocks, the zero-command one has no class
+    trend = metrics_t12.census_node_trend(census)
+    assert [t["node"] for t in trend] == [1, 2, 3] and trend[0][
+        "ms_per_command_p50"
+    ] == 125.0
+    text = analyze.snippet_t12(metrics_t12.series_t1(list(rows.values())), t2, census)
+    assert "1 with no command" in text and "1: 125.0 ms" in text

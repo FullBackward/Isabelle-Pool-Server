@@ -48,6 +48,7 @@ def summarize(records: Sequence[ReplayRecord]) -> List[Dict[str, Any]]:
             {
                 "stem": rr.stem,
                 "theory_name": rr.theory_name,
+                "nodes_on_session": rr.nodes_on_session,
                 "enter_s": rr.enter_s,
                 "enter_error": rr.enter_error,
                 "blocks": [
@@ -109,24 +110,40 @@ def load_census(path: str) -> Dict[str, Any]:
         return dict(json.load(fh))
 
 
-async def run_census(  # pylint: disable=too-many-locals
-    client: Any,
-    files: Sequence[CorpusFile],
-    *,
-    field: str,
-    session_theories: List[str],
-) -> List[ReplayRecord]:
-    """Replay every file once on one session at the maximum budget."""
+async def _census_session(
+    client: Any, field: str, session_theories: List[str]
+) -> SessionRef:
     acq = await client.acquire_session(
         theories=session_theories,
         field=field,
         reuse_dirty=False,
         label="trainmetrics-census",
     )
-    sess = SessionRef(str(acq["session_id"]), str(acq["lease_id"]), worker=0)
+    return SessionRef(str(acq["session_id"]), str(acq["lease_id"]), worker=0)
+
+
+async def run_census(  # pylint: disable=too-many-locals
+    client: Any,
+    files: Sequence[CorpusFile],
+    *,
+    field: str,
+    session_theories: List[str],
+    rotate_every: int = 0,
+) -> List[ReplayRecord]:
+    """Replay every file once at the maximum budget. With ``rotate_every``
+    = k a fresh session is taken every k files — the T1 workers' condition (k
+    files per session), so the census baseline does not drift with a node count
+    the cells never reach (review c9c9197 S4); 0 = one session for all."""
+    sess = await _census_session(client, field, session_theories)
     records: List[ReplayRecord] = []
     try:
         for n, cf in enumerate(files, 1):
+            if rotate_every and sess.nodes >= rotate_every:
+                try:
+                    await client.close_session(sess.session_id, lease_id=sess.lease_id)
+                except Exception:  # pylint: disable=broad-exception-caught
+                    pass
+                sess = await _census_session(client, field, session_theories)
             rr = await replay_file(client, sess, cf, budget_s=BUDGET_MAX_S)
             records.append(rr)
             proved = sum(1 for b in rr.blocks if b.proved)
@@ -209,6 +226,7 @@ async def _main_async(  # pylint: disable=too-many-locals
                 files,
                 field=field,
                 session_theories=list(cfg["session"]["theories"]),
+                rotate_every=int(cfg.get("files_per_worker", 0)),
             )
         driver_info = driver.describe()
     finally:
@@ -225,6 +243,7 @@ async def _main_async(  # pylint: disable=too-many-locals
             "field": field,
             "wall_s": round(time.time() - t0, 1),
             "budget_s": BUDGET_MAX_S,
+            "rotate_every": int(cfg.get("files_per_worker", 0)),
             "server_report": report,
             "driver": driver_info,
             "environment": environment_block(cfg.get("isabelle_home"), isabelle_cmd()),
