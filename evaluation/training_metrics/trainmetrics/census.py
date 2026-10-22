@@ -55,6 +55,10 @@ def summarize(records: Sequence[ReplayRecord]) -> List[Dict[str, Any]]:
                         "index": b.index,
                         "sha": b.block_sha,
                         "n_commands": b.n_commands,
+                        # a timed-out block's report is partial: its count is a lower
+                        # bound; the budget rule gives it the maximum and T2's size
+                        # classes leave it out (review 86afb15 S3)
+                        "count_partial": b.timed_out,
                         "proved": b.proved,
                         "success": b.success,
                         "timed_out": b.timed_out,
@@ -80,13 +84,23 @@ def totals(files: Sequence[Dict[str, Any]]) -> Dict[str, int]:
         "commands": sum(int(b["n_commands"] or 0) for b in blocks),
         "proved_blocks": sum(1 for b in blocks if b["proved"]),
         "timed_out_blocks": sum(1 for b in blocks if b["timed_out"]),
+        "partial_count_blocks": sum(1 for b in blocks if b.get("count_partial")),
         "error_blocks": sum(1 for b in blocks if b["error"]),
     }
 
 
 def counts_by_stem(census: Dict[str, Any]) -> Dict[str, List[Optional[int]]]:
-    """stem -> per-block command counts (the budget rule's input)."""
+    """stem -> per-block command counts (the budget rule's input; a partial
+    count is returned as recorded, see :func:`partial_by_stem`)."""
     return {f["stem"]: [b["n_commands"] for b in f["blocks"]] for f in census["files"]}
+
+
+def partial_by_stem(census: Dict[str, Any]) -> Dict[str, List[bool]]:
+    """stem -> per block, whether its census count is partial (timed out)."""
+    return {
+        f["stem"]: [bool(b.get("count_partial")) for b in f["blocks"]]
+        for f in census["files"]
+    }
 
 
 def load_census(path: str) -> Dict[str, Any]:

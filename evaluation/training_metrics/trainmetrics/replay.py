@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import asdict, dataclass, field
-from typing import Any, Dict, List, Optional, Protocol
+from typing import Any, Dict, List, Optional, Protocol, Tuple
 
 from .corpus import CorpusFile
 
@@ -17,9 +17,13 @@ BUDGET_MAX_S = 600.0
 BUDGET_NO_CENSUS_S = 120.0
 
 
-def budget_for(n_commands: Optional[int]) -> float:
+def budget_for(n_commands: Optional[int], partial: bool = False) -> float:
     """``min(600, max(30, 2 n))`` seconds from the census count; 120 s for a
-    block with no census row (plan v1.1 §3, review S3)."""
+    block with no census row (plan v1.1 §3, review S3); the maximum for a block
+    whose census count is partial — it timed out at the census's maximum budget,
+    so its count is a lower bound (review 86afb15 S3)."""
+    if partial:
+        return BUDGET_MAX_S
     if n_commands is None:
         return BUDGET_NO_CENSUS_S
     return min(BUDGET_MAX_S, max(BUDGET_MIN_S, BUDGET_PER_COMMAND_S * n_commands))
@@ -61,7 +65,14 @@ class ChunkClient(Protocol):  # pragma: no cover - typing only
 
 @dataclass
 class SessionRef:
-    """A leased session and the theory names entered on it so far."""
+    """A leased session and the theory names entered on it so far.
+
+    Invariant (review 86afb15 S2): a ``SessionRef`` lives exactly as long as
+    its session, so ``names`` is every name ever entered on it and
+    :meth:`new_name` cannot collide. It holds because every acquire in this
+    package uses ``reuse_dirty=False`` (never a session with history) and every
+    session is closed, not released, when its ``SessionRef`` is done. A caller
+    that wraps a re-acquired session in a new ``SessionRef`` breaks it."""
 
     session_id: str
     lease_id: str
@@ -93,7 +104,7 @@ class BlockRecord:  # pylint: disable=too-many-instance-attributes
     n_commands: Optional[int]  # from the server's report
     census_commands: Optional[int]  # what the budget was computed from
     budget_s: float
-    budget_source: str  # census | none
+    budget_source: str  # census | census_partial | none | override
     success: bool = False
     proof_open: bool = False
     used_sorry: bool = False
@@ -135,7 +146,22 @@ def _statuses(commands: List[Dict[str, Any]]) -> Dict[str, int]:
     return out
 
 
-async def verify_block(  # pylint: disable=too-many-arguments
+def _budget(
+    census_commands: Optional[int], census_partial: bool, override: Optional[float]
+) -> Tuple[float, str]:
+    """The block's budget and where it came from (recorded per block)."""
+    if census_partial:
+        source = "census_partial"
+    elif census_commands is not None:
+        source = "census"
+    else:
+        source = "none"
+    if override is not None:
+        return override, "override"
+    return budget_for(census_commands, census_partial), source
+
+
+async def verify_block(  # pylint: disable=too-many-arguments,too-many-locals
     client: ChunkClient,
     sess: SessionRef,
     text: str,
@@ -144,10 +170,11 @@ async def verify_block(  # pylint: disable=too-many-arguments
     index: int,
     block_sha: str,
     census_commands: Optional[int],
+    census_partial: bool = False,
     budget_s: Optional[float] = None,
 ) -> BlockRecord:
     """One block under its budget; every outcome is recorded, never raised."""
-    budget = budget_s if budget_s is not None else budget_for(census_commands)
+    budget, source = _budget(census_commands, census_partial, budget_s)
     rec = BlockRecord(
         stem=stem,
         index=index,
@@ -155,7 +182,7 @@ async def verify_block(  # pylint: disable=too-many-arguments
         n_commands=None,
         census_commands=census_commands,
         budget_s=budget,
-        budget_source="census" if census_commands is not None else "none",
+        budget_source=source,
         t_start=time.time(),
     )
     t0 = time.monotonic()
@@ -183,18 +210,20 @@ async def verify_block(  # pylint: disable=too-many-arguments
     return rec
 
 
-async def replay_file(
+async def replay_file(  # pylint: disable=too-many-arguments
     client: ChunkClient,
     sess: SessionRef,
     cf: CorpusFile,
     census_counts: Optional[List[Optional[int]]] = None,
     *,
+    census_partial: Optional[List[bool]] = None,
     budget_s: Optional[float] = None,
 ) -> ReplayRecord:
     """Enter a fresh node for ``cf`` with its own imports, then verify every
     block in order. ``census_counts[i]`` is block i's census command count
-    (None outside the census). ``budget_s`` overrides the rule (the census
-    itself runs at the maximum)."""
+    (None outside the census), ``census_partial[i]`` whether that count is
+    partial (the block timed out in the census). ``budget_s`` overrides the
+    rule (the census itself runs at the maximum)."""
     name = sess.new_name(cf.stem)
     rr = ReplayRecord(
         stem=cf.stem,
@@ -221,6 +250,11 @@ async def replay_file(
         return rr
     for i, text in enumerate(cf.blocks):
         cc = census_counts[i] if census_counts and i < len(census_counts) else None
+        cp = (
+            bool(census_partial[i])
+            if census_partial and i < len(census_partial)
+            else False
+        )
         rr.blocks.append(
             await verify_block(
                 client,
@@ -230,6 +264,7 @@ async def replay_file(
                 index=i,
                 block_sha=cf.block_sha[i],
                 census_commands=cc,
+                census_partial=cp,
                 budget_s=budget_s,
             )
         )

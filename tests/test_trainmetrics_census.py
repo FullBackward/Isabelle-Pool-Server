@@ -216,3 +216,32 @@ def test_census_end_to_end(corpus_dir, tmp_path):
     # the id changes when a count changes
     on_disk["files"][0]["blocks"][0]["n_commands"] += 1
     assert census.census_id(on_disk["files"]) != body["census_id"]
+
+
+def test_partial_census_counts_get_the_maximum_budget(corpus_dir, tmp_path):
+    """Review 86afb15 S3: a block that timed out in the census has a partial
+    count; census.json flags it, and a later replay gives it the maximum."""
+    assert replay.budget_for(3, partial=True) == replay.BUDGET_MAX_S
+    files = corpus.load_corpus(str(corpus_dir))
+    cl = FakeClient(fail_block="a2")  # block A[1] times out
+    records = asyncio.run(
+        census.run_census(cl, files, field="HOL", session_theories=["Main"])
+    )
+    body = census.write_census(tmp_path / "c", files, records, {})
+    a_rows = body["files"][0]["blocks"]
+    assert [b["count_partial"] for b in a_rows] == [False, True, False]
+    assert body["totals"]["partial_count_blocks"] == 1
+    partial = census.partial_by_stem(body)
+    assert partial["A"] == [False, True, False] and partial["B"] == [False]
+    rr = asyncio.run(
+        replay.replay_file(
+            FakeClient(),
+            replay.SessionRef("s2", "l2"),
+            files[0],
+            census.counts_by_stem(body)["A"],
+            census_partial=partial["A"],
+        )
+    )
+    sources = [(b.budget_source, b.budget_s) for b in rr.blocks]
+    assert sources[1] == ("census_partial", replay.BUDGET_MAX_S)
+    assert sources[0][0] == "census" and sources[2][0] == "census"
