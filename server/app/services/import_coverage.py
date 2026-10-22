@@ -15,11 +15,15 @@ from __future__ import annotations
 
 from typing import Any, List, Sequence
 
+from server.app.core.logging import get_logger
 from server.app.errors import HeaderFailed, SessionError
 from server.app.services.success_checker import classify_error_kind
 
+logger = get_logger(__name__)
+
 COVERAGE_TIMEOUT_S = 30.0
 HEADER_FAILED_PREFIX = "theory header failed"
+UNJUDGED_PREFIX = "?unjudged"  # the backend could not complete the ancestry
 
 
 def uncovered_imports(session: Any, imports: Sequence[str]) -> List[str]:
@@ -36,7 +40,20 @@ def uncovered_imports(session: Any, imports: Sequence[str]) -> List[str]:
         lambda: raw.uncovered_imports("\n".join(theories), "\n".join(wanted))
     )
     out = fut.result(timeout=COVERAGE_TIMEOUT_S)
-    return [line for line in str(out or "").split("\n") if line.strip()]
+    lines = [line for line in str(out or "").split("\n") if line.strip()]
+    for line in lines:
+        if line.startswith(
+            UNJUDGED_PREFIX
+        ):  # fail-open: visible in the log (5a4ff3a S1)
+            logger.warning(
+                "import coverage not judged (enter_theory proceeds) session=%s "
+                "theories=%s imports=%s: %s",
+                getattr(session, "session_id", None),
+                theories,
+                wanted,
+                line,
+            )
+    return [line for line in lines if not line.startswith(UNJUDGED_PREFIX)]
 
 
 def as_header_failed(exc: SessionError) -> SessionError:

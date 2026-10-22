@@ -88,6 +88,14 @@ def test_uncovered_imports_passes_lines_and_splits_the_answer():
     assert uncovered_imports(s, ["", "  "]) == [] and s.backend.raw.calls == []
 
 
+def test_an_unjudged_answer_is_logged_and_lets_the_request_through(caplog):
+    """Review 5a4ff3a S1: the fail-open case is visible in the server log."""
+    s = _Session(["Main"], "?unjudged: ancestry stops at Draft.Foo")
+    with caplog.at_level("WARNING"):
+        assert uncovered_imports(s, ["HOL.Real"]) == []
+    assert "not judged" in caplog.text and "ancestry stops at Draft.Foo" in caplog.text
+
+
 HEADER = "theory header failed: Failed to import theory: Nope\nCannot load theory file"
 
 

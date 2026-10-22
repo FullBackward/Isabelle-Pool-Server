@@ -101,9 +101,10 @@ class Repl_Session(session_manager: Session_Manager, initial_thys: List[String] 
    *  B1). A requested name is judged when it resolves into the heap graph or is
    *  qualified by a known session; an unqualified unknown name (a project
    *  theory) is not judged. Nothing is judged when the ancestry cannot be
-   *  completed. `session_theories` (the acquisition-time names) are the roots
-   *  only when the wrapper node is not in the document. Returns the requested
-   *  spellings that are judged and not covered. */
+   *  completed: the only line returned is then `?unjudged: <why>`, which the
+   *  server logs (review 5a4ff3a S1). `session_theories` (the acquisition-time
+   *  names) are the roots only when the wrapper node is not in the document.
+   *  Otherwise returns the requested spellings that are judged and not covered. */
   def uncovered_imports(
       session_theories: List[String],
       requested: List[String]
@@ -133,9 +134,9 @@ class Repl_Session(session_manager: Session_Manager, initial_thys: List[String] 
     def imports_of(node: Document.Node): List[String] = node.thy.imports.map(_._1.theory)
 
     @annotation.tailrec
-    def ancestry(todo: List[String], seen: Set[String], heap_roots: List[String]): Option[Set[String]] =
+    def ancestry(todo: List[String], seen: Set[String], heap_roots: List[String]): Either[String, Set[String]] =
       todo match {
-        case Nil => Some(seen ++ graph.all_preds(heap_roots))
+        case Nil => Right(seen ++ graph.all_preds(heap_roots))
         case t0 :: rest =>
           val t = canonical(t0)
           if (seen(t)) ancestry(rest, seen, heap_roots)
@@ -143,7 +144,7 @@ class Repl_Session(session_manager: Session_Manager, initial_thys: List[String] 
           else
             doc_nodes.get(t).filter(_.has_thy) match {
               case Some(node) => ancestry(imports_of(node) ::: rest, seen + t, heap_roots)
-              case None => None
+              case None => Left("ancestry stops at " + t)
             }
       }
 
@@ -151,16 +152,17 @@ class Repl_Session(session_manager: Session_Manager, initial_thys: List[String] 
     val wrappers = doc_nodes.collect {
       case (theory, node) if Long_Name.base_name(theory) == wrapper_base && node.has_thy => node
     }.toList
-    val roots: Option[List[String]] =
-      if (wrappers.nonEmpty) Some(wrappers.flatMap(imports_of))
-      else if (session_theories.isEmpty) None
+    val roots: Either[String, List[String]] =
+      if (wrappers.nonEmpty) Right(wrappers.flatMap(imports_of))
+      else if (session_theories.isEmpty) Left("no wrapper node " + wrapper_base + " and no session theories")
       else {
         val resolved = session_theories.map(resolve)
-        if (resolved.forall(_.isDefined)) Some(resolved.flatten) else None
+        if (resolved.forall(_.isDefined)) Right(resolved.flatten)
+        else Left("no wrapper node " + wrapper_base + ", unresolvable " + session_theories.mkString(","))
       }
     roots.flatMap(rs => ancestry(rs, Set.empty, Nil)) match {
-      case None => Nil
-      case Some(covered) =>
+      case Left(why) => List("?unjudged: " + why)
+      case Right(covered) =>
         requested.filter(r => resolve(r).exists(t => judged(t) && !covered(t))).distinct
     }
   }

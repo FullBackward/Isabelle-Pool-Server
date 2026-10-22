@@ -975,7 +975,9 @@ down to the heap base's import graph (`current_background.base.loaded_theories`,
 global name (`HOL.Complex_Main` is `Complex_Main`). A requested name is judged when it
 resolves into the heap graph or is qualified by a known session (`HOL-Library.Infinite_Set`
 on a HOL heap); an unqualified unknown name (a project theory) is not judged, and nothing is
-judged when the ancestry cannot be completed. Python side: `services/import_coverage.py`
+judged when the ancestry cannot be completed: the backend then says why (`?unjudged: ...`) and
+the server logs a warning "import coverage not judged" with the session's theories, so a pass
+through the old behaviour can be found in the log (review 5a4ff3a S1). Python side: `services/import_coverage.py`
 (one backend call, 30 s), `ImportsNotCovered` in `errors.py`, the handler in `main.py`. The
 stepwise MCP and the file MCP acquire sessions with the imports they then use, so they are
 not affected.
@@ -988,8 +990,10 @@ malformed name) used to answer 500; it now answers **422** `{"error": "header_fa
 (the file MCP acquires with the file's header imports, so only a direct API client can
 meet it).
 
-**Verified:** `tests/test_import_coverage.py` (6: the service call, the 409 body, covered and
-empty imports, the header-failure mapping and its 422). Live on the container's HOL heap, 19
+**Verified:** `tests/test_import_coverage.py` (7: the service call, the 409 body, covered and
+empty imports, the header-failure mapping and its 422, the logged unjudged answer);
+`tests/test_import_coverage_live.py`, opt-in with `ISABELLE_LIVE_TESTS=1`, holds the live
+matrix below as the regression test for the Scala side (review 5a4ff3a S2). Live on the container's HOL heap, 19
 cases over six sessions (`Main`, `Complex_Main`, `HOL.Main`, `HOL.Real`, `HOL.Transcendental`,
 `HOL-Library.Infinite_Set`): every uncovered spelling 409, every covered one 200, `Main` +
 `Some_Project_Theory` 422.
