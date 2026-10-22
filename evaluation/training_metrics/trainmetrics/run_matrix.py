@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import signal
 import subprocess
 import sys
 import time
@@ -61,6 +62,60 @@ def running_runner(lock: Path) -> Optional[int]:
     return pid
 
 
+def _group_states(pgid: int) -> Optional[List[str]]:
+    """States of the processes in process group ``pgid`` from ``/proc`` (None
+    where there is no ``/proc``, e.g. macOS)."""
+    try:
+        names = os.listdir("/proc")
+    except OSError:
+        return None
+    states: List[str] = []
+    for name in names:
+        if not name.isdigit():
+            continue
+        try:
+            with open(f"/proc/{name}/stat", "r", encoding="utf-8") as fh:
+                fields = fh.read().rpartition(")")[2].split()
+        except OSError:
+            continue
+        if len(fields) > 2 and fields[2] == str(pgid):
+            states.append(fields[0])
+    return states
+
+
+def group_alive(pgid: int) -> bool:
+    """Does any LIVE process of the process group still exist? A zombie is
+    dead (it holds no port and no memory) and waits only for its reaper,
+    which in a container can lag (container gate of fix 0df4258/830f9ac)."""
+    states = _group_states(pgid)
+    if states is not None:
+        return any(s != "Z" for s in states)
+    try:
+        os.killpg(pgid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def kill_group(pgid: int, grace_s: float = 60.0) -> None:
+    """SIGTERM to the whole group, up to ``grace_s`` for it to exit, then SIGKILL."""
+    try:
+        os.killpg(pgid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    deadline = time.monotonic() + grace_s
+    while time.monotonic() < deadline:
+        if not group_alive(pgid):
+            return
+        time.sleep(0.5)
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+
+
 def child_cmd(args: argparse.Namespace, w: int, rep: int) -> List[str]:
     """The run_t1 command line for one cell."""
     cmd = [
@@ -99,17 +154,29 @@ def run_one(args: argparse.Namespace, w: int, rep: int) -> str:
     log = log_dir / f"t1-w{w}-rep{rep}.log"
     t0 = time.monotonic()
     with open(log, "w", encoding="utf-8") as fh:
+        # its own process group, so a timeout stops the cell AND what it started
+        # (review 830f9ac B1: subprocess.run(timeout=...) kills the child only)
+        proc = subprocess.Popen(  # pylint: disable=consider-using-with
+            child_cmd(args, w, rep),
+            stdout=fh,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
         try:
-            rc = subprocess.run(
-                child_cmd(args, w, rep),
-                stdout=fh,
-                stderr=subprocess.STDOUT,
-                timeout=args.cell_timeout_s,
-                check=False,
-            ).returncode
+            rc = proc.wait(timeout=args.cell_timeout_s)
         except subprocess.TimeoutExpired:
             rc = -1
+            kill_group(
+                proc.pid, grace_s=args.term_grace_s
+            )  # SIGTERM: the cell stops its server
+            proc.wait()
     m = manifest_of(Path(args.out), w, rep) or {}
+    server_pgid = (m.get("server") or {}).get("pgid")
+    if server_pgid and group_alive(int(server_pgid)):
+        # the cell died before its finally (SIGKILL, OOM): its server survived in
+        # its own session; never let the next cell meet it on the port
+        kill_group(int(server_pgid), grace_s=args.term_grace_s)
+        print(f"  killed the leftover server group {server_pgid} of W={w} rep={rep}")
     outcome = str(m.get("outcome") or ("timeout" if rc == -1 else "error"))
     if rc == -1:
         outcome = "timeout"
@@ -160,6 +227,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ap.add_argument("--ips-external", action="store_true")
     ap.add_argument("--local-smoke", action="store_true")
     ap.add_argument("--cell-timeout-s", type=float, default=7200.0)
+    ap.add_argument(
+        "--term-grace-s",
+        type=float,
+        default=90.0,
+        help="after a timeout: SIGTERM, this long for the cell to stop its server, then SIGKILL",
+    )
     ap.add_argument("--rerun-partial", action="store_true")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args(argv)

@@ -3,6 +3,9 @@
 #   scripts/00_check_env.sh                     # the server: HOL-Analysis heap, isabelle on PATH
 #   HEAP=HOL ISABELLE="docker exec isabelle-pool-server isabelle" PYTHON=... scripts/00_check_env.sh
 #                                               # the Mac: the container's Isabelle, the local-smoke heap
+#   EXTERNAL=1 ...                              # runs with --ips-external: an IPS must ANSWER at the URL;
+#                                               # without it (fresh-server runs) the URL must be FREE, because
+#                                               # each run starts its own server there (review 0df4258 B1)
 # This script never runs a command that can build: the heap check looks for the heap FILE
 # (a dry run `isabelle build -n` prints nothing either way, and `build -l` without -n builds).
 set -u
@@ -19,8 +22,12 @@ check "python $PY" "\"$PY\" -c 'import httpx, yaml'" "pip install -e '.[mcp,eval
 check "package imports" "\"$PY\" -c 'import trainmetrics.census, client.async_client, memscale.sampler'" "run from a full checkout"
 check "corpus present" "ls \"$REPO/evaluation/HOL_corpus/processed\"/*.thy" "the corpus ships with the repository"
 check "isabelle ($ISABELLE)" "$ISABELLE version" "export PATH=\$HOME/Isabelle2026-RC2/bin:\$PATH (or /opt/isabelle/bin)"
-check "heap $HEAP built" "heap_present" "build it: isabelle build -b $HEAP (memory_scaling scripts/01_build_heaps.sh)"
-check "IPS reachable at $URL" "curl -sf $URL/readyz" "start the server (memory_scaling README, 'IPS native')"
+check "heap $HEAP built" "heap_present" "on the SERVER: isabelle build -b $HEAP (memory_scaling scripts/01_build_heaps.sh); on the Mac never build, use HEAP=HOL"
+if [ "${EXTERNAL:-0}" = "1" ]; then
+  check "IPS answers at $URL (--ips-external runs)" "curl -sf $URL/readyz" "start the server you mean to measure"
+else
+  check "port free at $URL (fresh-server runs)" "! curl -s -o /dev/null $URL/healthz" "stop the IPS that answers there, or set EXTERNAL=1 and pass --ips-external"
+fi
 echo "== $ok passed, $bad failed"
-"$PY" -c 'import json; from memscale.phases import environment_block as e; print(json.dumps(e(), indent=1))'
+"$PY" -c 'import json; from memscale.phases import environment_block as e; from trainmetrics.serve import isabelle_cmd as c; print(json.dumps(e(None, c()), indent=1))'
 [ "$bad" -eq 0 ]

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import os
 import shlex
+import sys
 from typing import Any, Dict, List, Optional
 
 from . import EXPERIMENT_DIR, REPO_ROOT
@@ -42,12 +43,17 @@ def make_driver(
     )
 
     ips = cfg["ips"]
+    start_cmd = list(ips.get("start_cmd", ["python", "-m", "server.app.main"]))
+    if start_cmd and start_cmd[0] in ("python", "python3"):
+        # the interpreter the scripts selected (it has the dependencies), not
+        # whichever `python` is first on PATH (review 0df4258 S1)
+        start_cmd[0] = sys.executable
     return IPSDriver(
         heap=heap,
         imports=[],
         url=url or ips["url"],
         external=bool(external or ips.get("external", False)),
-        start_cmd=list(ips.get("start_cmd", ["python", "-m", "server.app.main"])),
+        start_cmd=start_cmd,
         env=server_env(ips.get("env") or {}),
         ready_timeout_s=float(ips.get("ready_timeout_s", 300)),
         load_timeout_s=BUDGET_MAX_S,

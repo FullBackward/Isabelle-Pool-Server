@@ -213,3 +213,135 @@ def test_matrix_runner_order_resume_and_lock(tmp_path, monkeypatch, capsys):
     cmd = run_matrix.child_cmd(ns, 8, 1)
     assert cmd[cmd.index("--workers") + 1] == "8" and "--local-smoke" in cmd
     assert cmd[-4:] == ["--url", "http://h:1", "--quota", "2"]
+
+
+def test_a_failed_acquire_closes_the_sessions_already_acquired(tmp_path):
+    """Review 830f9ac S1: all W sessions or none."""
+
+    class Refusing(FakeClient):
+        async def acquire_session(self, **kw):
+            if kw["label"].endswith("w1"):
+                await asyncio.sleep(0.02)
+                raise RuntimeError("503 memory_pressure")
+            return await super().acquire_session(**kw)
+
+    files = _corpus(tmp_path)
+    spec = run_t1.CellSpec(2, 0, 7, 1, "HOL", ["Main"], tmp_path / "cell")
+    cl = Refusing()
+    try:
+        asyncio.run(run_t1.run_cell(cl, spec, files, _census(files)))
+    except RuntimeError as exc:
+        assert "memory_pressure" in str(exc)
+    else:
+        raise AssertionError("the refusal must propagate")
+    assert cl.closed == ["s1"]
+
+
+FAKE_CELL = r"""
+import json, os, signal, subprocess, sys, time
+out = sys.argv[1]
+server = subprocess.Popen(["sleep", "300"], start_new_session=True)
+os.makedirs(out, exist_ok=True)
+with open(os.path.join(out, "manifest.json"), "w") as fh:
+    json.dump({"outcome": "running", "server": {"pid": server.pid, "pgid": server.pid}}, fh)
+with open(os.path.join(out, "server.pid"), "w") as fh:
+    fh.write(str(server.pid))
+signal.signal(signal.SIGTERM, signal.SIG_IGN)  # a cell that does not stop: forces SIGKILL
+time.sleep(300)
+"""
+
+
+def test_a_timed_out_cell_takes_its_server_down(tmp_path, monkeypatch):
+    """Review 830f9ac B1: the cell runs in its own process group; on timeout it
+    gets SIGTERM, then SIGKILL, and the server group it recorded is killed —
+    the next cell never meets an orphan on the port."""
+    out = tmp_path / "results"
+    cell = run_t1.cell_dir(out, 1, 0)
+    monkeypatch.setattr(
+        run_matrix,
+        "child_cmd",
+        lambda a, w, r: [sys.executable, "-c", FAKE_CELL, str(cell)],
+    )
+    args = run_matrix.argparse.Namespace(
+        out=str(out), cell_timeout_s=3.0, term_grace_s=1.0
+    )
+    assert run_matrix.run_one(args, 1, 0) == "timeout"
+    server_pid = int((cell / "server.pid").read_text())
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline and run_matrix.group_alive(server_pid):
+        time.sleep(0.2)
+    assert not run_matrix.group_alive(server_pid)
+
+
+def test_close_all_retries_a_busy_session_and_reports_what_stays_open():
+    """A cancelled request keeps its session busy for a while: the close is
+    retried; a session that never frees up is reported with its lease."""
+
+    class Busy(FakeClient):
+        def __init__(self):
+            super().__init__()
+            self.tries = {}
+
+        async def close_session(self, sid, lease_id=None):
+            self.tries[sid] = self.tries.get(sid, 0) + 1
+            if sid == "never" or (sid == "slow" and self.tries[sid] < 3):
+                raise RuntimeError("409 SessionBusyError")
+            return await super().close_session(sid, lease_id)
+
+    cl = Busy()
+    sessions = [
+        run_t1.SessionRef("slow", "l1"),
+        run_t1.SessionRef("never", "l2"),
+        run_t1.SessionRef("ok", "l3"),
+    ]
+    left = asyncio.run(run_t1.close_all(cl, sessions, deadline_s=2.5))
+    assert sorted(cl.closed) == ["ok", "slow"] and cl.tries["slow"] == 3
+    assert [x["session_id"] for x in left] == ["never"] and left[0]["lease_id"] == "l2"
+    assert "SessionBusyError" in left[0]["error"]
+
+
+def test_run_cell_checkpoints_the_leases_before_any_work(tmp_path):
+    files = _corpus(tmp_path)
+    spec = run_t1.CellSpec(2, 0, 7, 1, "HOL", ["Main"], tmp_path / "cell")
+    seen = []
+    body = {"environment": {"x": 1}}
+    out = asyncio.run(
+        run_t1.run_cell(
+            FakeClient(),
+            spec,
+            files,
+            _census(files),
+            body=body,
+            checkpoint=lambda b: seen.append([a["lease_id"] for a in b["acquire"]]),
+        )
+    )
+    assert out is body and body["environment"] == {"x": 1}  # the caller's dict, kept
+    assert seen == [["l1", "l2"]] and body["unclosed_sessions"] == []
+
+
+def test_a_cell_stopped_during_acquisition_closes_what_the_server_created(tmp_path):
+    """Live check of fix 0df4258/830f9ac: SIGTERM while acquiring. The server
+    completes an acquire whose request the client stopped waiting for; the
+    acquires are let finish and their sessions closed before the cell stops."""
+
+    class Slow(FakeClient):
+        async def acquire_session(self, **kw):
+            await asyncio.sleep(0.3)
+            return await super().acquire_session(**kw)
+
+    files = _corpus(tmp_path)
+    spec = run_t1.CellSpec(2, 0, 7, 1, "HOL", ["Main"], tmp_path / "cell")
+    cl = Slow()
+
+    async def go():
+        task = asyncio.ensure_future(run_t1.run_cell(cl, spec, files, _census(files)))
+        await asyncio.sleep(0.1)  # inside the acquires
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            return "cancelled"
+        return "finished"
+
+    assert asyncio.run(go()) == "cancelled"
+    assert sorted(cl.closed) == ["s1", "s2"] and cl.entered_at == []

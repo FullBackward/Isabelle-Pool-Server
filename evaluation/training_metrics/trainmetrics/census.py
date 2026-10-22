@@ -194,7 +194,11 @@ async def _main_async(  # pylint: disable=too-many-locals
     driver = make_driver(cfg, field, args.url, bool(args.ips_external))
     t0 = time.time()
     try:
-        await driver.setup()  # a fresh server unless external (as the T1 cells)
+        try:
+            await driver.setup()  # a fresh server unless external (as the T1 cells)
+        except (RuntimeError, TimeoutError) as exc:  # busy port, dead or wrong server
+            print(f"census not started: {exc}", flush=True)
+            return 2
         async with PoolAsyncClient(driver.url, timeout=BUDGET_MAX_S + 120.0) as client:
             try:
                 report = await client.memory_status()  # limits and state

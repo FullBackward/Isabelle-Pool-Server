@@ -11,10 +11,11 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import signal
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from . import EXPERIMENT_DIR
 from .census import counts_by_stem, load_census, load_config, partial_by_stem
@@ -72,6 +73,49 @@ async def _acquire(client: Any, spec: CellSpec, w: int) -> Dict[str, Any]:
     }
 
 
+async def _close_acquired(client: Any, acquired: Sequence[Dict[str, Any]]) -> None:
+    for a in acquired:
+        try:
+            await client.close_session(a["session_id"], lease_id=a["lease_id"])
+        except Exception:  # pylint: disable=broad-exception-caught
+            pass
+
+
+def _finished(tasks: Sequence["asyncio.Task[Dict[str, Any]]"]) -> List[Dict[str, Any]]:
+    return [
+        t.result()
+        for t in tasks
+        if t.done() and not t.cancelled() and t.exception() is None
+    ]
+
+
+async def acquire_all(client: Any, spec: CellSpec) -> List[Dict[str, Any]]:
+    """All W sessions, or none: when one acquire fails (pool full, a memory
+    refusal, the timeout), every session already acquired is closed before the
+    error is raised, so an external server keeps no leases (review 830f9ac S1).
+    The acquires are tasks a cancellation does not abort: when the cell is
+    stopped (SIGTERM) during acquisition, in-flight acquires are allowed to
+    finish (up to CLOSE_DEADLINE_S) and every session they returned is closed —
+    an acquire cancelled mid-request is completed by the server anyway, and its
+    lease would otherwise be lost (live check of fix 0df4258/830f9ac)."""
+    tasks = [
+        asyncio.ensure_future(_acquire(client, spec, w)) for w in range(spec.workers)
+    ]
+    try:
+        await asyncio.wait(tasks)  # cancelling the cell does not cancel these
+    except asyncio.CancelledError:
+        await asyncio.wait(tasks, timeout=CLOSE_DEADLINE_S)
+        await _close_acquired(client, _finished(tasks))
+        for t in tasks:
+            t.cancel()
+        raise
+    errors = [t.exception() for t in tasks if t.exception() is not None]
+    if errors:
+        await _close_acquired(client, _finished(tasks))
+        raise errors[0]  # type: ignore[misc]
+    return [t.result() for t in tasks]
+
+
 async def _worker(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     client: Any,
     sess: SessionRef,
@@ -92,42 +136,86 @@ async def _worker(  # pylint: disable=too-many-arguments,too-many-positional-arg
         sink.append(rr)
 
 
-async def run_cell(  # pylint: disable=too-many-locals
+CLOSE_DEADLINE_S = 60.0  # within the matrix runner's SIGTERM grace (90 s)
+
+
+async def close_all(
+    client: Any, sessions: Sequence[SessionRef], deadline_s: float = CLOSE_DEADLINE_S
+) -> List[Dict[str, Any]]:
+    """Close every session, retrying while the server refuses (a session is
+    still busy with a cancelled request: SessionBusyError) until
+    ``deadline_s``; returns the sessions that stayed open, with their lease, so
+    they can be closed by hand (live check of fix 0df4258/830f9ac: a SIGTERM'd
+    cell left two leases on the container)."""
+    pending = list(sessions)
+    deadline = time.monotonic() + deadline_s
+    last: Dict[str, str] = {}
+    while pending:
+        still: List[SessionRef] = []
+        for s in pending:
+            try:  # closed, not released: the SessionRef invariant
+                await client.close_session(s.session_id, lease_id=s.lease_id)
+            except Exception as exc:  # pylint: disable=broad-exception-caught
+                last[s.session_id] = f"{type(exc).__name__}: {exc}"[:200]
+                still.append(s)
+        pending = still
+        if not pending or time.monotonic() >= deadline:
+            break
+        await asyncio.sleep(1.0)
+    return [
+        {
+            "session_id": s.session_id,
+            "lease_id": s.lease_id,
+            "error": last.get(s.session_id),
+        }
+        for s in pending
+    ]
+
+
+async def run_cell(  # pylint: disable=too-many-locals,too-many-arguments
     client: Any,
     spec: CellSpec,
     files: Sequence[CorpusFile],
     census: Dict[str, Any],
     sampler: Any = None,
+    *,
+    body: Optional[Dict[str, Any]] = None,
+    checkpoint: Optional[Callable[[Dict[str, Any]], Any]] = None,
 ) -> Dict[str, Any]:
-    """Acquire W sessions, start the clock, replay, close. Returns the manifest
-    body (without environment/driver, which the caller adds) and writes
-    ``replays.jsonl`` into ``spec.out_dir``."""
+    """Acquire W sessions, start the clock, replay, close. Fills ``body`` (the
+    caller's manifest dict, so a cancelled cell keeps what it had) and returns
+    it; ``checkpoint(body)`` is called once the sessions exist, so their ids
+    and leases are on disk before any work (a killed cell's leases can be
+    closed); writes ``replays.jsonl`` into ``spec.out_dir``."""
     by_stem = {cf.stem: cf for cf in files}
     stems = usable_stems(files, census)
     excluded = sorted(set(by_stem) - set(stems))
     plan = assignment(stems, spec.seed, spec.workers, spec.quota)
     counts, partial = counts_by_stem(census), partial_by_stem(census)
-    body: Dict[str, Any] = {
-        "experiment": "t1",
-        "workers": spec.workers,
-        "rep": spec.rep,
-        "seed": spec.seed,
-        "quota": spec.quota,
-        "heap": spec.heap,
-        "local_smoke": spec.local_smoke,
-        "census_id": census.get("census_id"),
-        "corpus_sha": corpus_sha(files),
-        "assignment": plan,
-        "excluded_stems": excluded,
-        "outcome": "running",
-        **spec.extra,
-    }
+    body = body if body is not None else {}
+    body.update(
+        {
+            "experiment": "t1",
+            "workers": spec.workers,
+            "rep": spec.rep,
+            "seed": spec.seed,
+            "quota": spec.quota,
+            "heap": spec.heap,
+            "local_smoke": spec.local_smoke,
+            "census_id": census.get("census_id"),
+            "corpus_sha": corpus_sha(files),
+            "assignment": plan,
+            "excluded_stems": excluded,
+            "outcome": "running",
+            **spec.extra,
+        }
+    )
     if sampler is not None:
         sampler.phase("acquire")
-    acquired = await asyncio.gather(
-        *(_acquire(client, spec, w) for w in range(spec.workers))
-    )
+    acquired = await acquire_all(client, spec)
     body["acquire"] = list(acquired)
+    if checkpoint is not None:
+        checkpoint(body)
     sessions = [
         SessionRef(a["session_id"], a["lease_id"], worker=a["worker"]) for a in acquired
     ]
@@ -146,11 +234,7 @@ async def run_cell(  # pylint: disable=too-many-locals
         if sampler is not None:
             sampler.phase("stop")
     finally:
-        for s in sessions:
-            try:  # closed, not released: the SessionRef invariant
-                await client.close_session(s.session_id, lease_id=s.lease_id)
-            except Exception:  # pylint: disable=broad-exception-caught
-                pass
+        body["unclosed_sessions"] = await close_all(client, sessions)
     body["nodes_per_session"] = {str(s.worker): s.nodes for s in sessions}
     body["replays"] = len(records)
     body["enter_errors"] = sum(1 for r in records if r.enter_error)
@@ -214,8 +298,22 @@ async def amain(args: argparse.Namespace) -> int:  # pylint: disable=too-many-lo
     }
     write_manifest(out_dir, head)
     body: Dict[str, Any] = dict(head)
+    main_task = asyncio.current_task()
+    loop = asyncio.get_running_loop()
+    if main_task is not None:  # the matrix runner's timeout: stop the server first
+        loop.add_signal_handler(signal.SIGTERM, main_task.cancel)
     try:
         await driver.setup()
+        # the server's pid/process group and cgroup at once, so the runner can
+        # kill it if this cell is killed before its finally (review 830f9ac B1, S2)
+        body["server"] = {
+            "pid": driver.proc.pid if driver.proc is not None else None,
+            "pgid": driver.proc.pid if driver.proc is not None else None,
+            "cgroup_dir": driver.cgroup_dir,
+            "external": driver.external,
+            "started_at": driver.server_started_at,
+        }
+        write_manifest(out_dir, body)
         patterns = list(ips.get("root_patterns", [])) if driver.external else []
         with Sampler(
             str(out_dir / "samples.jsonl"),
@@ -227,16 +325,29 @@ async def amain(args: argparse.Namespace) -> int:  # pylint: disable=too-many-lo
             async with PoolAsyncClient(
                 driver.url, timeout=BUDGET_MAX_S + 120.0
             ) as client:
-                body.update(await run_cell(client, spec, files, census, sampler))
+                await run_cell(
+                    client,
+                    spec,
+                    files,
+                    census,
+                    sampler,
+                    body=body,
+                    checkpoint=lambda b: write_manifest(out_dir, b),
+                )
                 try:
                     body["server_memory_after"] = await client.memory_status()
                 except Exception:  # pylint: disable=broad-exception-caught
                     body["server_memory_after"] = None
         body["driver"] = driver.describe()
+    except asyncio.CancelledError:
+        body["outcome"] = "terminated"
+        body["error"] = "SIGTERM (the matrix runner's cell timeout)"
     except Exception as exc:  # pylint: disable=broad-exception-caught
         body["outcome"] = "error"
         body["error"] = f"{type(exc).__name__}: {exc}"[:400]
     finally:
+        if main_task is not None:
+            loop.remove_signal_handler(signal.SIGTERM)  # stop_all must not be cancelled
         await driver.stop_all()
         body["finished_at"] = time.time()
         write_manifest(out_dir, body)

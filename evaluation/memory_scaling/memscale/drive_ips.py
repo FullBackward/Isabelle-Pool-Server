@@ -100,9 +100,48 @@ class IPSDriver:  # pylint: disable=too-many-instance-attributes
         self.scope_mismatch = False
 
     # ------------------------------------------------------------ server
+    async def _url_answers(self) -> bool:
+        """Does any HTTP server answer at the URL (any status)?"""
+        try:
+            async with httpx.AsyncClient(timeout=3.0) as c:
+                await c.get(self.url + "/healthz")
+            return True
+        except httpx.HTTPError:
+            return False
+
+    def _log_tail(self, n: int = 20) -> str:
+        if not self.log_path:
+            return ""
+        try:
+            with open(self.log_path, "r", encoding="utf-8", errors="replace") as fh:
+                return "".join(fh.readlines()[-n:]).strip()
+        except OSError:
+            return ""
+
+    def _check_report(self) -> None:
+        """The server that answered must be the one configured here: its own
+        report's pool size equals the ISABELLE_POOL_SIZE we started it with
+        (training-metrics review 0df4258 B1: a busy port made a run measure a
+        different server while its manifest claimed a fresh one)."""
+        want = self.env.get("ISABELLE_POOL_SIZE")
+        got = self.server_report.get("max_pool_size")
+        if want is not None and str(got) != str(want):
+            raise RuntimeError(
+                f"the server at {self.url} reports max_pool_size={got}, "
+                f"configured {want}: not the server this run started"
+            )
+
     async def setup(self) -> None:
-        """Start the server (unless external) and wait for /readyz."""
+        """Start the server (unless external) and wait for /readyz. A fresh
+        server refuses a busy port, fails if its process exits before it is
+        ready, and cross-checks the answering server's report against the
+        configuration (training-metrics review 0df4258 B1)."""
         if not self.external:
+            if await self._url_answers():
+                raise RuntimeError(
+                    f"port busy: a server answers at {self.url}; stop it or "
+                    "pass --ips-external to measure that server on purpose"
+                )
             env = dict(os.environ)
             env.update(self.env)
             log_dir = env.get("ISABELLE_SERVER_LOG_DIR", "results/ips-logs")
@@ -122,6 +161,11 @@ class IPSDriver:  # pylint: disable=too-many-instance-attributes
         self.client = PoolAsyncClient(self.url, timeout=self.load_timeout_s + 120.0)
         deadline = time.monotonic() + self.ready_timeout_s
         while True:
+            if self.proc is not None and self.proc.poll() is not None:
+                raise RuntimeError(
+                    f"the IPS server exited (rc {self.proc.returncode}) before it was "
+                    f"ready; log tail:\n{self._log_tail()}"
+                )
             try:
                 async with httpx.AsyncClient(timeout=5.0) as c:
                     r = await c.get(self.url + "/readyz")
@@ -131,6 +175,8 @@ class IPSDriver:  # pylint: disable=too-many-instance-attributes
                     except httpx.HTTPError:
                         self.server_report = {}
                     self._read_cgroup()  # after readiness: systemd-run has exec'd by now
+                    if not self.external:
+                        self._check_report()
                     return
             except httpx.HTTPError:
                 pass
@@ -216,6 +262,8 @@ class IPSDriver:  # pylint: disable=too-many-instance-attributes
             "cgroup_dir": self.cgroup_dir,
             "scope_mismatch": self.scope_mismatch,
             "server_started_at": self.server_started_at,  # fresh per cell (plan review B2)
+            "start_cmd": None if self.external else self.start_cmd,
+            "server_pgid": self.proc.pid if self.proc is not None else None,
         }
 
     # ---------------------------------------------------------- sessions
