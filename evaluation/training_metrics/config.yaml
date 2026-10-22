@@ -50,7 +50,19 @@ t5:                                          # bounded step at W = 1 (design §T
   budgets: {5: 50, 30: 10, 120: 3}           # attempts per family at each budget; the larger budgets only for seeds
                                              # that timed out at the smallest (they loop; review 7bedac5 S1).
                                              # ~1820 s of seed time plus the prefix replays (~1 h, design T5)
-  local_smoke: {seeds_per_family: 2, max_files: 3, budgets: {5: 2, 30: 1}}
+  w8:                                        # the contention cell (design T5; plan stage 3c): one session
+    workers: 8                               # sits in a 120 s loop while the others replay their files
+    files_per_worker: 2                      # T1's assignment (seed + rep): a worker's files are the first 2 of its
+                                             # T1 list at W = 8, so the corpus blocks match T1's W = 8 cell
+    seed_fraction: 0.1                       # of each worker's blocks, at most:
+    max_seeds_per_worker: 2
+    budget_s: 120
+    tier_poll_s: 5                           # GET /api/v1/memory tier and used memory, the whole cell
+  local_smoke:
+    seeds_per_family: 2
+    max_files: 3
+    budgets: {5: 2, 30: 1}
+    w8: {workers: 2, files_per_worker: 1, seed_fraction: 0.1, max_seeds_per_worker: 2, budget_s: 5, tier_poll_s: 2}
 budget:                                      # design B3: min(max_s, max(min_s, per_command_s * n))
   per_command_s: 2
   min_s: 30

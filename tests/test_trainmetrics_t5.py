@@ -16,14 +16,14 @@ sys.path.insert(
     0, str(Path(__file__).resolve().parents[1] / "evaluation" / "training_metrics")
 )
 
-from trainmetrics import corpus, metrics_t5, replay, run_t5  # noqa: E402
+from trainmetrics import corpus, metrics_t5, replay, run_t5, t5_core  # noqa: E402
 from trainmetrics.replay import BlockRecord  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
 def _no_settle_pause(monkeypatch):
     """The fake server has no prover to sample: no 1.5 s pause per attempt."""
-    monkeypatch.setattr(run_t5, "SETTLE_S", 0.0)
+    monkeypatch.setattr(t5_core, "SETTLE_S", 0.0)
 
 
 THY = """theory Seeded
@@ -164,10 +164,10 @@ def test_classify_the_seed_outcomes():
     def rec(**kw):
         return BlockRecord("s", 0, "x", kw.pop("n", 2), None, 5.0, "override", **kw)
 
-    assert run_t5.classify(rec(timed_out=True)) == "timed_out"
-    assert run_t5.classify(rec(n=None, error="ConnectError")) == "error"
-    assert run_t5.classify(rec(success=True, proof_open=True)) == "kept"
-    assert run_t5.classify(rec()) == "failed"
+    assert t5_core.classify(rec(timed_out=True)) == "timed_out"
+    assert t5_core.classify(rec(n=None, error="ConnectError")) == "error"
+    assert t5_core.classify(rec(success=True, proof_open=True)) == "kept"
+    assert t5_core.classify(rec()) == "failed"
 
 
 def test_a_w1_cell_on_a_fake_server(tmp_path):
@@ -404,11 +404,11 @@ def test_the_prover_that_ran_the_attempt_and_its_retained_memory():
 
 def test_a_memory_error_is_its_own_class():
     rec = BlockRecord("s", 0, "x", 2, None, 5.0, "override", error_kind="memory")
-    assert run_t5.classify(rec) == "memory"
+    assert t5_core.classify(rec) == "memory"
     gone = BlockRecord(
         "s", 0, "x", None, None, 5.0, "override", error_kind="session_gone"
     )
-    assert run_t5.classify(gone) == "session_gone"
+    assert t5_core.classify(gone) == "session_gone"
 
 
 def test_verify_block_marks_a_gone_session_and_keeps_the_error_kind():
