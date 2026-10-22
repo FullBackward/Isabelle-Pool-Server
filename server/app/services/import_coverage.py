@@ -15,16 +15,21 @@ from __future__ import annotations
 
 from typing import Any, List, Sequence
 
+from server.app.errors import HeaderFailed, SessionError
+from server.app.services.success_checker import classify_error_kind
+
 COVERAGE_TIMEOUT_S = 30.0
+HEADER_FAILED_PREFIX = "theory header failed"
 
 
 def uncovered_imports(session: Any, imports: Sequence[str]) -> List[str]:
-    """The requested imports the session's theories do not cover (empty when
-    all are covered, or when the backend cannot judge them: project theories,
-    unqualified local names, a session theory outside the heap's graph)."""
+    """The requested imports outside the session's context (empty when all are
+    covered, or when the backend cannot judge them: unqualified project names,
+    an ancestry it cannot complete). The backend walks the session's wrapper
+    theory; ``session.theories`` are its fallback roots."""
     theories = [str(t) for t in (getattr(session, "theories", None) or [])]
     wanted = [str(i) for i in imports if str(i).strip()]
-    if not theories or not wanted:
+    if not wanted:
         return []
     raw = session.backend.raw
     fut = session.backend.submit(
@@ -32,3 +37,17 @@ def uncovered_imports(session: Any, imports: Sequence[str]) -> List[str]:
     )
     out = fut.result(timeout=COVERAGE_TIMEOUT_S)
     return [line for line in str(out or "").split("\n") if line.strip()]
+
+
+def as_header_failed(exc: SessionError) -> SessionError:
+    """A header Isabelle rejected (an import it cannot load, a malformed name)
+    becomes HeaderFailed (422); a timeout or a memory failure while loading, and
+    every typed subclass (SessionNotFound, ...), keep their own handling."""
+    msg = str(exc.error or exc)
+    # exact type: a typed subclass (SessionNotFound, ...) keeps its own handler
+    plain = type(exc) is SessionError  # pylint: disable=unidiomatic-typecheck
+    if not plain or not msg.startswith(HEADER_FAILED_PREFIX):
+        return exc
+    if "timed out" in msg.lower() or classify_error_kind(msg) is not None:
+        return exc
+    return HeaderFailed(error=msg, execution_time=exc.execution_time)

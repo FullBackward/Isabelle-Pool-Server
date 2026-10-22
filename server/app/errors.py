@@ -37,6 +37,12 @@ class ImportsNotCovered(SessionError):
         self.session_theories = list(session_theories)
 
 
+class HeaderFailed(SessionError):
+    """enter_theory's generated header was rejected by Isabelle: an import that
+    cannot be loaded, an illegal or malformed name. The client's input, not a
+    server failure: 422 (review 83baa0a S1; it used to answer 500)."""
+
+
 class SessionStartError(SessionError):
     pass
 

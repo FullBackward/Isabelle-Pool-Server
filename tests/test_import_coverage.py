@@ -17,8 +17,12 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 from server.app.api.v1.routes import execution  # noqa: E402
 from server.app.dependencies import get_session_manager  # noqa: E402
+from server.app.errors import HeaderFailed, SessionError, SessionNotFound  # noqa: E402
 from server.app.main import app  # noqa: E402
-from server.app.services.import_coverage import uncovered_imports  # noqa: E402
+from server.app.services.import_coverage import (  # noqa: E402
+    as_header_failed,
+    uncovered_imports,
+)
 
 SID = "11111111-1111-1111-1111-111111111111"
 LEASE = {"X-Lease-Id": "lease-1"}
@@ -48,12 +52,15 @@ class _Session:
     session_id = SID
     field = "HOL"
 
-    def __init__(self, theories, answer):
+    def __init__(self, theories, answer, fail=None):
         self.theories = theories
         self.backend = _Backend(answer)
         self.entered = []
+        self.fail = fail
 
     def enter_thy(self, name, timeout=None, imports=None):
+        if self.fail is not None:
+            raise self.fail
         self.entered.append((name, imports))
 
 
@@ -75,7 +82,26 @@ def test_uncovered_imports_passes_lines_and_splits_the_answer():
         ("Main\nHOL-Library.FSet", "HOL.Real\nHOL-Analysis.Derivative\nMain")
     ]
     assert uncovered_imports(_Session(["Main"], ""), ["Main"]) == []
-    assert uncovered_imports(_Session([], "X"), ["X"]) == []  # nothing to judge
+    # no listed theories: the backend still judges (it walks the wrapper theory)
+    assert uncovered_imports(_Session([], "X"), ["X"]) == ["X"]
+    s = _Session(["Main"], "X")
+    assert uncovered_imports(s, ["", "  "]) == [] and s.backend.raw.calls == []
+
+
+HEADER = "theory header failed: Failed to import theory: Nope\nCannot load theory file"
+
+
+def test_a_rejected_header_is_header_failed_and_nothing_else_is():
+    """Review 83baa0a S1: the client's bad import is a 422, not a 500."""
+    out = as_header_failed(SessionError(error=HEADER, execution_time=0.0))
+    assert isinstance(out, HeaderFailed) and str(out) == HEADER
+    for keep in (
+        SessionError(error="theory header failed: timed out (still running at line 1)"),
+        SessionError(error="theory header failed: Out of memory"),
+        SessionError(error="TimeoutError: Backend call timed out after 30.0s"),
+        SessionNotFound("theory header failed: session gone"),
+    ):
+        assert as_header_failed(keep) is keep
 
 
 @pytest.fixture()
@@ -120,3 +146,27 @@ def test_enter_theory_without_imports_is_not_checked(route):
     s = _Session(["Main"], "SHOULD-NOT-BE-ASKED")
     r = route(s).post(f"/api/v1/sessions/{SID}/enter_theory/T", headers=LEASE)
     assert r.status_code == 200 and s.backend.raw.calls == []
+
+
+def test_enter_theory_answers_422_for_a_header_isabelle_rejects(route):
+    s = _Session(["Main"], "", fail=SessionError(error=HEADER, execution_time=0.0))
+    r = route(s).post(
+        f"/api/v1/sessions/{SID}/enter_theory/T",
+        json={"imports": ["Nope"]},
+        headers=LEASE,
+    )
+    assert r.status_code == 422
+    body = r.json()
+    assert (
+        body["error"] == "header_failed"
+        and "Cannot load theory file" in body["message"]
+    )
+    timed = _Session(
+        ["Main"], "", fail=SessionError(error="theory header failed: timed out")
+    )
+    r = route(timed).post(
+        f"/api/v1/sessions/{SID}/enter_theory/T",
+        json={"imports": ["Main"]},
+        headers=LEASE,
+    )
+    assert r.status_code == 500  # a timeout is not the client's input

@@ -87,24 +87,81 @@ class Repl_Session(session_manager: Session_Manager, initial_thys: List[String] 
       edits.map(edit => (node_name.getOrElse(current_thy_node_name), edit))
     )
 
-  /** Requested imports outside the context of a session acquired with
-   *  `session_theories`. A node's context comes from the wrapper theory that
-   *  imports the session's acquisition-time theories (Edit_Utils
+  /** Requested imports outside the context of this session (docs/ISSUES.md
+   *  Bug 25). A node's context comes from the session's wrapper theory
+   *  (`helper_thy`, emulated as the node's only import by Edit_Utils
    *  .get_thy_header_edits); the imports in its own header only gate loading.
-   *  A requested name is uncovered when it is a theory of the session base's
-   *  import graph (`loaded_theories`) but neither one of `session_theories`
-   *  nor an ancestor of one. Names outside the graph (project theories,
-   *  unqualified local names) are not judged, and nothing is judged when a
-   *  session theory itself lies outside the graph (its ancestry is unknown). */
+   *
+   *  Covered = the wrapper's ancestry: walked through the document nodes'
+   *  resolved imports (theories loaded at acquisition outside the heap) and the
+   *  heap base's import graph (`loaded_theories`, `all_preds`). Every name is
+   *  resolved as Isabelle resolves an import (`Resources.import_name`) and a
+   *  session-qualified global theory is identified with its global name
+   *  (`HOL.Complex_Main` is `Complex_Main`, `HOL.Main` is `Main`; review 83baa0a
+   *  B1). A requested name is judged when it resolves into the heap graph or is
+   *  qualified by a known session; an unqualified unknown name (a project
+   *  theory) is not judged. Nothing is judged when the ancestry cannot be
+   *  completed. `session_theories` (the acquisition-time names) are the roots
+   *  only when the wrapper node is not in the document. Returns the requested
+   *  spellings that are judged and not covered. */
   def uncovered_imports(
       session_theories: List[String],
       requested: List[String]
   ): List[String] = {
-    val graph = session.resources.current_background.base.loaded_theories
-    if (session_theories.isEmpty || !session_theories.forall(graph.defined)) Nil
-    else {
-      val covered = graph.all_preds(session_theories).toSet
-      requested.filter(r => graph.defined(r) && !covered(r)).distinct
+    val resources = session.resources
+    val graph = resources.current_background.base.loaded_theories
+    val structure = resources.sessions_structure
+
+    def canonical(theory: String): String =
+      if (graph.defined(theory) || !Long_Name.is_qualified(theory)) theory
+      else {
+        val base = Long_Name.base_name(theory)
+        val global_here =
+          structure.global_theories.get(base).contains(Long_Name.qualifier(theory))
+        if (graph.defined(base) && global_here) base else theory
+      }
+    def resolve(s: String): Option[String] =
+      try Some(canonical(resources.import_name("", "", s).theory))
+      catch { case ERROR(_) => None }  // malformed, or a file-path import from another session
+    def judged(theory: String): Boolean =
+      graph.defined(theory) ||
+        (Long_Name.is_qualified(theory) && structure.defined(Long_Name.qualifier(theory)))
+
+    val nodes = session.snapshot().version.nodes
+    val doc_nodes: Map[String, Document.Node] =
+      nodes.domain.iterator.map(name => canonical(name.theory) -> nodes(name)).toMap
+    def imports_of(node: Document.Node): List[String] = node.thy.imports.map(_._1.theory)
+
+    @annotation.tailrec
+    def ancestry(todo: List[String], seen: Set[String], heap_roots: List[String]): Option[Set[String]] =
+      todo match {
+        case Nil => Some(seen ++ graph.all_preds(heap_roots))
+        case t0 :: rest =>
+          val t = canonical(t0)
+          if (seen(t)) ancestry(rest, seen, heap_roots)
+          else if (graph.defined(t)) ancestry(rest, seen + t, t :: heap_roots)
+          else
+            doc_nodes.get(t).filter(_.has_thy) match {
+              case Some(node) => ancestry(imports_of(node) ::: rest, seen + t, heap_roots)
+              case None => None
+            }
+      }
+
+    val wrapper_base = Library.space_explode('/', helper_thy).lastOption.getOrElse("").stripSuffix(".thy")
+    val wrappers = doc_nodes.collect {
+      case (theory, node) if Long_Name.base_name(theory) == wrapper_base && node.has_thy => node
+    }.toList
+    val roots: Option[List[String]] =
+      if (wrappers.nonEmpty) Some(wrappers.flatMap(imports_of))
+      else if (session_theories.isEmpty) None
+      else {
+        val resolved = session_theories.map(resolve)
+        if (resolved.forall(_.isDefined)) Some(resolved.flatten) else None
+      }
+    roots.flatMap(rs => ancestry(rs, Set.empty, Nil)) match {
+      case None => Nil
+      case Some(covered) =>
+        requested.filter(r => resolve(r).exists(t => judged(t) && !covered(t))).distinct
     }
   }
 

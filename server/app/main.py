@@ -17,6 +17,7 @@ from server.app.core.config import API, Logging, Server
 from server.app.core.logging import get_logger, reset_logging_context, set_logging_context, setup_logging
 from server.app.errors import (
     GatewayUnavailable,
+    HeaderFailed,
     ImportsNotCovered,
     MemoryPressure,
     PoolExhausted,
@@ -181,6 +182,16 @@ async def handle_imports_not_covered(request: Request, exc: ImportsNotCovered):
             "uncovered": exc.uncovered,
             "session_theories": exc.session_theories,
         },
+    )
+
+
+@app.exception_handler(HeaderFailed)
+async def handle_header_failed(request: Request, exc: HeaderFailed):
+    """422: Isabelle rejected the theory header (e.g. an import it cannot load)."""
+    logger.warning("theory header failed on %s: %s", request.url.path, exc)
+    return JSONResponse(
+        status_code=422,
+        content={"detail": str(exc), "error": "header_failed", "message": str(exc)},
     )
 
 

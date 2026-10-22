@@ -949,36 +949,50 @@ re-export assertion was dropped with the shim packages on 2026-10-05.)
 ### Bug 25: `enter_theory` Accepted Imports Outside the Session's Context — RESOLVED
 
 **Severity:** High (silent wrong verdicts; found by the training-metrics review of afd3de9)
-**Status:** ✅ Resolved 2026-10-22 (owner decision D7, training-metrics plan v1.5).
+**Status:** ✅ Resolved 2026-10-22 (owner decision D7, training-metrics plan v1.5; commits 83baa0a and its fix).
 
 **Symptom:** a session's theory context is fixed when it is acquired: a node's context
-comes from the wrapper theory that imports the session's theories, and
+comes from the session's wrapper theory, which imports the acquisition-time theories, and
 `Edit_Utils.get_thy_header_edits` applies the node's own header first and then the
 wrapper's, which replaces it. The imports given to `enter_theory` therefore only gate
-loading. A request for imports the session did not hold (a `Main` session asked for
-`HOL.Real`) answered 200, and the theory was then checked without them: lemmas that need
-the import failed, and a corpus replay on `Main` sessions misreported files (the July
-HOL-Analysis small-step run lost 2 of 93 files the same way).
+loading. A request for imports the session did not hold answered 200, and the theory was
+then checked without them. Observed: the training-metrics replay on `Main` sessions (review
+afd3de9; first error `Undefined type name: "real"`), and on the first version of this fix a
+`Main` session entered with `HOL.Complex_Main`, and a session acquired as `HOL.Main` entered
+with `HOL.Real` or `Complex_Main` (review 83baa0a): `typ real` failed in each.
+The July HOL-Analysis small-step run (`evaluation/results/benchmark_runs.json`, 8 workers)
+is no evidence for this bug: it recorded 2 successes and 91 failures in 93 files, and 81 of
+the failures were HTTP 500s at session acquisition, 2 at `enter_theory`.
 
-**Fix:** `enter_theory` asks the backend which requested imports the session's theories do
-not cover and refuses a non-empty answer with **409** `{"error": "imports_not_covered",
+**Fix:** `enter_theory` asks the backend which requested imports lie outside the session's
+context and refuses a non-empty answer with **409** `{"error": "imports_not_covered",
 "uncovered": [...], "session_theories": [...]}` (acquire a session with those imports).
-The answer comes from Isabelle's own import graph:
-`Repl_Session.uncovered_imports` reads `session.resources.current_background.base.loaded_theories`
-and keeps the requested names the graph knows that are not among `all_preds` of the
-session's theories (`Main` is covered by a `Complex_Main` session, `HOL.Real` is not covered
-by a `Main` session). Names the graph does not know (project theories, local names) and
-sessions whose theories it does not know are not judged, so nothing that worked before is
-refused on a guess. Python side: `services/import_coverage.py` (one backend call, 30 s),
-`ImportsNotCovered` in `errors.py`, the handler in `main.py`. The stepwise MCP and the file
-MCP acquire sessions with the imports they then use, so they are not affected.
+`Repl_Session.uncovered_imports` computes the context as the wrapper theory's ancestry: it
+walks the document nodes' resolved imports (theories loaded at acquisition outside the heap)
+down to the heap base's import graph (`current_background.base.loaded_theories`,
+`all_preds`). Every name is resolved as Isabelle resolves an import
+(`Resources.import_name`), and a session-qualified global theory is identified with its
+global name (`HOL.Complex_Main` is `Complex_Main`). A requested name is judged when it
+resolves into the heap graph or is qualified by a known session (`HOL-Library.Infinite_Set`
+on a HOL heap); an unqualified unknown name (a project theory) is not judged, and nothing is
+judged when the ancestry cannot be completed. Python side: `services/import_coverage.py`
+(one backend call, 30 s), `ImportsNotCovered` in `errors.py`, the handler in `main.py`. The
+stepwise MCP and the file MCP acquire sessions with the imports they then use, so they are
+not affected.
+
+**Related (review 83baa0a S1):** a header Isabelle rejects (an import it cannot load, a
+malformed name) used to answer 500; it now answers **422** `{"error": "header_failed",
+"message": ...}`. A timeout or a memory failure while loading keeps its old handling.
 
 **Not covered:** `load_document` takes header imports the same way; it is not checked yet
 (the file MCP acquires with the file's header imports, so only a direct API client can
 meet it).
 
-**Verified:** `tests/test_import_coverage.py` (4: the service joins and splits names; 409
-with the uncovered names and no entry; covered imports enter; no imports, no backend call).
+**Verified:** `tests/test_import_coverage.py` (6: the service call, the 409 body, covered and
+empty imports, the header-failure mapping and its 422). Live on the container's HOL heap, 19
+cases over six sessions (`Main`, `Complex_Main`, `HOL.Main`, `HOL.Real`, `HOL.Transcendental`,
+`HOL-Library.Infinite_Set`): every uncovered spelling 409, every covered one 200, `Main` +
+`Some_Project_Theory` 422.
 
 ---
 
