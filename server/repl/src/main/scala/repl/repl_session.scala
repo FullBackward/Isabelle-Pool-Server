@@ -87,6 +87,27 @@ class Repl_Session(session_manager: Session_Manager, initial_thys: List[String] 
       edits.map(edit => (node_name.getOrElse(current_thy_node_name), edit))
     )
 
+  /** Requested imports outside the context of a session acquired with
+   *  `session_theories`. A node's context comes from the wrapper theory that
+   *  imports the session's acquisition-time theories (Edit_Utils
+   *  .get_thy_header_edits); the imports in its own header only gate loading.
+   *  A requested name is uncovered when it is a theory of the session base's
+   *  import graph (`loaded_theories`) but neither one of `session_theories`
+   *  nor an ancestor of one. Names outside the graph (project theories,
+   *  unqualified local names) are not judged, and nothing is judged when a
+   *  session theory itself lies outside the graph (its ancestry is unknown). */
+  def uncovered_imports(
+      session_theories: List[String],
+      requested: List[String]
+  ): List[String] = {
+    val graph = session.resources.current_background.base.loaded_theories
+    if (session_theories.isEmpty || !session_theories.forall(graph.defined)) Nil
+    else {
+      val covered = graph.all_preds(session_theories).toSet
+      requested.filter(r => graph.defined(r) && !covered(r)).distinct
+    }
+  }
+
   def enter_thy(thy_name: String): Unit = {
     if (current_thy_info.isDefined) set_current_required(false)
     val thy_info = session_thys.getOrElse(

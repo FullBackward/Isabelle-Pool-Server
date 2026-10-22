@@ -400,3 +400,10 @@ def test_a_refused_acquire_is_retried_after_retry_after(tmp_path, monkeypatch):
         )
     )
     assert rr.acquire_error and rr.acquire_retries == replay.ACQUIRE_RETRIES
+    # review 9a4d610 S1: the summed wait is capped too (Retry-After is 2 s here)
+    monkeypatch.setattr(replay, "ACQUIRE_WAIT_MAX_S", 5.0)
+    rr = asyncio.run(
+        replay.replay_file_fresh(Busy(["pool_full"] * 5), files[0], heap="HOL")
+    )
+    assert "pool_full" in rr.acquire_error and rr.acquire_retries == 2
+    assert rr.acquire_wait_s == 4.0  # a third wait would pass 5 s

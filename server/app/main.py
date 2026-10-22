@@ -17,6 +17,7 @@ from server.app.core.config import API, Logging, Server
 from server.app.core.logging import get_logger, reset_logging_context, set_logging_context, setup_logging
 from server.app.errors import (
     GatewayUnavailable,
+    ImportsNotCovered,
     MemoryPressure,
     PoolExhausted,
     SessionBusyError,
@@ -165,6 +166,22 @@ async def handle_session_start_error(request: Request, exc: SessionStartError):
 async def handle_session_lease_error(request: Request, exc: SessionLeaseError):
     logger.warning("session lease error on %s: %s", request.url.path, exc)
     return JSONResponse(status_code=403, content={"detail": str(exc) or "Invalid lease token"})
+
+
+@app.exception_handler(ImportsNotCovered)
+async def handle_imports_not_covered(request: Request, exc: ImportsNotCovered):
+    """409: the session's context (fixed at acquisition) lacks these imports;
+    acquire a session with them (docs/ISSUES.md, imports_not_covered)."""
+    logger.warning("imports not covered on %s: %s", request.url.path, exc.uncovered)
+    return JSONResponse(
+        status_code=409,
+        content={
+            "detail": str(exc),
+            "error": "imports_not_covered",
+            "uncovered": exc.uncovered,
+            "session_theories": exc.session_theories,
+        },
+    )
 
 
 @app.exception_handler(SessionBusyError)

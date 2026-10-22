@@ -20,6 +20,23 @@ class SessionNotFound(SessionError):
     pass
 
 
+class ImportsNotCovered(SessionError):
+    """enter_theory asked for imports the session's context does not include:
+    IPS fixes a session's theory context when it is acquired, and the imports
+    of a theory header only gate loading, so the theory would be checked
+    without them (docs/ISSUES.md; training-metrics review afd3de9). 409."""
+
+    def __init__(self, uncovered: list[str], session_theories: list[str]) -> None:
+        super().__init__(
+            error=(
+                f"imports not covered by this session's theories {session_theories}: "
+                f"{uncovered}; acquire a session with these imports"
+            )
+        )
+        self.uncovered = list(uncovered)
+        self.session_theories = list(session_theories)
+
+
 class SessionStartError(SessionError):
     pass
 

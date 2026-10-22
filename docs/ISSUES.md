@@ -40,6 +40,7 @@ in `DESIGN_CHOICES.md`, not here.
 - [Bug 22: Checkpoint Restore Reported Success for Unknown or Invalidated Ids — RESOLVED](#bug-22-checkpoint-restore-reported-success-for-unknown-or-invalidated-ids--resolved)
 - [Bug 23: Theory-Name Injection Through `enter_theory` and the Theory-Name Fields — RESOLVED](#bug-23-theory-name-injection-through-enter_theory-and-the-theory-name-fields--resolved)
 - [Bug 24: Thirteen LSP MCP Tools Shipped With an Empty Description — RESOLVED](#bug-24-thirteen-lsp-mcp-tools-shipped-with-an-empty-description--resolved)
+- [Bug 25: `enter_theory` Accepted Imports Outside the Session's Context — RESOLVED](#bug-25-enter_theory-accepted-imports-outside-the-sessions-context--resolved)
 - [Open Findings Tracker](#open-findings-tracker)
 - [Summary of Changes](#summary-of-changes) (Bugs 1–6)
 - [Agent Work Log (dated)](#agent-work-log-dated)
@@ -942,6 +943,42 @@ appends the sync note to `__doc__` before registering with FastMCP.
 input schema for every tool of both servers, the exact tool-name sets (11 / 23), the
 `prove_theorem` prompt, and the `success ≠ proved` wording in `verify_chunk`. (The shim
 re-export assertion was dropped with the shim packages on 2026-10-05.)
+
+---
+
+### Bug 25: `enter_theory` Accepted Imports Outside the Session's Context — RESOLVED
+
+**Severity:** High (silent wrong verdicts; found by the training-metrics review of afd3de9)
+**Status:** ✅ Resolved 2026-10-22 (owner decision D7, training-metrics plan v1.5).
+
+**Symptom:** a session's theory context is fixed when it is acquired: a node's context
+comes from the wrapper theory that imports the session's theories, and
+`Edit_Utils.get_thy_header_edits` applies the node's own header first and then the
+wrapper's, which replaces it. The imports given to `enter_theory` therefore only gate
+loading. A request for imports the session did not hold (a `Main` session asked for
+`HOL.Real`) answered 200, and the theory was then checked without them: lemmas that need
+the import failed, and a corpus replay on `Main` sessions misreported files (the July
+HOL-Analysis small-step run lost 2 of 93 files the same way).
+
+**Fix:** `enter_theory` asks the backend which requested imports the session's theories do
+not cover and refuses a non-empty answer with **409** `{"error": "imports_not_covered",
+"uncovered": [...], "session_theories": [...]}` (acquire a session with those imports).
+The answer comes from Isabelle's own import graph:
+`Repl_Session.uncovered_imports` reads `session.resources.current_background.base.loaded_theories`
+and keeps the requested names the graph knows that are not among `all_preds` of the
+session's theories (`Main` is covered by a `Complex_Main` session, `HOL.Real` is not covered
+by a `Main` session). Names the graph does not know (project theories, local names) and
+sessions whose theories it does not know are not judged, so nothing that worked before is
+refused on a guess. Python side: `services/import_coverage.py` (one backend call, 30 s),
+`ImportsNotCovered` in `errors.py`, the handler in `main.py`. The stepwise MCP and the file
+MCP acquire sessions with the imports they then use, so they are not affected.
+
+**Not covered:** `load_document` takes header imports the same way; it is not checked yet
+(the file MCP acquires with the file's header imports, so only a direct API client can
+meet it).
+
+**Verified:** `tests/test_import_coverage.py` (4: the service joins and splits names; 409
+with the uncovered names and no entry; covered imports enter; no imports, no backend call).
 
 ---
 

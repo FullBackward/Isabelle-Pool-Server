@@ -6,9 +6,10 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException
 
 from server.app.core.config import Logging
-from server.app.errors import SessionNotFound
+from server.app.errors import ImportsNotCovered, SessionNotFound
 from server.app.core.input_guards import validate_import_name
 from server.app.core.logging import get_logger, logging_context
+from server.app.services.import_coverage import uncovered_imports
 from server.app.services.theory_parsing import parse_theory_header, suggested_field
 
 from ..deps import LeasedSession, SessionManagerDep
@@ -212,6 +213,10 @@ async def enter_theory(
         raise HTTPException(status_code=422, detail=str(e))
     imports = request.imports if request else None
     logger.info("entering theory theory_name=%s imports=%s", theory_name, imports)
+    if imports:  # the session's context is fixed at acquisition: refuse, not ignore
+        uncovered = await asyncio.to_thread(uncovered_imports, session, imports)
+        if uncovered:
+            raise ImportsNotCovered(uncovered, list(getattr(session, "theories", [])))
     _, override = (
         await asyncio.to_thread(  # the hook is the first chance to learn the ML pid
             run_with_memory_hooks,

@@ -113,6 +113,14 @@ trait Backend_Probes { this: ReplBackend =>
    *  Repl_Session.phase_string. */
   def session_phase(): String = repl_session.phase_string
 
+  /** Imports (newline-separated) a session acquired with `session_theories`
+   *  (newline-separated) does not cover; newline-separated, empty when all are
+   *  covered or cannot be judged. See Repl_Session.uncovered_imports. */
+  def uncovered_imports(session_theories: String, requested: String): String = {
+    def lines(s: String): List[String] = Library.split_lines(s).map(_.trim.nn).filter(_.nonEmpty)
+    repl_session.uncovered_imports(lines(session_theories), lines(requested)).mkString("\n")
+  }
+
   /** Pretty-printed open subgoals of the current proof state ([] when not in a
    *  proof — including after a trailing theory `end`, which closes the theory
    *  with no proof open by definition). Consumed via GET .../subgoals by both MCPs. */

@@ -320,6 +320,7 @@ async def close_all(
 
 ACQUIRE_TIMEOUT_S = 900.0
 ACQUIRE_RETRIES = 12  # 503 memory_pressure / pool_full: retried after Retry-After
+ACQUIRE_WAIT_MAX_S = 300.0  # and the summed wait is capped (review 9a4d610 S1)
 RETRYABLE = ("memory_pressure", "pool_full")
 
 
@@ -345,7 +346,8 @@ async def _acquire_retrying(
     client: Any, cf: CorpusFile, heap: str, label: str
 ) -> Tuple[Dict[str, Any], int, float]:
     """Acquire a session with the file's imports; a retryable refusal waits
-    Retry-After and tries again, up to ACQUIRE_RETRIES, so a busy server costs
+    Retry-After and tries again, up to ACQUIRE_RETRIES and ACQUIRE_WAIT_MAX_S
+    summed wait (Retry-After is the server's choice), so a busy server costs
     time (in acquire_s) instead of silently dropping the file. Each attempt is a
     task a stop does not abort: on cancellation an in-flight acquire finishes
     and its session is closed. Returns (response, retries, seconds waited)."""
@@ -371,8 +373,13 @@ async def _acquire_retrying(
             if not task.done():
                 await _close_task_result(client, task)
             wait = _retry_after(exc)
-            if wait is None or retries >= ACQUIRE_RETRIES:
+            if (
+                wait is None
+                or retries >= ACQUIRE_RETRIES
+                or waited + wait > ACQUIRE_WAIT_MAX_S
+            ):
                 setattr(exc, "trainmetrics_retries", retries)
+                setattr(exc, "trainmetrics_waited", round(waited, 3))
                 raise
             retries += 1
             waited += wait
@@ -431,6 +438,7 @@ async def replay_file_fresh(  # pylint: disable=too-many-arguments,too-many-loca
             acquire_s=round(time.monotonic() - t0, 4),
             acquire_error=f"{type(exc).__name__}: {exc}"[:300],
             acquire_retries=int(getattr(exc, "trainmetrics_retries", 0)),
+            acquire_wait_s=float(getattr(exc, "trainmetrics_waited", 0.0)),
             t_start=started,
             t_end=time.time(),
         )
