@@ -38,6 +38,10 @@ ips:
     ISABELLE_MAX_CONCURRENT_BIGSTEP_BUILDS: "4"   # D4 (T4); the server reports the value it runs with
     ISABELLE_MEMORY_BUILD_ESTIMATE_MB: "4096"
     ISABELLE_ENABLE_MEMORY_MANAGEMENT: "true"
+    # admission estimates near the measured per-session cost (report Table 2: 0.9 / 1.1 / 1.3 GB), so W
+    # concurrent per-file acquisitions are not refused on reservations alone (review 34414a6 S1)
+    ISABELLE_MEMORY_SESSION_ESTIMATES: "HOL=1024,HOL-Library=1280,HOL-Analysis=1536"
+    ISABELLE_MEMORY_SESSION_ESTIMATE_MB: "1536"
     ISABELLE_SERVER_LOG_DIR: results/ips-logs   # relative to evaluation/training_metrics; made absolute by the runner
 budget:                                      # design B3: min(max_s, max(min_s, per_command_s * n))
   per_command_s: 2

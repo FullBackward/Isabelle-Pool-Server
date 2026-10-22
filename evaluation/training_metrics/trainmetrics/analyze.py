@@ -142,10 +142,17 @@ def snippet_t12(
         "of the same files running in parallel); speedup and efficiency are on it, so they "
         "do not depend on the file mix. Latencies exclude timed-out calls (rate beside).",
         "",
+        "Every file runs on a session acquired with its own imports (IPS fixes a session's "
+        "context at acquisition), so a cold acquisition precedes every file: the rate "
+        "including acquire + enter sits well below the verify-only rate, by the acquire "
+        "share shown — that is the cost of per-file contexts, not of verification. Files "
+        "whose acquisition was refused (after retries) are left out of the census-relative "
+        "numbers and counted as skipped.",
+        "",
         "| W | census work rate | speedup | efficiency | chunks/min (verify only) | commands/min | "
-        "chunks/min (incl. acquire + enter) | slowdown vs census | p50 / p95 s | timeout rate | host CPU % | "
-        "PSS peak GB |",
-        "|---|---|---|---|---|---|---|---|---|---|---|---|",
+        "chunks/min (incl. acquire + enter) | acquire share | skipped files | slowdown vs census | "
+        "p50 / p95 s | timeout rate | host CPU % | PSS peak GB |",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     if any(s.get("external") for s in series):
         lines.insert(
@@ -161,6 +168,7 @@ def snippet_t12(
             f"| {s['workers']} | {_f(s['census_work_rate'], 2)} | {_f(s['speedup'], 2)} | "
             f"{_f(s['efficiency'], 2)} | {_f(s['chunks_per_min'])} | "
             f"{_f(s['commands_per_min'])} | {_f(s['chunks_per_min_incl_setup'])} | "
+            f"{_f(s.get('acquire_share'), 2)} | {_f(s.get('skipped_files'), 0)} | "
             f"{_f(s['slowdown_vs_census'], 2)} | "
             f"{_f(s['latency_p50_s'], 3)} / {_f(s['latency_p95_s'], 3)} | "
             f"{_f(s['timeout_rate'], 4)} | {_f(100 * util if util is not None else None)} | "

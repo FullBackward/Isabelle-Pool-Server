@@ -133,8 +133,13 @@ class ReplayRecord:  # pylint: disable=too-many-instance-attributes
     blocks: List[BlockRecord] = field(default_factory=list)
     t_start: float = 0.0
     t_end: float = 0.0
-    acquire_s: float = 0.0  # a session per file (D6): its acquisition time
+    acquire_s: float = (
+        0.0  # a session per file (D6): its acquisition time (waits included)
+    )
     acquire_error: Optional[str] = None
+    acquire_retries: int = 0  # refusals retried after Retry-After (review 34414a6 S1)
+    acquire_wait_s: float = 0.0
+    reused: Optional[bool] = None  # the pool handed back an existing session (S2)
     unclosed: List[Dict[str, Any]] = field(default_factory=list)
 
     def as_dict(self) -> Dict[str, Any]:
@@ -314,6 +319,64 @@ async def close_all(
 
 
 ACQUIRE_TIMEOUT_S = 900.0
+ACQUIRE_RETRIES = 12  # 503 memory_pressure / pool_full: retried after Retry-After
+RETRYABLE = ("memory_pressure", "pool_full")
+
+
+def _retry_after(exc: BaseException) -> Optional[float]:
+    """Seconds to wait when ``exc`` is a retryable refusal (HTTP 503 with error
+    memory_pressure or pool_full), else None."""
+    resp = getattr(exc, "response", None)
+    if resp is None or getattr(resp, "status_code", None) != 503:
+        return None
+    try:
+        err = (resp.json() or {}).get("error")
+    except Exception:  # pylint: disable=broad-exception-caught
+        err = None
+    if err not in RETRYABLE:
+        return None
+    try:
+        return max(1.0, float(resp.headers.get("Retry-After", 5)))
+    except (TypeError, ValueError):
+        return 5.0
+
+
+async def _acquire_retrying(
+    client: Any, cf: CorpusFile, heap: str, label: str
+) -> Tuple[Dict[str, Any], int, float]:
+    """Acquire a session with the file's imports; a retryable refusal waits
+    Retry-After and tries again, up to ACQUIRE_RETRIES, so a busy server costs
+    time (in acquire_s) instead of silently dropping the file. Each attempt is a
+    task a stop does not abort: on cancellation an in-flight acquire finishes
+    and its session is closed. Returns (response, retries, seconds waited)."""
+    retries, waited = 0, 0.0
+    while True:
+        task = asyncio.ensure_future(
+            client.acquire_session(
+                theories=list(cf.imports),
+                field=heap,
+                reuse_dirty=False,  # SessionRef invariant: a fresh session per file
+                label=label,
+            )
+        )
+        try:
+            acq = await asyncio.wait_for(
+                asyncio.shield(task), timeout=ACQUIRE_TIMEOUT_S
+            )
+            return dict(acq), retries, round(waited, 3)
+        except asyncio.CancelledError:
+            await _close_task_result(client, task)
+            raise
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            if not task.done():
+                await _close_task_result(client, task)
+            wait = _retry_after(exc)
+            if wait is None or retries >= ACQUIRE_RETRIES:
+                setattr(exc, "trainmetrics_retries", retries)
+                raise
+            retries += 1
+            waited += wait
+            await asyncio.sleep(wait)
 
 
 async def _close_task_result(client: Any, task: "asyncio.Future[Any]") -> None:
@@ -356,22 +419,9 @@ async def replay_file_fresh(  # pylint: disable=too-many-arguments,too-many-loca
     reg = registry if registry is not None else {}
     t0 = time.monotonic()
     started = time.time()
-    task = asyncio.ensure_future(
-        client.acquire_session(
-            theories=list(cf.imports),
-            field=heap,
-            reuse_dirty=False,  # SessionRef invariant: a fresh session per file
-            label=label,
-        )
-    )
-    try:
-        acq = await asyncio.wait_for(asyncio.shield(task), timeout=ACQUIRE_TIMEOUT_S)
-    except asyncio.CancelledError:
-        await _close_task_result(client, task)
-        raise
+    try:  # a stop (CancelledError, not an Exception) propagates from here
+        acq, retries, waited = await _acquire_retrying(client, cf, heap, label)
     except Exception as exc:  # pylint: disable=broad-exception-caught
-        if not task.done():
-            await _close_task_result(client, task)
         return ReplayRecord(
             stem=cf.stem,
             theory_name="",
@@ -380,6 +430,7 @@ async def replay_file_fresh(  # pylint: disable=too-many-arguments,too-many-loca
             nodes_on_session=0,
             acquire_s=round(time.monotonic() - t0, 4),
             acquire_error=f"{type(exc).__name__}: {exc}"[:300],
+            acquire_retries=int(getattr(exc, "trainmetrics_retries", 0)),
             t_start=started,
             t_end=time.time(),
         )
@@ -405,6 +456,8 @@ async def replay_file_fresh(  # pylint: disable=too-many-arguments,too-many-loca
         if on_change is not None:
             on_change(reg)
     rr.acquire_s = acquire_s
+    rr.acquire_retries, rr.acquire_wait_s = retries, waited
+    rr.reused = None if acq.get("reused") is None else bool(acq.get("reused"))
     rr.unclosed = unclosed
     rr.t_start = started
     return rr

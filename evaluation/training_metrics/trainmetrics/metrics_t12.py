@@ -134,13 +134,19 @@ def summarize_cell(  # pylint: disable=too-many-locals
         for w in workers.values()
         if w["verify_s"] > 0
     )
-    replay_time = sum(
-        float(rr.get("acquire_s") or 0)
-        + float(rr.get("enter_s") or 0)
+    # only replays that ran count in the census-relative numbers: a refused
+    # acquire or a failed header did no work (review 34414a6 B1)
+    ran = [
+        r for r in replays if not r.get("acquire_error") and not r.get("enter_error")
+    ]
+    skipped = [r for r in replays if r not in ran]
+    acquire_total = sum(float(rr.get("acquire_s") or 0) for rr in ran)
+    replay_time = acquire_total + sum(
+        float(rr.get("enter_s") or 0)
         + sum(float(b.get("wall_s") or 0) for b in rr.get("blocks") or [])
-        for rr in replays
+        for rr in ran
     )
-    census_time = sum(times.get(rr["stem"], 0.0) for rr in replays)
+    census_time = sum(times.get(rr["stem"], 0.0) for rr in ran)
     acq = [
         float(r.get("acquire_s") or 0) for r in replays if not r.get("acquire_error")
     ]
@@ -184,6 +190,12 @@ def summarize_cell(  # pylint: disable=too-many-locals
         # replays of the same files proceed in parallel; mix-independent, the
         # base of speedup and efficiency (review c9c9197 S5)
         "census_work_rate": _r(census_time / window_s if window_s else None, 4),
+        "skipped_files": len(skipped),
+        "skipped_census_s": _r(sum(times.get(rr["stem"], 0.0) for rr in skipped), 2),
+        # the cost of D6: the share of replay time spent acquiring sessions
+        "acquire_share": _r(acquire_total / replay_time if replay_time else None, 3),
+        "acquire_retries": sum(int(r.get("acquire_retries") or 0) for r in replays),
+        "warm_hits": sum(1 for r in replays if r.get("reused")),
         "latency_p50_s": _r(p50(walls), 4),
         "latency_p95_s": _r(p95(walls), 4),
         "enter_p50_s": _r(p50([float(r.get("enter_s") or 0) for r in replays]), 3),
@@ -220,6 +232,8 @@ SERIES_KEYS = (
     "host_cpu_util",
     "pss_peak_mb",
     "acquire_p50_s",
+    "acquire_share",
+    "skipped_files",
 )
 
 

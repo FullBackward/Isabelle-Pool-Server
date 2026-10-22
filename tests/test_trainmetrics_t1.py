@@ -341,3 +341,62 @@ def test_a_cell_stopped_during_acquisition_closes_what_the_server_created(tmp_pa
 
     assert asyncio.run(go()) == "cancelled"
     assert sorted(cl.closed) == ["s1", "s2"] and cl.entered_at == []
+
+
+class _Resp:
+    def __init__(self, error, retry_after="2"):
+        self.status_code = 503
+        self._error = error
+        self.headers = {"Retry-After": retry_after}
+
+    def json(self):
+        return {"error": self._error}
+
+
+class Refused(Exception):
+    def __init__(self, error):
+        super().__init__(f"503 {error}")
+        self.response = _Resp(error)
+
+
+def test_a_refused_acquire_is_retried_after_retry_after(tmp_path, monkeypatch):
+    """Review 34414a6 S1: memory_pressure / pool_full wait Retry-After and try
+    again (the wait is in acquire_s); other refusals fail at once; retries end."""
+    waits = []
+
+    async def no_sleep(s):  # never calls asyncio.sleep (the module is shared)
+        waits.append(s)
+
+    monkeypatch.setattr(replay.asyncio, "sleep", no_sleep)
+
+    class Busy(FakeClient):
+        def __init__(self, errors):
+            super().__init__()
+            self.errors = list(errors)
+
+        async def acquire_session(self, **kw):
+            if self.errors:
+                raise Refused(self.errors.pop(0))
+            out = await super().acquire_session(**kw)
+            return {**out, "reused": False}
+
+    files = _corpus(tmp_path)
+    rr = asyncio.run(
+        replay.replay_file_fresh(
+            Busy(["memory_pressure", "pool_full"]), files[0], heap="HOL"
+        )
+    )
+    assert rr.acquire_error is None and rr.acquire_retries == 2
+    assert rr.acquire_wait_s == 4.0 and waits[:2] == [2.0, 2.0] and rr.reused is False
+    rr = asyncio.run(
+        replay.replay_file_fresh(Busy(["gateway_unavailable"]), files[0], heap="HOL")
+    )
+    assert "gateway_unavailable" in rr.acquire_error and rr.acquire_retries == 0
+    rr = asyncio.run(
+        replay.replay_file_fresh(
+            Busy(["memory_pressure"] * (replay.ACQUIRE_RETRIES + 1)),
+            files[0],
+            heap="HOL",
+        )
+    )
+    assert rr.acquire_error and rr.acquire_retries == replay.ACQUIRE_RETRIES

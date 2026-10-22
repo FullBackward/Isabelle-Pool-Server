@@ -213,3 +213,30 @@ def test_external_server_cells_show_no_resource_columns(tmp_path):
     assert "external server" in text
     row = next(x for x in text.splitlines() if x.startswith("| 1 |"))
     assert row.rstrip().endswith("| - | - |")  # host CPU and PSS blanked
+
+
+def test_census_relative_numbers_count_only_replays_that_ran(tmp_path):
+    """Review 34414a6 B1: a refused acquisition did no work."""
+    files = _corpus(tmp_path)
+    census = _census(files)
+    root = tmp_path / "results"
+    _cell_tree(root, 1, 0, census, wall=0.1)
+    rpath = root / "t1" / "w1" / "rep0" / "replays.jsonl"
+    reps = [json.loads(x) for x in rpath.read_text().splitlines()]
+    reps[2] = {
+        **reps[2],
+        "acquire_error": "503 memory_pressure",
+        "blocks": [],
+        "enter_s": 0,
+    }
+    for r in reps[:2]:
+        r["acquire_s"] = 0.25
+    rpath.write_text("\n".join(json.dumps(r) for r in reps) + "\n")
+    (row,) = [
+        metrics_t12.summarize_cell(c, census) for c in metrics_t12.load_t1_cells(root)
+    ]
+    # 2 files ran: census time 2 x 0.5 s over 60 s; the refused file is skipped
+    assert row["census_work_rate"] == pytest.approx(1.0 / 60, abs=1e-4)
+    assert row["skipped_files"] == 1 and row["skipped_census_s"] == 0.5
+    # replay time = 2 x (0.25 acquire + 0.05 enter + 2 x 0.1 verify) = 1.0 s
+    assert row["acquire_share"] == 0.5 and row["slowdown_vs_census"] == 1.0
