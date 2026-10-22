@@ -497,11 +497,13 @@ Section~\ref{sec:comparison} reads the two side by side.
 \paragraph{Memory measures.} We report memory two ways. The first is the
 \emph{proportional set size} (PSS) of the tool's processes, summed over
 them: PSS counts a physical page shared by $n$ processes as $1/n$ for
-each, so the sum is the memory those processes occupy. This matters for
-Isabelle because every prover of a session maps the same heap image from
-disk and the kernel keeps one copy of its untouched pages; the resident
-set size (RSS) would count that copy once per prover and overstate the
-total, and the unique set size (USS) would omit it. The second is
+each, so the sum is the memory those processes occupy without counting a
+shared page twice, which a sum of the resident set size (RSS) would do and
+the unique set size (USS) would avoid only by leaving shared pages out.
+For the provers the three agree within 2\,\%: Poly/ML loads the heap image
+into its own memory rather than sharing it with the other provers, so a
+prover shares only about 13\,MB and its cost is almost entirely private.
+The second is
 \emph{host used}, \code{MemTotal} minus \code{MemAvailable}, which is the
 kernel's own account of what the machine has lost, page cache included,
 reported as the change over the cell's baseline. PSS attributes memory to
@@ -694,10 +696,21 @@ the tool.
 1279\,MB on HOL, 1513\,MB on HOL-Library and 1476\,MB on HOL-Analysis,
 against 894, 1084 and 1271\,MB under IPS (Table~\ref{tab:capacity}):
 0.2 to 0.4\,GB more per session, and 67--78 rather than 77--110 sessions
-in 100\,GB. Part of that gap is a confound: PIDE MCP ran with Isabelle's
-default session options and IPS with its own (\code{parallel\_proofs=2},
-\code{threads=4}). Part is per-session state the PIDE MCP process keeps
-in its JVM. PIDE MCP's fixed cost is lower (1.9--2.7\,GB against
+in 100\,GB. The gap is inside the prover processes, not the JVMs: at
+every k a PIDE MCP~A prover holds 1.09--1.15\,GB on HOL and 1.38--1.39\,GB
+on HOL-Analysis, an IPS prover 0.80 and 1.19\,GB, while the two tools' JVMs
+are within 0.4\,GB of each other in total. The cause is the PIDE
+perspective. PIDE MCP's \code{edit} marks the edited range and 50 lines
+around it as visible (option \code{pide\_mcp\_range\_context}), and our
+workload writes the whole theory in one edit, so PIDE runs its print
+functions, such as the proof state after each command, for every command
+and keeps their output in the prover's document state. IPS declares its
+nodes required with an empty visible range and computes proof states on
+demand through overlays. The extra memory is the price of output PIDE
+MCP's agents read, not overhead; we infer the cause from the code and did
+not isolate it in a run. The two tools' session options do not explain
+it: IPS's \code{parallel\_proofs=2} can only add memory, and its
+\code{threads} setting has no effect. PIDE MCP's fixed cost is lower (1.9--2.7\,GB against
 3.2--3.7\,GB): its JVM starts at 1.5\,GB and grows to 5.1\,GB at 32
 sessions, where the IPS gateway starts at 3.6\,GB and ends at 5.3\,GB.
 For a handful of sessions PIDE MCP A is the smaller deployment; above
@@ -1114,23 +1127,22 @@ under the same theory name, so every later command is re-checked on the
 incremental path.
 
 \paragraph{Memory measures.} Linux gives three sizes for the physical
-memory of one process, and they differ where this experiment needs care:
-in what is shared. A mapping is anonymous (the process's own heap) or
-file-backed (an executable, a library, or for Isabelle the session heap
-image such as \code{HOL.heap}, which every \code{poly} process of that
-session maps from disk). The kernel keeps one physical copy of a
-file-backed page and lets every process that maps it share that copy
-until one writes to it. \emph{RSS} counts every physical page the process
-has mapped, shared or not, so a sum of RSS over 32 provers counts a shared
-heap page 32 times. \emph{PSS} counts a page shared by $n$ processes as
-$1/n$ for each, so summed over all processes of a tool it equals the
-physical memory they occupy; the kernel reports it per process in
+memory of one process, and they differ in how shared pages are counted.
+The kernel keeps one physical copy of a file-backed page (an executable, a
+library) and lets every process that maps it share that copy until one
+writes to it. \emph{RSS} counts every physical page the process has
+mapped, shared or not, so a sum of RSS counts a shared page once per
+process. \emph{PSS} counts a page shared by $n$ processes as $1/n$ for
+each, so summed over all processes of a tool it equals the physical memory
+they occupy; the kernel reports it per process in
 \code{/proc/<pid>/smaps\_rollup}. \emph{USS} counts only pages no other
 process maps, what the system would recover if that one process exited.
-We report the sum of PSS over the tool's processes, never a single
-process's PSS across k: as k grows each shared page is split over more
-processes, so an individual prover's PSS falls while the sum stays
-correct. Host used (\code{MemTotal} $-$ \code{MemAvailable} from
+Measured, sharing between provers is small: Poly/ML reads the session's
+heap image into its own memory instead of mapping it shared, so each
+prover shares about 13\,MB (libraries) and keeps 0.8--1.4\,GB private, and
+its RSS, PSS and USS agree within 2\,\%. We still report the sum of PSS
+over the tool's processes, which is exact whatever is shared, and never a
+single process's PSS across k. Host used (\code{MemTotal} $-$ \code{MemAvailable} from
 \code{/proc/meminfo}) is the independent check: its per-session slope
 agrees with the PSS slope within 1\,\% in every series of
 Table~\ref{tab:capacity}. The cgroup counters \code{memory.current},

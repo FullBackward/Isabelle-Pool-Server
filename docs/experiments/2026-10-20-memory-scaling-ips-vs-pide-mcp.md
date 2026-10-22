@@ -32,17 +32,14 @@ E2–E4 complete). Everything here is deterministic (no LLM). Experiment code: `
 
 ## Memory measures: RSS, PSS and USS
 
-Linux gives three sizes for the physical memory of one process, and they differ exactly where this experiment
-needs care: in what is shared. A process's address space is a set of mappings; a mapping is either anonymous
-(the heap the process allocated itself) or file-backed (an executable, a library, or — for Isabelle — the
-session heap image such as `HOL.heap`, which every `poly` process of that session maps from disk). The kernel
-keeps one physical copy of a file-backed page and lets every process that maps it share that copy until a
-process writes to it (copy-on-write); it also shares anonymous pages between a parent and a forked child the
-same way.
+Linux gives three sizes for the physical memory of one process, and they differ in how shared pages are
+counted. A process's address space is a set of mappings; a mapping is either anonymous (memory the process
+allocated itself) or file-backed (an executable, a library). The kernel keeps one physical copy of a
+file-backed page and lets every process that maps it share that copy until a process writes to it
+(copy-on-write); it also shares anonymous pages between a parent and a forked child the same way.
 
 - **RSS** (resident set size) counts every physical page the process currently has mapped, shared or not.
-  Adding RSS over 32 provers counts a shared heap page 32 times, so a sum of RSS overstates what the machine
-  spends.
+  A sum of RSS counts a shared page once per process, so it overstates what the machine spends.
 - **PSS** (proportional set size) counts a page shared by *n* processes as 1/*n* for each of them. Summed over
   all processes of a tool, PSS equals the physical memory those processes really occupy; summed over the whole
   machine it adds up to what the machine uses. The kernel reports it per process in
@@ -50,11 +47,12 @@ same way.
 - **USS** (unique set size, `Private_Clean + Private_Dirty` in `smaps_rollup`) counts only pages no other
   process maps: what the system would get back if that one process exited.
 
-Why PSS is the headline here: two Isabelle provers on the same heap genuinely share part of their memory
-(the untouched pages of the heap image), and PSS is the one measure that credits them for it, so a per-session
-cost measured on PSS is the cost the machine pays. It has one known artefact: when k grows, each shared page
-is split over more processes, so the PSS of any single process falls while the sum stays right. That is why
-the report fits the *sum* over the tool's processes and never compares single-process PSS across k.
+What the measurement showed about sharing: very little of a prover's memory is shared. Poly/ML reads the
+session's heap image into its own memory instead of mapping it shared, so each prover shares about 13 MB
+(libraries) with other processes and keeps 0.8–1.4 GB private; for provers RSS, PSS and USS agree within 2 %.
+PSS stays the headline because a sum of PSS is exact whatever is shared — the JVMs and system libraries do
+share pages — and the report fits the *sum* over the tool's processes, never a single process's PSS across k
+(a shared page is split over more processes as k grows).
 
 Two independent checks sit beside PSS. **Host used** (`MemTotal − MemAvailable` from `/proc/meminfo`) is the
 kernel's own answer to "how much of the machine is gone", including page cache and anything the sampler could
@@ -66,7 +64,7 @@ the tool runs in) are what a memory limit is enforced on; they carry the E3 resu
 ## What was measured
 
 - Per process under each tool (one external `/proc` sampler, `smaps_rollup`): RSS, **PSS** (the headline:
-  heap images are file-backed and partly shared between `poly` processes of one heap), USS; per tool the sum
+  exact for shared pages; for the provers it equals their private memory within 2 %), USS; per tool the sum
   by role (JVM / prover); host used = MemTotal − MemAvailable, reported as the **delta over the cell's own P0**
   so the fit's intercept is the tool's fixed cost, not the host's standing load; the tool's cgroup
   `memory.current` / `memory.peak` / `oom_kill`.
@@ -119,9 +117,15 @@ Reading:
   metaspace/native) + one prover per session at 0.9 / 1.1 / 1.3 GB (HOL / HOL-Library / HOL-Analysis). The
   per-session cost is the prover alone; the pool holds 77–110 sessions per 100 GB.
 - **PIDE MCP A** = one MCP JVM (1.5–5.1 GB) + one prover per session, but each session costs 1.2–1.5 GB,
-  i.e. 0.2–0.4 GB more than under IPS. The difference is Isabelle's session defaults (PIDE MCP passes no
-  options; the IPS server sets `parallel_proofs=2`, `threads=4` and shares the heap cap) and the PIDE document
-  model's per-session state inside the JVM. Latencies are the same class as IPS: start 2–6 s, load 1–7 s.
+  i.e. 0.2–0.4 GB more than under IPS. The difference sits in the provers, not the JVMs: per session a
+  PIDE MCP A prover holds 1.09–1.15 GB (HOL) and 1.38–1.39 GB (HOL-Analysis) at every k, an IPS prover 0.80
+  and 1.19 GB, while the two tools' JVMs are within 0.4 GB in total. The cause, from the code: PIDE MCP's
+  `edit` marks the edited range plus 50 lines visible (`pide_mcp_range_context`); the workload writes the whole
+  theory in one edit, so PIDE runs its print functions (the proof state after each command, among others) for
+  every command and keeps the output in the prover's document state. IPS declares its nodes required with an
+  empty visible range and computes proof states on demand through overlays. Not isolated in a run. The session
+  options do not explain it (IPS's `parallel_proofs=2` can only add memory; its `threads` setting has no
+  effect). Latencies are the same class as IPS: start 2–6 s, load 1–7 s.
 - **PIDE MCP B** = one JVM + one prover per session: 2.7 / 3.0 / 3.7 GB per session, 3× IPS, because every
   agent pays a 1.5–2.3 GB JVM. 28–38 sessions per 100 GB; the k = 32 HOL-Analysis cells used 118–122 GB of the
   128 GB host. The concurrent re-check costs the most here too (peak marginal 3.5–3.8 GB).
@@ -189,11 +193,20 @@ IPS additionally names the cause and frees the slot in the pool.
 - Topology B is not PIDE MCP's intended deployment; it measures the cost of one process per agent, not a
   defect of the tool.
 - The two tools do not run Isabelle with identical session options (IPS: `parallel_proofs=2`, `threads=4`;
-  PIDE MCP: Isabelle's defaults); the per-session difference between IPS and PIDE A (0.2–0.4 GB) is partly that.
-- PSS attribution of shared heap pages changes with k by construction; host used (delta) is reported alongside
-  and agrees within 1 %.
+  PIDE MCP: Isabelle's defaults). This does not explain the per-session difference between IPS and PIDE A
+  (0.2–0.4 GB), which sits in the provers and follows from PIDE MCP's visible perspective (above); that cause is
+  inferred from the code, not isolated in a run.
+- PSS splits shared pages over the processes that map them; for provers sharing is small (about 13 MB each), and
+  host used (delta) is reported alongside and agrees within 1 %.
 - One fixed theory per heap bounds "memory after work" from below; P5 is a burst, not a steady load.
 - Every `poly` runs under IPS's heap cap (`--maxheap 9216`, the same for both tools); uncapped runs are out
   of scope.
 - One cell of the first round (`ips/HOL k=16 rep1`) was contaminated by a second runner and was re-run; the
   runner now refuses to start twice on one results tree and the analysis flags interleaved samples.
+
+
+IPS sends every node as "required" with an empty visible range (edit_utils.scala, set_required_edit). The prover checks every command but runs no print
+    functions. Proof states are computed only on request, through temporary overlays.
+  - PIDE MCP's edit tool marks the edited range plus 50 lines of context as visible (Tools/tool_edit.scala, option pide_mcp_range_context). Our workload writes
+    the whole theory in one edit, so the whole theory becomes visible. PIDE then runs its print functions, such as the proof state after each command, for all
+    commands and keeps their output in the prover's document state. That is what an editor needs, and it is the extra memory.
