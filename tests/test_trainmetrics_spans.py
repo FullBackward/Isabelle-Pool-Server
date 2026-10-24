@@ -119,3 +119,27 @@ def test_verify_block_keeps_spans_only_when_asked_and_the_census_flags_failures(
         }
     ]
     assert census.spans_failures(files) == ["CTL#3: text between commands"]
+
+
+def test_nested_and_formal_comments_between_commands_pass():
+    """Review c6aa372 S1: Isabelle comments nest, and formal comments
+    (\\<comment> with a cartouche) are not commands either."""
+    for lead in (
+        "(* outer (* inner *) still outer *)\n",
+        "\\<comment> \\<open>a \\<open>nested\\<close> note\\<close>\n",
+        "\\<^cancel>\u2039gone\u203a (* and (* this *) *)\n",
+    ):
+        text = lead + "lemma x: True by simp"
+        n = len(lead)
+        sp = [
+            {"kind": "lemma", "start": n, "end": n + 13},
+            {"kind": "by", "start": n + 14, "end": n + 21},
+        ]
+        assert spans.check_spans(text, sp) is None, lead
+    assert spans.strip_comments("a (* b (* c *) d *) e") == "a  e"
+    bad = "(* closed *) stray lemma x: True by simp"
+    sp = [
+        {"kind": "lemma", "start": 19, "end": 32},
+        {"kind": "by", "start": 33, "end": 40},
+    ]
+    assert "between commands" in spans.check_spans(bad, sp)

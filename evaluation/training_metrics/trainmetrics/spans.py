@@ -8,16 +8,61 @@ end exclusive. The block's first line in the node is the first command's
 
 :func:`check_spans` is the census's own assertion (S7): the spans must be in
 order and in bounds, each must start with its command keyword, and the text
-between them may hold only whitespace and comments — a column-unit mismatch
+between them may hold only whitespace and comments (nested ``(* *)`` and
+formal comments; review c6aa372 S1) — a column-unit mismatch
 (e.g. characters outside the Basic Multilingual Plane, counted twice in
 UTF-16) fails it."""
 
 from __future__ import annotations
 
-import re
 from typing import Any, Dict, List, Optional
 
-COMMENT_RE = re.compile(r"\(\*.*?\*\)", re.S)
+FORMAL = ("\\<comment>", "\\<^cancel>", "\\<^marker>")
+CARTOUCHE = (("\\<open>", "\\<close>"), ("\u2039", "\u203a"))  # \<open>..\<close>, ‹..›
+
+
+def _skip_cartouche(text: str, i: int) -> int:
+    """The index after the (nested) cartouche starting at ``i``, or ``i``."""
+    for op, cl in CARTOUCHE:
+        if text.startswith(op, i):
+            depth, j = 0, i
+            while j < len(text):
+                if text.startswith(op, j):
+                    depth, j = depth + 1, j + len(op)
+                elif text.startswith(cl, j):
+                    depth, j = depth - 1, j + len(cl)
+                    if depth == 0:
+                        return j
+                else:
+                    j += 1
+            return len(text)
+    return i
+
+
+def strip_comments(text: str) -> str:
+    """``text`` without its comments: ``(* … *)`` nested to any depth, and
+    formal comments (``\\<comment>``, ``\\<^cancel>``, ``\\<^marker>`` with
+    their cartouche) — review c6aa372 S1."""
+    out: List[str] = []
+    i, depth = 0, 0
+    while i < len(text):
+        if text.startswith("(*", i):
+            depth, i = depth + 1, i + 2
+        elif depth and text.startswith("*)", i):
+            depth, i = depth - 1, i + 2
+        elif depth:
+            i += 1
+        else:
+            kw = next((k for k in FORMAL if text.startswith(k, i)), None)
+            if kw is None:
+                out.append(text[i])
+                i += 1
+                continue
+            j = i + len(kw)
+            while j < len(text) and text[j].isspace():
+                j += 1
+            i = _skip_cartouche(text, j)
+    return "".join(out)
 
 
 def command_spans(
@@ -65,11 +110,11 @@ def check_spans(text: str, spans: Optional[List[Dict[str, Any]]]) -> Optional[st
             return f"command {n} ({s['kind']}) out of order or bounds: {a}..{b}"
         if s["kind"] and not text[a:b].startswith(s["kind"]):
             return f"command {n} does not start with {s['kind']!r}: {text[a:a + 20]!r}"
-        gap = COMMENT_RE.sub("", text[pos:a])
+        gap = strip_comments(text[pos:a])
         if gap.strip():
             return f"text between commands before command {n}: {gap.strip()[:40]!r}"
         pos = b
-    tail = COMMENT_RE.sub("", text[pos:])
+    tail = strip_comments(text[pos:])
     return (
         None
         if not tail.strip()

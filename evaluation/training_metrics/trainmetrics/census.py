@@ -309,7 +309,9 @@ async def _main_async(  # pylint: disable=too-many-locals
     if bad:  # plan_v1.6 S7: fail loudly, the T6b step split would be wrong
         print(
             f"CENSUS SPANS FAILED for {len(bad)} proved blocks (first: {bad[0]}); "
-            f"inspect {Path(args.out) / 'census.json'} before running T6b"
+            f"inspect {Path(args.out) / 'census.json'} before running T6b. "
+            "The census itself is written and valid: T1-T5 can proceed, only T6b's "
+            "step split needs the spans (review c6aa372 S1)"
         )
         return 4
     return 0
