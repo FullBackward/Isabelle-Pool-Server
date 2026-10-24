@@ -11,22 +11,25 @@ review S6 hygiene, D6), at W = 1:
 - (f) ``create_session`` + ``enter_theory`` + replay blocks 0..i: the
   fresh-process alternative, and the way to the state;
 - (a) ``save_checkpoint``;
-- (b) verify block i + 1 (the continuation);
-- (c) ``restore_checkpoint``, the source checked against the state's, then
-  block i + 1 again: its report must equal (b)'s;
-- (d) ``rollback`` of the kept continuation, the source checked again, and
-  block i + 1 a third time (a control for (c), below);
+- (b) verify block i + 1 (the continuation): the first *settled* verify;
+- (c) ``restore_repeats`` times: ``restore_checkpoint``, then block i + 1
+  *at once* (nothing between the two calls); the source is read after that
+  verify and must equal the source after (b);
+- (d) ``settled_repeats - 1`` times: ``rollback`` (it waits for the node to
+  settle), the source checked against the state's, then block i + 1 again: a
+  further settled verify;
 - (e) ``enter_theory`` with a fresh name on the same (warm) session + replay
   blocks 0..i: the same-prover alternative (design B1);
 
-then the session is closed. The distance between checkpoint and head is the
-census's command count of block i + 1 (plan review S6). A restore here goes
-back (it removes the continuation's text) and returns without waiting for the
-prover (``Repl_Session.restore_state`` sends the edit; a rollback waits for the
-node to settle). Work it leaves would show in the next call, so (c)'s second
-verify and (d)'s third are each compared with (b)'s, and the branch cost is
-the restore plus that extra time (two local cells: +101 ms and +2 ms p50 after
-the restore, 0 ms after the rollback: measured, not assumed).
+then the session is closed. Every repeated verify's report must equal (b)'s.
+The distance between checkpoint and head is the census's command count of
+block i + 1 (plan review S6). A restore goes back (it removes the
+continuation's text) and returns without waiting for the prover
+(``Repl_Session.restore_state`` sends the edit), so the work it leaves shows
+in the next call (review 07120bc B1: a source read in between absorbed it,
+~150 ms against ~10 ms reported). The branch cost of a state is therefore its
+restore plus (verify at once - settled verify), medians of the repeats; the
+restore's own time is reported apart, as the time it takes to return.
 
     python -m trainmetrics.run_t3 [--local-smoke] [--ips-external]
 """
@@ -115,17 +118,11 @@ class StateRecord:  # pylint: disable=too-many-instance-attributes
     create_wait_s: float = 0.0
     fresh: Optional[Dict[str, Any]] = None  # (f) after the create
     save_s: Optional[float] = None
-    cont: Optional[Dict[str, Any]] = None  # (b)
-    restore_s: Optional[float] = None
-    restore_ok: Optional[bool] = None
-    restore_message: Optional[str] = None
-    source_after_restore: Optional[bool] = None
-    again: Optional[Dict[str, Any]] = None  # (c)'s second verify
-    identical: Optional[bool] = None
-    rollback_s: Optional[float] = None
-    rollback_ok: Optional[bool] = None
-    source_after_rollback: Optional[bool] = None
-    after_rollback: Optional[Dict[str, Any]] = None  # (d)'s control verify
+    cont: Optional[Dict[str, Any]] = None  # (b), the first settled verify
+    # (c): restore_s, restore_ok, message, again (the verify at once), source_ok
+    restores: List[Dict[str, Any]] = field(default_factory=list)
+    # (d): rollback_s, rollback_ok, source_ok, settled (the verify after it)
+    rollbacks: List[Dict[str, Any]] = field(default_factory=list)
     warm: Optional[Dict[str, Any]] = None  # (e)
     stopped: Optional[str] = None  # the session died or is gone; or why it was not run
     error: Optional[str] = None
@@ -142,12 +139,6 @@ def _view(rec: BlockRecord) -> Dict[str, Any]:
         "execution_time": rec.execution_time,
         "error_kind": rec.error_kind,
     }
-
-
-def same_report(a: Dict[str, Any], b: Dict[str, Any]) -> bool:
-    """Two verifies of one block gave the same verdict and command statuses."""
-    keys = ("proved", "success", "n_commands", "statuses", "first_error")
-    return all(a.get(k) == b.get(k) for k in keys)
 
 
 async def _timed(coro: Any) -> Tuple[Any, float]:
@@ -188,52 +179,111 @@ async def replay_prefix(
     return rp, None
 
 
-async def _branch_ops(
+@dataclass
+class _Branch:
+    """The calls at one state: block i + 1 of ``cf`` on ``sess``, recorded
+    on ``rec``."""
+
+    client: Any
+    sess: SessionRef
+    cf: CorpusFile
+    row: Dict[str, Any]
+    rec: StateRecord
+
+    async def verify(self) -> Dict[str, Any]:
+        """Block i + 1 once (``rec.stopped`` set when the session is gone)."""
+        blk = await verify_in_file(
+            self.client, self.sess, self.cf, self.rec.index + 1, self.row
+        )
+        if blk.error_kind in DEAD:
+            self.rec.stopped = blk.error_kind
+        return _view(blk)
+
+    def kept(self, view: Dict[str, Any]) -> bool:
+        """The block stayed in the document and the session lives."""
+        return bool(view.get("success")) and not self.rec.stopped
+
+    async def source(self) -> Optional[str]:
+        """The node source's hash (never between a restore and its verify)."""
+        return await _source_hash(self.client, self.sess)
+
+    async def restores(self, n: int, cp_id: int, head_src: Optional[str]) -> bool:
+        """``n`` times: restore, then the block at once; the source read after
+        that verify must equal ``head_src``. False when the loop stopped."""
+        for _ in range(n):
+            res, restore_s = await _timed(
+                self.client.restore_checkpoint(
+                    self.sess.session_id, cp_id, lease_id=self.sess.lease_id
+                )
+            )
+            again = await self.verify()  # at once: no call in between
+            ok = bool(res.get("success"))
+            self.rec.restores.append(
+                {
+                    "restore_s": restore_s,
+                    "restore_ok": ok,
+                    "message": None if ok else str(res.get("message"))[:200],
+                    "again": again,
+                    "source_ok": self.kept(again) and (await self.source()) == head_src,
+                }
+            )
+            if not self.kept(again):
+                return False
+        return True
+
+    async def rollbacks(self, n: int, state_src: Optional[str]) -> None:
+        """``n`` times: rollback (it waits for the node), the source checked
+        against the state's, then a settled verify of the block."""
+        for _ in range(n):
+            rb, rollback_s = await _timed(
+                self.client.rollback(self.sess.session_id, lease_id=self.sess.lease_id)
+            )
+            source_ok = (await self.source()) == state_src
+            settled = await self.verify()
+            self.rec.rollbacks.append(
+                {
+                    "rollback_s": rollback_s,
+                    "rollback_ok": bool(rb.get("success")),
+                    "source_ok": source_ok,
+                    "settled": settled,
+                }
+            )
+            if not self.kept(settled):
+                return
+
+
+async def _branch_ops(br: _Branch, repeats: Tuple[int, int]) -> None:
+    """(a)-(d) at the state the session is in (the old node ends at the
+    state plus block i + 1; (e) enters a new node)."""
+    state_src = await br.source()
+    cp, br.rec.save_s = await _timed(
+        br.client.save_checkpoint(br.sess.session_id, lease_id=br.sess.lease_id)
+    )
+    br.rec.cont = await br.verify()
+    if not br.kept(br.rec.cont):  # a failed block is discarded by verify_chunk
+        return
+    if await br.restores(repeats[0], int(cp["checkpoint_id"]), await br.source()):
+        await br.rollbacks(repeats[1] - 1, state_src)
+
+
+async def _on_session(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     client: Any,
     sess: SessionRef,
     cf: CorpusFile,
-    row: Dict[str, Any],
+    rows: List[Dict[str, Any]],
     rec: StateRecord,
+    repeats: Tuple[int, int],
 ) -> None:
-    """(a)-(d) at the state the session is in (the old node ends at the
-    state plus block i + 1; (e) enters a new node)."""
+    """(f)'s replay to the state, (a)-(d), (e) on the created session."""
     i = rec.index
-    state_src = await _source_hash(client, sess)
-    cp, rec.save_s = await _timed(
-        client.save_checkpoint(sess.session_id, lease_id=sess.lease_id)
-    )
-    b = await verify_in_file(client, sess, cf, i + 1, row)
-    rec.cont = _view(b)
-    if b.error_kind in DEAD:
-        rec.stopped = b.error_kind
+    fresh, rec.stopped = await replay_prefix(client, sess, cf, rows, i)
+    rec.fresh = asdict(fresh)
+    if rec.stopped or fresh.error:
         return
-    if not b.success:  # discarded by verify_chunk: nothing to restore or roll back
-        return
-    res, rec.restore_s = await _timed(
-        client.restore_checkpoint(
-            sess.session_id, int(cp["checkpoint_id"]), lease_id=sess.lease_id
-        )
-    )
-    rec.restore_ok = bool(res.get("success"))
-    rec.restore_message = None if rec.restore_ok else str(res.get("message"))[:200]
-    rec.source_after_restore = (await _source_hash(client, sess)) == state_src
-    again = await verify_in_file(client, sess, cf, i + 1, row)
-    rec.again = _view(again)
-    rec.identical = same_report(rec.cont, rec.again)
-    if again.error_kind in DEAD:
-        rec.stopped = again.error_kind
-        return
-    if not again.success:
-        return
-    rb, rec.rollback_s = await _timed(
-        client.rollback(sess.session_id, lease_id=sess.lease_id)
-    )
-    rec.rollback_ok = bool(rb.get("success"))
-    rec.source_after_rollback = (await _source_hash(client, sess)) == state_src
-    third = await verify_in_file(client, sess, cf, i + 1, row)
-    rec.after_rollback = _view(third)
-    if third.error_kind in DEAD:
-        rec.stopped = third.error_kind
+    await _branch_ops(_Branch(client, sess, cf, rows[i + 1], rec), repeats)
+    if not rec.stopped:
+        warm, rec.stopped = await replay_prefix(client, sess, cf, rows, i)
+        rec.warm = asdict(warm)
 
 
 def new_record(cf: CorpusFile, i: int, census_file: Dict[str, Any]) -> StateRecord:
@@ -260,8 +310,10 @@ async def run_state(  # pylint: disable=too-many-arguments
     heap: str,
     registry: Dict[str, str],
     on_change: Callable[[Dict[str, str]], Any],
+    repeats: Tuple[int, int] = (3, 3),
 ) -> StateRecord:
-    """One state on a session created for it: (f), (a)-(d), (e); closed."""
+    """One state on a session created for it: (f), (a)-(d), (e); closed.
+    ``repeats``: (restore_repeats, settled_repeats)."""
     rec = new_record(cf, i, census_file)
     rows = census_file.get("blocks") or []
     rec.t_start = time.time()
@@ -278,13 +330,7 @@ async def run_state(  # pylint: disable=too-many-arguments
     try:
         async with open_session(client, acq, registry, on_change, rec.unclosed) as sess:
             rec.session_id = sess.session_id
-            fresh, rec.stopped = await replay_prefix(client, sess, cf, rows, i)
-            rec.fresh = asdict(fresh)
-            if not rec.stopped and not fresh.error:
-                await _branch_ops(client, sess, cf, rows[i + 1], rec)
-            if not rec.stopped and not fresh.error:
-                warm, rec.stopped = await replay_prefix(client, sess, cf, rows, i)
-                rec.warm = asdict(warm)
+            await _on_session(client, sess, cf, rows, rec, repeats)
     except Exception as exc:  # pylint: disable=broad-exception-caught
         rec.error = f"{type(exc).__name__}: {exc}"[:300]
     rec.t_end = time.time()
@@ -292,9 +338,9 @@ async def run_state(  # pylint: disable=too-many-arguments
 
 
 def replay_estimate_s(
-    picks: Sequence[Tuple[str, int]], census: Dict[str, Any]
+    picks: Sequence[Tuple[str, int]], census: Dict[str, Any], verifies: int
 ) -> float:
-    """Census replay time the cell repeats: two prefix replays and four
+    """Census replay time the cell repeats: two prefix replays and ``verifies``
     continuations per state (creates and checkpoint calls not included)."""
     rows = {f["stem"]: f.get("blocks") or [] for f in census.get("files", [])}
     total = 0.0
@@ -302,7 +348,7 @@ def replay_estimate_s(
         blocks = rows.get(stem) or []
         total += 2 * sum(float(b.get("wall_s") or 0) for b in blocks[: i + 1])
         if i + 1 < len(blocks):
-            total += 4 * float(blocks[i + 1].get("wall_s") or 0)
+            total += verifies * float(blocks[i + 1].get("wall_s") or 0)
     return round(total, 1)
 
 
@@ -324,6 +370,7 @@ async def run_cell(  # pylint: disable=too-many-arguments,too-many-locals
     usable = [cf for cf in files if cf.stem in set(usable_stems(files, census))]
     by_stem = {cf.stem: cf for cf in usable}
     picks = sample_states(usable, census, int(t3["states"]), seed)
+    repeats = (int(t3.get("restore_repeats", 3)), int(t3.get("settled_repeats", 3)))
     body = body if body is not None else {}
     body.update(
         {
@@ -335,7 +382,7 @@ async def run_cell(  # pylint: disable=too-many-arguments,too-many-locals
             "corpus_sha": corpus_sha(files),
             "files": sorted({s for s, _ in picks}),
             "picks": picks,
-            "census_replay_estimate_s": replay_estimate_s(picks, census),
+            "census_replay_estimate_s": replay_estimate_s(picks, census, sum(repeats)),
             "outcome": "running",
         }
     )
@@ -360,6 +407,7 @@ async def run_cell(  # pylint: disable=too-many-arguments,too-many-locals
                 heap=heap,
                 registry=registry,
                 on_change=changed,
+                repeats=repeats,
             )
             records.append(asdict(rec))
             fh.write(json.dumps(records[-1]) + "\n")

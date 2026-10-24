@@ -1,7 +1,9 @@
 """Training metrics stage 5: T3 branch cost — the stratified state sample, a
-cell on a fake server (create, replay, checkpoint, continue, restore,
-continue again, rollback, a new node), a continuation that fails, a session
-that dies, a refused create retried, the summary and the T3 snippet."""
+cell on a fake server (create, replay, checkpoint, continue, restores each
+followed at once by the block, rollbacks each followed by a settled verify, a
+new node), a continuation that fails, a session that dies, a refused create
+retried, the summary (branch = restore + at once - settled, review 07120bc B1)
+and the T3 snippet."""
 
 from __future__ import annotations
 
@@ -39,6 +41,7 @@ class Fake:
         self.refuse = refuse_creates
         self.sessions = {}
         self.closed = []
+        self.calls = []
         self.n = 0
 
     async def create_session(self, theories=None, field=None, label=None):
@@ -68,6 +71,7 @@ class Fake:
         return s["nodes"][s["cur"]]
 
     async def verify_chunk(self, sid, chunk, timeout=None, *, lease_id=None):
+        self.calls.append("verify")
         if chunk in self.die:
             return {"success": False, "error_kind": "prover_died", "commands": []}
         if chunk in self.fail:
@@ -81,6 +85,7 @@ class Fake:
         return {"checkpoint_id": cp, "timestamp": 0.0}
 
     async def restore_checkpoint(self, sid, cp, *, lease_id=None):
+        self.calls.append("restore")
         del self._doc(sid)[self.sessions[sid]["cps"][cp] :]
         return {"success": True, "checkpoint_id": cp, "message": "ok"}
 
@@ -89,6 +94,7 @@ class Fake:
         return {"success": True, "output": ""}
 
     async def get_source(self, sid, *, lease_id=None):
+        self.calls.append("source")
         return {"source": "".join(self._doc(sid))}
 
     async def close_session(self, sid, lease_id=None):
@@ -164,18 +170,24 @@ def test_a_t3_cell_on_a_fake_server(tmp_path):
     for s in states:
         i = s["index"]
         assert s["fresh"]["blocks"] == s["warm"]["blocks"] == i + 1
-        assert s["restore_ok"] and s["source_after_restore"] and s["identical"]
-        assert s["rollback_ok"] and s["source_after_rollback"]
-        assert s["after_rollback"]["proved"]  # the control verify after the rollback
+        assert len(s["restores"]) == 3 and len(s["rollbacks"]) == 2  # the defaults
+        assert all(r["restore_ok"] and r["source_ok"] for r in s["restores"])
+        assert all(r["again"]["proved"] for r in s["restores"])
+        assert all(r["rollback_ok"] and r["source_ok"] for r in s["rollbacks"])
+        assert all(r["settled"]["proved"] for r in s["rollbacks"])
         assert s["distance"] == i + 2  # the census count of block i + 1
         assert s["prefix_commands"] == sum(range(1, i + 2))
-        # the first node ends at the state plus the control verify; the new one at the state
+        # the first node ends at the state plus the last settled verify; the new one at the state
         nodes = srv.sessions[s["session_id"]]["nodes"]
         assert [len(d) for d in nodes.values()] == [i + 2, i + 1]
-    summary = body["summary"]
-    assert summary["complete"] == 6 and summary["integrity"]["identical"] == 6
+    # review 07120bc B1: nothing between a restore and the verify after it
+    after = [srv.calls[k + 1] for k, c in enumerate(srv.calls) if c == "restore"]
+    assert after == ["verify"] * 18
+    integ = body["summary"]["integrity"]
+    assert body["summary"]["complete"] == 6 and integ["restores"] == 18
+    assert integ["identical"] == integ["repeated_verifies"] == 6 * 5
     assert body["census_replay_estimate_s"] == sum(
-        2 * 0.5 * (i + 1) + 4 * 0.5 for _s, i in body["picks"]
+        2 * 0.5 * (i + 1) + 6 * 0.5 for _s, i in body["picks"]
     )
 
 
@@ -187,11 +199,7 @@ def test_a_failed_continuation_skips_restore_and_a_dead_prover_stops_the_state(
     srv = Fake(fail={cf.blocks[3]}, die={cf.blocks[6]})
     kw = {"heap": "HOL", "registry": {}, "on_change": lambda _r: None}
     rec = asyncio.run(run_t3.run_state(srv, cf, 2, census["files"][0], **kw))
-    assert (
-        rec.cont["success"] is False
-        and rec.restore_s is None
-        and rec.rollback_s is None
-    )
+    assert rec.cont["success"] is False and rec.restores == [] and rec.rollbacks == []
     assert rec.warm["blocks"] == 3 and rec.stopped is None  # (e) still runs
     rec = asyncio.run(run_t3.run_state(srv, cf, 7, census["files"][0], **kw))
     assert rec.stopped == "prover_died" and rec.save_s is None and rec.warm is None
@@ -214,13 +222,20 @@ def test_a_refused_create_is_retried(tmp_path, monkeypatch):
             heap="HOL",
             registry={},
             on_change=lambda _r: None,
+            repeats=(1, 2),
         )
     )
     assert rec.create_retries == 2 and rec.create_wait_s == 2.0 and rec.error is None
-    assert rec.identical
+    assert len(rec.restores) == 1 and len(rec.rollbacks) == 1
 
 
-def _state(stratum, prefix, restore, warm, fresh_replay, create=4.0, distance=1, **kw):
+BASE = {"success": True, "proved": True, "n_commands": 1, "statuses": {"ok": 1}}
+
+
+def _state(stratum, prefix, restore, at_once, settled=0.3, distance=1, **kw):
+    """3 restores (each followed at once by a verify of ``at_once`` s), the
+    first verify and 2 more after rollbacks at ``settled`` s; (e) = 0.5 + prefix
+    / 10 s, (f) = 4 s more."""
     s = {
         "stem": "A",
         "index": prefix,
@@ -228,20 +243,29 @@ def _state(stratum, prefix, restore, warm, fresh_replay, create=4.0, distance=1,
         "prefix_commands": prefix,
         "distance": distance,
         "census_prefix_proved": 1,
-        "create_s": create,
-        "fresh": {"enter_s": 0.5, "replay_s": fresh_replay, "blocks": 1, "proved": 1},
-        "warm": {"enter_s": 0.5, "replay_s": warm, "blocks": 1, "proved": 1},
+        "create_s": 4.0,
+        "fresh": {"enter_s": 0.5, "replay_s": prefix / 10, "blocks": 1, "proved": 1},
+        "warm": {"enter_s": 0.5, "replay_s": prefix / 10, "blocks": 1, "proved": 1},
         "save_s": 0.01,
-        "cont": {"wall_s": 0.3, "success": True},
-        "again": {"wall_s": 0.39, "success": True},  # 0.09 s extra after the restore
-        "restore_s": restore,
-        "restore_ok": True,
-        "source_after_restore": True,
-        "identical": True,
-        "rollback_s": 0.1,
-        "rollback_ok": True,
-        "source_after_rollback": True,
-        "after_rollback": {"wall_s": 0.3, "success": True},  # none after the rollback
+        "cont": {**BASE, "wall_s": settled},
+        "restores": [
+            {
+                "restore_s": restore,
+                "restore_ok": True,
+                "source_ok": True,
+                "again": {**BASE, "wall_s": at_once},
+            }
+        ]
+        * 3,
+        "rollbacks": [
+            {
+                "rollback_s": 0.1,
+                "rollback_ok": True,
+                "source_ok": True,
+                "settled": {**BASE, "wall_s": settled},
+            }
+        ]
+        * 2,
         "stopped": None,
         "error": None,
     }
@@ -251,35 +275,47 @@ def _state(stratum, prefix, restore, warm, fresh_replay, create=4.0, distance=1,
 
 def test_the_t3_summary():
     states = [
-        _state("early", 10, 0.01, 1.5, 1.5, distance=1),
-        _state(
-            "early",
-            20,
-            0.02,
-            2.5,
-            2.5,
-            distance=5,
-            again={"wall_s": 0.38, "success": True},
-        ),
-        _state("late", 90, 0.01, 9.5, 9.5, distance=40),
-        _state("late", 95, 0.01, 9.5, 9.5, distance=12, error="boom"),
+        _state("early", 15, 0.01, 0.45, distance=1),  # branch 0.01 + 0.15
+        _state("early", 25, 0.02, 0.40, distance=5),  # branch 0.02 + 0.10
+        _state("late", 90, 0.01, 0.30, distance=40),  # branch 0.01 + 0
+        _state("late", 95, 0.01, 0.30, distance=12, error="boom"),
     ]
     s = metrics_t3.summarize_t3(states)
     assert s["states"] == 4 and s["complete"] == 3
     early = next(r for r in s["by_stratum"] if r["stratum"] == "early")
-    assert early["warm_p50_s"] == 2.5  # (2.0 + 3.0) / 2: enter + replay
+    assert early["warm_p50_s"] == 2.5  # 0.5 + 1.5 and 0.5 + 2.5
     assert early["fresh_p50_s"] == 6.5  # + the create
-    # the branch cost is the restore plus the extra time of the next verify:
-    # 0.01 + 0.09 and 0.02 + 0.08, so (e) / branch is 2.0 / 0.1 and 3.0 / 0.1
-    assert early["branch_p50_s"] == 0.1 and early["warm_over_branch_p50"] == 25.0
-    assert [d["distance"] for d in s["restore_by_distance"]] == ["1", "2-9", "10+"]
+    assert early["branch_mean_s"] == 0.14  # (0.16 + 0.12) / 2
+    # a lower bound: (e)'s p50 over the upper end of the interval, 0.14 + 1.96 * 0.02
+    assert early["branch_at_most_s"] == 0.1792 and early["warm_over_branch_min"] == 14.0
+    late = next(r for r in s["by_stratum"] if r["stratum"] == "late")
+    # one state, no interval: at most its mean (0.01), never below the restore's return (0.01)
+    assert late["branch_at_most_s"] == 0.01
+    low = metrics_t3.summarize_t3(
+        [_state("late", 90, 0.01, 0.1), _state("late", 91, 0.01, 0.11)]
+    )["by_stratum"][0]
+    assert low["branch_mean_s"] < 0 and low["branch_at_most_s"] == 0.01  # the floor
     ops = s["ops"]
-    assert ops["extra_after_restore"]["p50_s"] == 0.09
-    assert ops["extra_after_rollback"]["p50_s"] == 0.0 and ops["branch"]["p50_s"] == 0.1
-    # a verify faster than the first never makes the branch cheaper than the restore
-    faster = _state("early", 1, 0.01, 1, 1, again={"wall_s": 0.1, "success": True})
-    assert metrics_t3.branch_s(faster) == 0.01
-    assert s["integrity"]["of"] == 4 and s["errors"] == [("A", 95, "boom")]
+    assert ops["restore_return"]["p50_s"] == 0.01 and ops["extra"]["p50_s"] == 0.1
+    assert ops["branch"]["p50_s"] == 0.12 and ops["settled"]["p50_s"] == 0.3
+    assert ops["branch"]["mean_s"] == 0.0967 and ops["branch"]["ci95_s"] is not None
+    dist = {d["distance"]: d for d in s["by_distance"]}
+    assert list(dist) == ["1", "2-9", "10+"] and dist["1"]["p50_s"] == 0.16
+    assert dist["1"]["restore_return_p50_s"] == 0.01
+    integ = s["integrity"]
+    assert (
+        integ["restores"] == 12
+        and integ["identical"] == integ["repeated_verifies"] == 20
+    )
+    assert s["errors"] == [("A", 95, "boom")]
+    # a verify at once faster than the settled ones: not clipped, the noise cancels across states
+    assert metrics_t3.derived(_state("early", 1, 0.01, 0.2))["branch_s"] < 0
+    # verifies come in 0.1 s steps: a state's values are means (a median would say 0 here)
+    q = _state("early", 1, 0.01, 0.21, settled=0.21)
+    q["restores"] = [
+        dict(q["restores"][0], again={**BASE, "wall_s": w}) for w in (0.21, 0.21, 0.32)
+    ]
+    assert round(metrics_t3.derived(q)["extra_s"], 4) == 0.0367
 
 
 def test_the_t3_snippet_per_repeat(tmp_path):
@@ -291,21 +327,29 @@ def test_the_t3_snippet_per_repeat(tmp_path):
     for rep in (0, 1):
         d = root / "t3" / f"rep{rep}"
         d.mkdir(parents=True)
-        rows = [
-            _state("early", 10, 0.01, 1.5, 1.5),
-            _state("middle", 50, 0.01, 5.5, 5.5),
-        ]
+        rows = [_state("early", 10, 0.01, 0.45), _state("middle", 50, 0.01, 0.45)]
         (d / "states.jsonl").write_text("\n".join(json.dumps(r) for r in rows) + "\n")
         (d / "manifest.json").write_text(
             json.dumps(
-                {"experiment": "t3", "rep": rep, "outcome": "ok", "files": ["A"]}
+                {
+                    "experiment": "t3",
+                    "rep": rep,
+                    "outcome": "ok",
+                    "files": ["A"],
+                    "t3": {"restore_repeats": 3, "settled_repeats": 3},
+                }
             )
         )
     assert analyze.main(["--results", str(root)]) == 0
     text = (root / "REPORT_SNIPPET.md").read_text()
     assert "## T3 branch cost, rep 0" in text and "## T3 branch cost, rep 1" in text
-    assert "| restore checkpoint | 2 | 10 ms | 10 ms |" in text
+    assert (
+        "| restore checkpoint: returns (before the prover settles) | 2 | 10 ms | 10 ms |"
+        in text
+    )
+    assert "| branch: restore + (at once - settled) | 2 | 160 ms | 160 ms |" in text
     assert "| early | 1 | 10 |" in text and "1 early, 1 middle" in text
+    assert "with the first verify's report 10 of 10" in text
     assert (root / "tables" / "t3_branch.csv").exists()
     lines = (root / "tables" / "t3_states.csv").read_text().splitlines()
     assert lines[0].startswith("rep,stem,index") and len(lines) == 1 + 4

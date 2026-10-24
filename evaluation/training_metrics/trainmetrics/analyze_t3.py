@@ -5,10 +5,10 @@ current :mod:`trainmetrics.metrics_t3`; a paragraph per repeat."""
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from .csvout import ok_cells, write_csv
-from .metrics_t3 import branch_s, fresh_s, summarize_t3, warm_s
+from .metrics_t3 import derived, fresh_s, summarize_t3, warm_s
 from .metrics_t5 import load_samples
 
 
@@ -28,12 +28,19 @@ def _ms(v: Any) -> str:
     return "-" if v is None else f"{1000 * float(v):.0f} ms"
 
 
+def _mean_ci(mean: Any, ci: Any) -> str:
+    """``mean ± half-width`` in ms (``-`` without a mean)."""
+    if mean is None:
+        return "-"
+    return _ms(mean) + ("" if ci is None else f" ± {1000 * float(ci):.0f}")
+
+
 def _pairs(xs: Sequence[Any]) -> str:
     return ", ".join("#".join(str(x) for x in p) for p in xs) or "none"
 
 
 def state_row(rep: Any, s: Dict[str, Any]) -> Dict[str, Any]:
-    """One state, flat (for t3_states.csv)."""
+    """One state, flat (for t3_states.csv): its medians over the repeats."""
     return {
         "rep": rep,
         "stem": s["stem"],
@@ -45,23 +52,30 @@ def state_row(rep: Any, s: Dict[str, Any]) -> Dict[str, Any]:
         "fresh_s": fresh_s(s),
         "warm_s": warm_s(s),
         "save_s": s.get("save_s"),
-        "continuation_s": (s.get("cont") or {}).get("wall_s"),
-        "restore_s": s.get("restore_s"),
-        "again_s": (s.get("again") or {}).get("wall_s"),
-        "rollback_s": s.get("rollback_s"),
-        "after_rollback_s": (s.get("after_rollback") or {}).get("wall_s"),
-        "branch_s": branch_s(s),
-        "identical": s.get("identical"),
-        "source_after_restore": s.get("source_after_restore"),
-        "source_after_rollback": s.get("source_after_rollback"),
+        **derived(s),
+        "restores": len(s.get("restores") or []),
+        "rollbacks": len(s.get("rollbacks") or []),
         "stopped": s.get("stopped"),
         "error": s.get("error"),
     }
 
 
+OPS = (
+    ("save checkpoint", "save"),
+    ("restore checkpoint: returns (before the prover settles)", "restore_return"),
+    ("verify the next block at once after the restore", "at_once"),
+    ("the same verify, settled", "settled"),
+    ("at once minus settled", "extra"),
+    ("branch: restore + (at once - settled)", "branch"),
+    ("rollback (waits for the node to settle)", "rollback"),
+    ("create session", "create"),
+)
+
+
 def snippet_t3(cell: Dict[str, Any]) -> str:
     """The T3 paragraph of one repeat."""
     m = cell["manifest"]
+    t3 = m.get("t3") or {}
     s = summarize_t3(cell["states"])
     ops, integ = s["ops"], s["integrity"]
     strata = ", ".join(f"{r['states']} {r['stratum']}" for r in s["by_stratum"])
@@ -70,55 +84,56 @@ def snippet_t3(cell: Dict[str, Any]) -> str:
         "",
         f"{s['states']} proof states from {len(m.get('files') or [])} files, each on a session created "
         f"for it (W = 1); {s['complete']} complete ({strata or 'none'}, by position in the file). At "
-        "each state: checkpoint, verify the next block, restore, verify it again, roll it back, verify it "
-        "a third time; then the alternatives on the same state: (e) a new theory node on the same session "
-        "replaying the blocks up to the state, (f) a new session doing the same. A restore returns "
-        "without waiting for the prover (a rollback waits for the node to settle), so work it leaves would "
-        "show in the next call: the branch cost is the restore plus the extra time of the next verify over "
-        "the block's first verify (not below zero), with the same difference after the rollback as the "
-        "control.",
+        f"each state: a checkpoint, the next block verified; {t3.get('restore_repeats', 3)} times a restore "
+        "and the block verified at once after it; then rollbacks, each followed by the block verified "
+        f"again (settled verifies: {t3.get('settled_repeats', 3)} with the first). Then the alternatives "
+        "on the same state: (e) a new theory node on the same session replaying the blocks up to the "
+        "state, (f) a new session doing the same. A restore returns before the prover settles, so its "
+        "cost shows in the verify after it: the branch cost is the restore plus (at once - settled). A "
+        "verify's time comes in 0.1 s steps (the server re-reads the prover's status every 0.1 s), so "
+        "per-state values are means of the repeats and the branch cost is a mean over states with its 95 % "
+        "interval; a rollback waits for the node and includes its settle. *Branch at most* is the upper end "
+        "of that interval, never below the restore's own return time; the ratios are lower bounds: an "
+        "alternative's p50 over it.",
         "",
-        "| operation | n | p50 | p95 |",
-        "|---|---|---|---|",
+        "| operation | n | p50 | p95 | mean ± 95 % |",
+        "|---|---|---|---|---|",
     ]
-    for name, key in (
-        ("save checkpoint", "save"),
-        ("restore checkpoint", "restore"),
-        ("rollback", "rollback"),
-        ("verify the next block", "continuation"),
-        ("the same verify after the restore, minus the first", "extra_after_restore"),
-        ("the same verify after the rollback, minus the first", "extra_after_rollback"),
-        ("branch: restore + its extra time", "branch"),
-        ("create session", "create"),
-    ):
+    for name, key in OPS:
         o = ops[key]
-        lines.append(f"| {name} | {o['n']} | {_ms(o['p50_s'])} | {_ms(o['p95_s'])} |")
+        lines.append(
+            f"| {name} | {o['n']} | {_ms(o['p50_s'])} | {_ms(o['p95_s'])} | "
+            f"{_mean_ci(o['mean_s'], o['ci95_s'])} |"
+        )
     lines += [
         "",
-        "| position | states | prefix commands p50 | (e) p50 / p95 s | (f) p50 / p95 s | branch p50 "
-        "| (e) / branch p50 | (f) / branch p50 |",
-        "|---|---|---|---|---|---|---|---|",
+        "| position | states | prefix commands p50 | (e) p50 / p95 s | (f) p50 / p95 s | branch mean "
+        "± 95 % | branch at most | (e) / branch, at least | (f) / branch, at least |",
+        "|---|---|---|---|---|---|---|---|---|",
     ]
     for r in s["by_stratum"]:
         lines.append(
             f"| {r['stratum']} | {r['states']} | {_f(r['prefix_commands_p50'], 0)} | "
             f"{_f(r['warm_p50_s'], 2)} / {_f(r['warm_p95_s'], 2)} | "
-            f"{_f(r['fresh_p50_s'], 2)} / {_f(r['fresh_p95_s'], 2)} | {_ms(r['branch_p50_s'])} | "
-            f"{_f(r['warm_over_branch_p50'], 0)} | {_f(r['fresh_over_branch_p50'], 0)} |"
+            f"{_f(r['fresh_p50_s'], 2)} / {_f(r['fresh_p95_s'], 2)} | {_mean_ci(r['branch_mean_s'], r['branch_ci95_s'])} | {_ms(r['branch_at_most_s'])} | "
+            f"{_f(r['warm_over_branch_min'], 0)} | {_f(r['fresh_over_branch_min'], 0)} |"
         )
     dist = "; ".join(
-        f"{d['distance']} command(s): p50 {_ms(d['p50_s'])}, p95 {_ms(d['p95_s'])} (n = {d['n']})"
-        for d in s["restore_by_distance"]
+        f"{d['distance']} command(s): {_mean_ci(d['mean_s'], d['ci95_s'])} (n = {d['n']}; "
+        f"the restore returns in {_ms(d['restore_return_p50_s'])})"
+        for d in s["by_distance"]
     )
     lines += [
         "",
-        f"Restore against the distance it goes back (the next block's census commands): {dist or 'none'}. "
-        "Every restore here goes back, removing the continuation's text; a restore that re-inserts text "
-        "(a jump to another branch) is not measured.",
+        f"Branch cost (mean ± 95 %) against the distance it goes back (the next block's census commands): "
+        f"{dist or 'none'}. Every restore here goes back, removing the continuation's text; a restore "
+        "that re-inserts text (a jump to another branch) is not measured.",
         "",
-        f"Integrity: restore applied {integ['restored']} of {integ['of']}, source back after the restore "
-        f"{integ['source_after_restore']} and after the rollback {integ['source_after_rollback']}, the "
-        f"continuation's report identical after the restore {integ['identical']}. Continuation not kept: "
+        f"Integrity: restores applied {integ['restore_applied']} of {integ['restores']} and the source "
+        f"right after each restore's verify {integ['source_after_restore']} (it must equal the source after "
+        f"the first verify); rollbacks applied {integ['rollback_applied']} of {integ['rollbacks']}, source "
+        f"back {integ['source_after_rollback']}; repeated verifies with the first verify's report "
+        f"{integ['identical']} of {integ['repeated_verifies']}. Continuation not kept: "
         f"{_pairs(s['continuation_failed'])}; prefix proving fewer blocks than the census: "
         f"{_pairs(s['prefix_short_of_census'])}; stopped: {_pairs(s['stopped'])}; errors: "
         f"{_pairs([e[:2] for e in s['errors']])}.",
@@ -126,9 +141,15 @@ def snippet_t3(cell: Dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
+Getter = Callable[[Dict[str, Any]], Optional[float]]
+
+
 def plot_t3(cells: Sequence[Dict[str, Any]], out: Path) -> Optional[str]:
-    """Seconds against the prefix length: (e), (f), restore and rollback per
-    state; skipped without matplotlib."""
+    """Seconds against the prefix length: (e), (f), the rollback and the
+    restore's return per state; skipped without matplotlib. The branch cost is
+    not drawn: per state it is noise around a small mean, often below zero,
+    which a log scale would show one-sided (it is in the table with its
+    interval)."""
     try:
         import matplotlib  # pylint: disable=import-outside-toplevel
 
@@ -140,14 +161,14 @@ def plot_t3(cells: Sequence[Dict[str, Any]], out: Path) -> Optional[str]:
     if not states:
         return None
     fig, ax = plt.subplots(figsize=(8, 4))
-    for label, get, marker in (
+    series: Sequence[Tuple[str, Getter, str]] = (
         ("(f) new session + replay", fresh_s, "s"),
         ("(e) new node + replay", warm_s, "o"),
-        ("rollback", lambda s: s.get("rollback_s"), "x"),
-        ("branch: restore + its extra time", branch_s, "D"),
-        ("restore checkpoint", lambda s: s.get("restore_s"), "^"),
-    ):
-        pts = [(s["prefix_commands"], get(s)) for s in states if get(s)]
+        ("rollback", lambda s: derived(s)["rollback_s"], "x"),
+        ("restore checkpoint returns", lambda s: derived(s)["restore_s"], "^"),
+    )
+    for label, get, marker in series:
+        pts = [(s["prefix_commands"], v) for s in states for v in [get(s)] if v]
         if pts:
             xs, ys = zip(*pts)
             ax.scatter(xs, ys, marker=marker, s=14, label=label)
@@ -177,9 +198,7 @@ def write_t3(results: Path, tables: Path) -> Tuple[str, int, int]:
         s = summarize_t3(cell["states"])
         summary += [{"rep": rep, "row": f"op:{k}", **v} for k, v in s["ops"].items()]
         summary += [{"rep": rep, "row": "stratum", **r} for r in s["by_stratum"]]
-        summary += [
-            {"rep": rep, "row": "distance", **r} for r in s["restore_by_distance"]
-        ]
+        summary += [{"rep": rep, "row": "distance", **r} for r in s["by_distance"]]
         states += [state_row(rep, x) for x in cell["states"]]
     if not cells:
         return "", 0, 0
