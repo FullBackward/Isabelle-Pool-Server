@@ -91,7 +91,14 @@ t6:                                          # rollout rate (design §T6 v0.4, p
   t6a:
     problems_per_file: 8                     # the first 8 census-proved theorems of each file
     candidate_budget_s: 20                   # every D9 candidate but the corpus proof (census rule)
-  local_smoke: {files_per_worker: 1, t6a: {problems_per_file: 3}}
+  t6b:                                       # step-level paths (D8, a subset)
+    problems_per_file: 4                     # the first 4 census-proved theorems of 2 to 40 proof commands (S4)
+    min_steps: 2
+    max_steps: 40
+    alternatives: [apply auto, apply simp, apply -, by auto, by simp]
+    alternatives_per_step: 2                 # drawn per step, seeded
+    alternative_budget_s: 10
+  local_smoke: {files_per_worker: 1, t6a: {problems_per_file: 3}, t6b: {problems_per_file: 2}}
 budget:                                      # design B3: min(max_s, max(min_s, per_command_s * n))
   per_command_s: 2
   min_s: 30

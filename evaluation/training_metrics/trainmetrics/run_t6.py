@@ -11,7 +11,10 @@ each problem (:mod:`trainmetrics.t6_core`). The window opens when the workers
 start, so acquisition and prefix replay are inside it (the setup share). A
 side task records the memory tier every ``tier_poll_s``; the sampler records
 CPU and PSS as for T1. Style ``t6a``: the D9 candidates at each of the first
-``problems_per_file`` census-proved theorems.
+``problems_per_file`` census-proved theorems; style ``t6b``
+(:mod:`trainmetrics.t6b`): a step-level path at each of the first
+``problems_per_file`` census-proved theorems of ``min_steps`` to ``max_steps``
+proof commands.
 
     python -m trainmetrics.run_t6 --style t6a --workers 8 --rep 0 [--local-smoke] [--ips-external]
 """
@@ -24,7 +27,7 @@ import json
 import time
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Sequence
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from .census import load_census, load_config
 from .contention import executor_threads, tier_poll, tier_summary
@@ -34,9 +37,11 @@ from .metrics_t5 import load_samples
 from .metrics_t6 import summarize_t6
 from .run_t1 import usable_stems
 from .samples import window_summary
-from .t6_core import CellCtx, FileRecord, Group, group_t6a, run_file
+from .t6_core import CellCtx, FileRecord, Group, group_t6a, problems_of, run_file
+from .t6b import ALTERNATIVES, group_t6b, problems_t6b
 
-STYLES = ("t6a",)
+STYLES = ("t6a", "t6b")
+Problems = Callable[[CorpusFile, Dict[str, Any]], List[int]]
 
 
 def cell_dir(out: Path, style: str, workers: int, rep: int) -> Path:
@@ -44,10 +49,22 @@ def cell_dir(out: Path, style: str, workers: int, rep: int) -> Path:
     return out / style / f"w{workers}" / f"rep{rep}"
 
 
-def group_for(style: str, t6: Dict[str, Any]) -> Group:
-    """The style's group function and its settings."""
+def group_for(style: str, t6: Dict[str, Any]) -> Tuple[Group, Problems]:
+    """The style's group function and problem selector, with their settings."""
+    st = t6[style]
+    n = int(st["problems_per_file"])
     if style == "t6a":
-        return group_t6a(float(t6["t6a"]["candidate_budget_s"]))
+        return group_t6a(float(st["candidate_budget_s"])), (
+            lambda cf, row: problems_of(cf, row, n)
+        )
+    if style == "t6b":
+        lo, hi = int(st.get("min_steps", 2)), int(st.get("max_steps", 40))
+        group = group_t6b(
+            st.get("alternatives") or ALTERNATIVES,
+            int(st.get("alternatives_per_step", 2)),
+            float(st["alternative_budget_s"]),
+        )
+        return group, (lambda cf, row: problems_t6b(cf, row, n, lo, hi))
     raise ValueError(f"unknown style {style}")
 
 
@@ -94,11 +111,12 @@ async def run_cell(  # pylint: disable=too-many-arguments,too-many-positional-ar
     out_dir.mkdir(parents=True, exist_ok=True)
     registry, changed = open_registry(body, checkpoint)
     events: List[Dict[str, Any]] = []
+    group, problems = group_for(style, t6)
     cell = CellCtx(
         client=client,
-        group=group_for(style, t6),
+        group=group,
+        problems=problems,
         heap=heap,
-        n_problems=int(t6[style]["problems_per_file"]),
         seed=seed,
         integrity_p=integrity_p,
         events=events,

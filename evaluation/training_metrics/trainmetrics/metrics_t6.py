@@ -1,5 +1,5 @@
-"""T6 summary of one cell (design §T6 Metrics, plan stage 6), from the event
-log of :mod:`trainmetrics.t6_core` and the file records.
+"""T6 summary of one cell (design §T6 Metrics, plan stages 6-7), from the
+event log of :mod:`trainmetrics.t6_core` and the file records.
 
 Rates (S2), defined once:
 
@@ -7,31 +7,36 @@ Rates (S2), defined once:
   advances and integrity reads inside), per hour;
 - *loop rate* = sum over workers of rollouts_w / loop_w, per hour, where
   loop_w is worker w's wall time from its first checkpoint to the end of its
-  last rollout (or the restore after it), minus the acquire, enter, prefix,
-  advance, rollback, integrity and close time that started inside that span
-  (the close: review f0d85df S2, a worker's span covers its file switches).
+  last loop call, minus the acquire, enter, prefix, advance, rollback,
+  integrity and close time that started inside that span (the close: review
+  f0d85df S2, a worker's span covers its file switches).
 
-Integrity reads sit before a group's checkpoint and at its end, never between
-loop calls (:mod:`trainmetrics.t6_core`), so excluding them moves no loop
-work out of the loop time.
+Integrity reads sit at a group's or path's start and end, never between loop
+calls (:mod:`trainmetrics.t6_core`, :mod:`trainmetrics.t6b`), so excluding
+them moves no loop work out of the loop time.
 
-A *rollout* is a candidate whose outcome is proved, kept unproved, failed or
-timed out (``t6_core.COUNTED``); memory, prover death, a gone session and
-errors are counted apart, and so are the candidates of a group whose
-integrity check failed (review f0d85df S1: they ran in a changed document). *Problems* are completed groups. Time shares are
-call time per kind (the rollouts per outcome) over W x the window; the rest
-is the client's time between calls and workers that finished early.
-Queueing (S6) is a verify's client wall minus the server's execution time."""
+A *rollout* is a T6a candidate or a T6b path (its ``path`` summary event, not
+a call: its steps, alternatives, checkpoints and restores are the calls)
+whose outcome is proved, kept unproved, failed or timed out
+(``t6_core.COUNTED``); memory, prover death, a gone session and errors are
+counted apart, and so are the rollouts of a group whose integrity check
+failed (review f0d85df S1: they ran in a changed document). *Problems* are
+completed groups. Time shares are call time per kind (T6a candidates per
+outcome, T6b alternatives per outcome) over W x the window; the rest is the
+client's time between calls and workers that finished early. Queueing (S6)
+is a verify's client wall minus the server's execution time."""
 
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
 from .metrics_t12 import p50, p95
-from .t6_core import COUNTED
+from .t6_core import COUNTED, KEPT
 
-LOOP = ("checkpoint", "rollout", "restore")
+LOOP = ("checkpoint", "rollout", "restore", "step", "alternative")
 OUTSIDE = ("acquire", "enter", "advance", "rollback", "integrity", "close")
+ROLLOUT = ("rollout", "path")
+VERIFY = ("rollout", "advance", "step", "alternative")
 
 
 def _r(x: Optional[float], nd: int = 3) -> Optional[float]:
@@ -52,7 +57,7 @@ def loop_time(events: Sequence[Dict[str, Any]]) -> Optional[float]:
     ends = [
         _end(e)
         for e in events
-        if e["kind"] in ("rollout", "restore") and e.get("outcome") != "not_applicable"
+        if e["kind"] in LOOP[1:] and e.get("outcome") != "not_applicable"
     ]
     if not cps or not ends:
         return None
@@ -70,12 +75,12 @@ def _key(e: Dict[str, Any]) -> Tuple[Any, Any, Any]:
 
 
 def failed_groups(events: Sequence[Dict[str, Any]]) -> Set[Tuple[Any, Any, Any]]:
-    """(worker, stem, index) of the groups whose end check failed."""
+    """(worker, stem, index) of the groups and paths whose end check failed."""
     return {
         _key(e)
         for e in events
         if e["kind"] == "integrity"
-        and e.get("at") == "group_end"
+        and e.get("at") in ("group_end", "path_end")
         and e.get("ok") is False
     }
 
@@ -85,7 +90,7 @@ def _rollouts(events: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return [
         e
         for e in events
-        if e["kind"] == "rollout" and e.get("outcome") in COUNTED and _key(e) not in bad
+        if e["kind"] in ROLLOUT and e.get("outcome") in COUNTED and _key(e) not in bad
     ]
 
 
@@ -103,6 +108,11 @@ def _rates(
     hours = window_s / 3600 if window_s > 0 else None
     proved = sum(1 for e in roll if e["outcome"] == "proved")
     problems = sum(int(f.get("groups_done") or 0) for f in files)
+    steps = sum(
+        1
+        for e in events
+        if e["kind"] == "step" and e.get("role") == "step" and e.get("outcome") in KEPT
+    )
     return {
         "rollouts": len(roll),
         "proved_rollouts": proved,
@@ -110,6 +120,7 @@ def _rates(
         "rollouts_per_h": _r(len(roll) / hours, 1) if hours else None,
         "proved_per_h": _r(proved / hours, 1) if hours else None,
         "problems_per_h": _r(problems / hours, 1) if hours else None,
+        "steps_per_h": _r(steps / hours, 1) if hours and steps else None,
         "loop_rollouts_per_h": _r(loop * 3600, 1),
         "workers": per_worker,
     }
@@ -121,8 +132,12 @@ def _shares(
     total = workers * window_s
     out: Dict[str, float] = {}
     for e in events:
+        if e["kind"] == "path":  # a summary of calls counted on their own
+            continue
         if e["kind"] == "rollout":
             key = f"verify_{e.get('outcome')}"
+        elif e["kind"] == "alternative":
+            key = f"alternative_{e.get('outcome')}"
         elif e["kind"] == "advance":
             key = str(e.get("phase") or "advance")
         else:
@@ -138,18 +153,20 @@ def _shares(
 
 
 def _by_candidate(events: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
+    """Per T6a candidate kind, or per T6b alternative: outcomes, wall p50 /
+    p95 and the timeout share."""
+    kind_of = (
+        "rollout" if any(e["kind"] == "rollout" for e in events) else "alternative"
+    )
+    tried = [e for e in events if e["kind"] == kind_of]
     out: Dict[str, Any] = {}
-    for kind in sorted(
-        {str(e.get("candidate")) for e in events if e["kind"] == "rollout"}
-    ):
-        es = [
-            e for e in events if e["kind"] == "rollout" and e.get("candidate") == kind
-        ]
+    for cand in sorted({str(e.get("candidate")) for e in tried}):
+        es = [e for e in tried if str(e.get("candidate")) == cand]
         ran = [e for e in es if e.get("outcome") in COUNTED]
         counts: Dict[str, int] = {}
         for e in es:
             counts[str(e.get("outcome"))] = counts.get(str(e.get("outcome")), 0) + 1
-        out[kind] = {
+        out[cand] = {
             "outcomes": counts,
             "wall": _stats([float(e["wall_s"]) for e in ran]),
             "timeout_share": (
@@ -162,11 +179,11 @@ def _by_candidate(events: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
 
 
 def _matched(events: Sequence[Dict[str, Any]], stems: Sequence[str]) -> Dict[str, Any]:
-    """Per-rollout loop time on the W = 1 cell's files (S3): checkpoint,
-    rollouts and restores of their groups over their rollouts."""
-    evs = [e for e in events if e["stem"] in set(stems) and e["kind"] in LOOP]
+    """Per-rollout loop time on the W = 1 cell's files (S3): the loop calls
+    of their groups over their rollouts."""
+    evs = [e for e in events if e["stem"] in set(stems)]
     n = len(_rollouts(evs))
-    t = sum(float(e["wall_s"]) for e in evs)
+    t = sum(float(e["wall_s"]) for e in evs if e["kind"] in LOOP)
     return {
         "stems": list(stems),
         "rollouts": n,
@@ -175,14 +192,16 @@ def _matched(events: Sequence[Dict[str, Any]], stems: Sequence[str]) -> Dict[str
 
 
 def _counts(events: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
-    """Integrity checks, advances, and the outcomes outside the rollouts."""
+    """Integrity checks, advances, alternatives, and the outcomes outside the
+    rollouts."""
     integ = [e for e in events if e["kind"] == "integrity" and e.get("ok") is not None]
     adv = [e for e in events if e["kind"] == "advance"]
+    alts = [e for e in events if e["kind"] == "alternative"]
     bad = failed_groups(events)
     groups = {_key(e) for e in events if e["kind"] == "checkpoint"}
     apart: Dict[str, int] = {}
     for e in events:
-        if e["kind"] == "rollout" and e.get("outcome") not in COUNTED + (
+        if e["kind"] in ROLLOUT and e.get("outcome") not in COUNTED + (
             "not_applicable",
         ):
             apart[str(e["outcome"])] = apart.get(str(e["outcome"]), 0) + 1
@@ -197,7 +216,7 @@ def _counts(events: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
             "rollouts_in_failed_groups": sum(
                 1
                 for e in events
-                if e["kind"] == "rollout"
+                if e["kind"] in ROLLOUT
                 and e.get("outcome") in COUNTED
                 and _key(e) in bad
             ),
@@ -212,6 +231,15 @@ def _counts(events: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
             ),
             "retried": sum(1 for e in adv if e.get("retried")),
         },
+        "alternatives": {
+            "n": len(alts),
+            "kept": sum(1 for e in alts if e.get("outcome") in KEPT),
+            "kept_share": (
+                _r(sum(1 for e in alts if e.get("outcome") in KEPT) / len(alts), 4)
+                if alts
+                else None
+            ),
+        },
     }
 
 
@@ -223,11 +251,7 @@ def summarize_t6(
     """The T6 numbers of one cell (module docstring)."""
     window_s = float(body.get("window_end") or 0) - float(body.get("window_start") or 0)
     roll = _rollouts(events)
-    verifies = [
-        e
-        for e in events
-        if e["kind"] in ("rollout", "advance") and e.get("execution_time")
-    ]
+    verifies = [e for e in events if e["kind"] in VERIFY and e.get("execution_time")]
     restores = [e for e in events if e["kind"] == "restore"]
     return {
         "window_s": _r(window_s),

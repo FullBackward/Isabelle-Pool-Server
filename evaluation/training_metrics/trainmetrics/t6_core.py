@@ -55,6 +55,7 @@ from .seeds import split_statement
 from .t5_core import DEAD, _source_hash, classify
 
 COUNTED = ("proved", "kept_unproved", "failed", "timed_out")
+KEPT = ("proved", "kept_unproved")
 
 
 def outcome(rec: BlockRecord) -> str:
@@ -107,6 +108,9 @@ class FileCtx:  # pylint: disable=too-many-instance-attributes
     events: List[Dict[str, Any]]
     seed: int
     integrity_p: float  # 1.0 at W = 1
+    # set by a group that leaves the corpus block in the document (a proved
+    # T6b path): the walk then skips the block's advance
+    in_document: bool = False
 
     def add(self, kind: str, t_start: float, wall_s: float, **kw: Any) -> None:
         """One event of this file."""
@@ -255,7 +259,7 @@ def group_t6a(budget_s: float) -> Group:
             ctx.verify_event("rollout", blk, candidate=kind, order=order)
             if blk.error_kind in DEAD:
                 return blk.error_kind
-            if outcome(blk) not in ("proved", "kept_unproved"):
+            if outcome(blk) not in KEPT:
                 continue
             res = await ctx.call(
                 "restore",
@@ -296,9 +300,12 @@ async def _walk(ctx: FileCtx, group: Group) -> Optional[str]:
     probs = set(ctx.rec.problems)
     for i in range(max(ctx.rec.problems) + 1):
         if i in probs:
+            ctx.in_document = False
             stop = await group(ctx, i)
             if stop:
                 return stop
+            if ctx.in_document:
+                continue
         stop = await advance(ctx, i, "prefix" if i < min(probs) else "advance")
         if stop:
             return stop
@@ -311,8 +318,8 @@ class CellCtx:  # pylint: disable=too-many-instance-attributes
 
     client: Any
     group: Group
+    problems: Callable[[CorpusFile, Dict[str, Any]], List[int]]  # the style's
     heap: str
-    n_problems: int
     seed: int
     integrity_p: float
     events: List[Dict[str, Any]]
@@ -353,7 +360,7 @@ async def run_file(
 ) -> FileRecord:
     """One file on a session of its own: acquire, enter, walk, close."""
     rec = FileRecord(worker=worker, stem=cf.stem, t_start=time.time())
-    rec.problems = problems_of(cf, census_file, cell.n_problems)
+    rec.problems = cell.problems(cf, census_file)
     acq = await _acquire(cell, cf, rec) if rec.problems else None
     if acq is None:
         rec.t_end = time.time()
