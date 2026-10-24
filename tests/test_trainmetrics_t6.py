@@ -407,7 +407,7 @@ def _cells_on_disk(tmp_path):
     return root
 
 
-def test_the_t6a_analysis_and_the_calibration(tmp_path):
+def test_the_t6a_analysis(tmp_path):
     from trainmetrics import analyze_t6  # pylint: disable=import-outside-toplevel
 
     root = _cells_on_disk(tmp_path)
@@ -421,13 +421,40 @@ def test_the_t6a_analysis_and_the_calibration(tmp_path):
     assert "| 1 | 1 |" in text and "| 2 | 1 |" in text
     for name in ("t6a_cells.csv", "t6a_series.csv", "t6a_candidates.csv"):
         assert (tables / name).exists()
-    cal = analyze_t6.calibration(
-        run_t6.cell_dir(root, "t6a", 1, 0), {"t6": {"files_per_worker": 3}}
-    )
+
+
+def test_the_calibration_and_the_timeout_for_the_slowest_worker(tmp_path):
+    """Review 5422bf0 S1: the timeout comes from every worker of the matrix
+    (census times up to the last problem + the calibrated candidates), not
+    from the small calibration file."""
+    from trainmetrics import calibrate_t6  # pylint: disable=import-outside-toplevel
+
+    root = _cells_on_disk(tmp_path)
+    cal = calibrate_t6.calibration(run_t6.cell_dir(root, "t6a", 1, 0))
     assert cal["rollouts"] == 16 and cal["timeout_share"] == 0.0
-    cell = run_t6.cell_dir(root, "t6a", 1, 0)
-    recs = [json.loads(x) for x in (cell / "files.jsonl").read_text().splitlines()]
-    longest = max(
-        r["t_end"] - r["t_start"] for r in recs
-    )  # 3 x files per worker x that
-    assert cal["suggested_cell_timeout_s"] == int(3 * 3 * longest)
+    assert cal["other_candidate_mean_s"] is not None and cal["setup_s"] >= 0
+    (tmp_path / "x").mkdir()
+    files, census, _ = _setup(tmp_path / "x", names=("Ta", "Tb"))
+    census["files"][1]["blocks"][3]["wall_s"] = 3000.0  # Tb's 4th block is slow
+    cal = {"other_candidate_mean_s": 1.0, "restore_p50_s": 0.0, "setup_s": 10.0}
+    t6 = {
+        "workers": [1, 2],
+        "repeats": 1,
+        "files_per_worker": 1,
+        "t6a": {"problems_per_file": 4},
+    }
+    est = calibrate_t6.estimate(cal, census, files, t6, seed=3, contention=3.0)
+    w = est["largest_worker"]
+    assert w["stems"] == ["Tb"]
+    # setup 10 + census 0.1 x 3 + 3000 up to block 3, + per problem: its census time + 7 x 1.0
+    assert w["estimate_s"] == round(10 + 0.3 + 3000 + (0.1 * 3 + 3000) + 4 * 7, 1)
+    assert est["suggested_cell_timeout_s"] == 18116  # ceil(6038.6 x 3), above the floor
+    small = calibrate_t6.estimate(
+        cal,
+        {**census, "files": census["files"][:1]},
+        files[:1],
+        t6,
+        seed=3,
+        contention=3.0,
+    )
+    assert small["suggested_cell_timeout_s"] == 7200  # the floor

@@ -9,21 +9,14 @@ against W = 1, the per-rollout loop time on the matched files (the W = 1
 cell's, present in every cell, S3) and its slowdown, the setup share
 (acquire, enter, prefix, close), the timeout share of the rollouts, queueing
 p95, stopped files, outcomes apart, failed integrity checks and the worst
-memory tier.
-
-    python -m trainmetrics.analyze_t6 --calibrate results/smoke/t6a/w1/rep0
-"""
+memory tier. The cell timeout comes from :mod:`trainmetrics.calibrate_t6`."""
 
 from __future__ import annotations
 
-import argparse
-import json
 import statistics
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from . import EXPERIMENT_DIR
-from .census import load_config
 from .contention import tier_summary
 from .csvout import ok_cells, write_csv
 from .metrics_t5 import load_samples
@@ -208,7 +201,8 @@ def snippet_t6(
         "",
         f"Stopped files: {stopped}; outcomes outside the rollouts (memory, prover death, gone session, "
         f"error): {apart}; failed integrity checks: {failed}. Worst memory tier per W: {tiers}. "
-        "The proved share is fixed by the mix (1 to 3 of 8 candidates can prove).",
+        "The proved share is fixed by the mix: up to 5 of 8 candidates can prove (the corpus proof, "
+        "`by auto` twice, `by simp` twice).",
     ]
     return "\n".join(lines) + "\n"
 
@@ -261,53 +255,3 @@ def write_t6(results: Path, tables: Path) -> Tuple[str, int, int]:
         n_cells += len(cells)
         n_plots += int(plot_t6(style, ser, results / "plots") is not None)
     return "\n".join(texts), n_cells, n_plots
-
-
-def calibration(cell_dir: Path, cfg: Dict[str, Any]) -> Dict[str, Any]:
-    """From a W = 1 single-file cell (the smoke's, design S8): the timeout
-    share, the per-rollout loop time, one file's wall time, and a suggested
-    ``t6.cell_timeout_s``: 3 x files_per_worker x that file's wall (the factor
-    covers contention at large W and a deeper file)."""
-    manifest = json.loads((cell_dir / "manifest.json").read_text(encoding="utf-8"))
-    events, files = load_samples(cell_dir / "events.jsonl"), load_samples(
-        cell_dir / "files.jsonl"
-    )
-    s = summarize_t6(events, files, manifest)
-    roll = s["rollouts"] or 0
-    timed = sum(
-        (c["outcomes"].get("timed_out") or 0) for c in s["by_candidate"].values()
-    )
-    walls = [float(f["t_end"]) - float(f["t_start"]) for f in files]
-    file_s = max(walls) if walls else None
-    per_worker = int((cfg.get("t6") or {}).get("files_per_worker", 3))
-    lt = (s["workers"].get(0) or s["workers"].get("0") or {}).get("loop_s")
-    return {
-        "cell": str(cell_dir),
-        "rollouts": roll,
-        "timeout_share": round(timed / roll, 4) if roll else None,
-        "per_rollout_loop_s": round(float(lt) / roll, 4) if lt and roll else None,
-        "file_wall_s": None if file_s is None else round(file_s, 1),
-        "suggested_cell_timeout_s": (
-            None if file_s is None else int(3 * per_worker * file_s)
-        ),
-    }
-
-
-def main(argv: Optional[Sequence[str]] = None) -> int:
-    """CLI: ``--calibrate <cell dir>``."""
-    ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--config", default=str(EXPERIMENT_DIR / "config.yaml"))
-    ap.add_argument("--calibrate", required=True, help="a W = 1 single-file T6 cell")
-    args = ap.parse_args(argv)
-    cal = calibration(Path(args.calibrate), load_config(args.config))
-    for k, v in cal.items():
-        print(f"{k}: {v}")
-    print(
-        "set t6.cell_timeout_s in config.yaml to at least suggested_cell_timeout_s "
-        "before scripts/14_run_t6.sh"
-    )
-    return 0 if cal["rollouts"] else 1
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
