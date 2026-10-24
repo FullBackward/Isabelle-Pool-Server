@@ -84,6 +84,7 @@ def _tree(tmp_path):
         "t_start": 99.0,
         "acquire_s": 0.5,
         "enter_s": 0.1,
+        "t_close": 107.0,  # after the close: a teardown row at 108, gone at 109
         "t_end": 110.0,
         "positions": [
             {
@@ -99,8 +100,8 @@ def _tree(tmp_path):
     }
     (w1 / "positions.jsonl").write_text(json.dumps(rec) + "\n")
     rows = [
-        _sample(99.0 + i, {10: (800 + 100 * min(i, 7), 100 * i)}) for i in range(11)
-    ]
+        _sample(99.0 + i, {10: (800 + 100 * min(i, 7), 100 * i)}) for i in range(9)
+    ] + [_sample(108.0, {10: (300, 900)}), _sample(109.0, {})]
     (w1 / "samples.jsonl").write_text("\n".join(json.dumps(r) for r in rows) + "\n")
     (w1 / "manifest.json").write_text(
         json.dumps({"experiment": "t5", "workers": 1, "rep": 0, "outcome": "ok"})
@@ -172,9 +173,18 @@ def test_levels_straddles_and_matched_blocks(tmp_path):
             "worker": 0,
             "start_mb": 900.0,
             "peak_mb": 1500.0,
-            "end_mb": 1500.0,
+            "end_mb": 1500.0,  # the row before t_close, not the teardown row (300 MB)
+            "end_censored": False,
         }
     ]
+    # review 0268dbe B1: without t_close (older records) the end is read at the
+    # end of the file's last call (the seed attempt ending at 105.1), never in
+    # the close; with no row before it the end is censored
+    old_rec = {k: v for k, v in cells[0]["files"][0].items() if k != "t_close"}
+    lv = analyze_t5.file_levels([old_rec], cells[0]["samples"])
+    assert lv[0]["end_mb"] == 1400.0 and not lv[0]["end_censored"]
+    lv = analyze_t5.file_levels([old_rec], cells[0]["samples"][-2:])
+    assert lv[0]["end_mb"] is None and lv[0]["end_censored"]
     w2 = cells[1]["files"]
     assert analyze_t5.straddle_share(w2) == 0.25  # B's 18-21 spans the loop's end
     m = analyze_t5.matched_t1(w2, root, 2, 0)
@@ -188,6 +198,28 @@ def test_the_t5_snippet_and_tables(tmp_path):
     assert "## T5 bounded step" in text and "counts are maxima" in text
     assert "| subst | 5 | 1 | 1.000 | 1.000 |" in text
     assert "Contention at W = 2" in text and "on 4 matched blocks" in text
+    assert "(W = 1, rep 0)" in text and "-x" not in text
     assert "not a leak measure" in text and "1.5 s quiet pause" in text
     assert (root / "tables" / "t5_bounded.csv").exists()
     assert (root / "tables" / "t5_contention.csv").exists()
+
+
+def test_a_cell_without_a_replay_baseline_says_so():
+    """Review 0268dbe S1: no "-x its time" sentence."""
+    c = {
+        "workers": 2,
+        "rep": 0,
+        "loops": 4,
+        "loop_vs_replay_blocks": 0,
+        "loop_vs_replay_slowdown": None,
+        "loop_vs_replay_slowdown_p95": None,
+        "straddle_share": 0.0,
+        "t1_matched": None,
+        "tiers": {},
+        "executor_threads": 12,
+        "by_state": [],
+    }
+    text = "\n".join(
+        analyze_t5._contention_lines(c)
+    )  # pylint: disable=protected-access
+    assert "No replay baseline at this W" in text and "-x" not in text

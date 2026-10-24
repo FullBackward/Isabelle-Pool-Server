@@ -93,6 +93,7 @@ class T5FileRecord:  # pylint: disable=too-many-instance-attributes
     stopped: Optional[str] = None  # prover_died | session_gone: the file ended there
     unclosed: List[Dict[str, Any]] = field(default_factory=list)
     t_start: float = 0.0
+    t_close: Optional[float] = None  # just before the session is closed (0268dbe B1)
     t_end: float = 0.0
 
     def as_dict(self) -> Dict[str, Any]:
@@ -333,6 +334,7 @@ async def run_file(  # pylint: disable=too-many-arguments,too-many-locals
                 rec.stopped = blk.error_kind
                 break
     finally:
+        rec.t_close = time.time()
         rec.unclosed = await close_all(client, [sess])
         if not rec.unclosed:
             registry.pop(sess.session_id, None)

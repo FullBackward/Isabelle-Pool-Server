@@ -46,12 +46,34 @@ def load_t5_cells(results: Path) -> List[Dict[str, Any]]:
     return cells
 
 
+def last_call_end(f: Dict[str, Any]) -> Optional[float]:
+    """When the file's last call before the close ended: ``t_close`` when
+    recorded, else the latest end of its blocks, attempts and the blocks after
+    the seeds (records from before 0268dbe)."""
+    if f.get("t_close") is not None:
+        return float(f["t_close"])
+    ends = [
+        float(x["t_start"]) + float(x["wall_s"])
+        for p in f.get("positions") or []
+        for x in list(p.get("attempts") or [])
+        + ([p["block"]] if p.get("block") else [])
+        if x.get("t_start") is not None and x.get("wall_s") is not None
+    ] + [
+        float(b["t_start"]) + float(b["wall_s"])
+        for b in f.get("blocks") or []
+        if b.get("t_start") is not None
+    ]
+    return max(ends) if ends else None
+
+
 def file_levels(
     files: Sequence[Dict[str, Any]], samples: Sequence[Dict[str, Any]]
 ) -> List[Dict[str, Any]]:
     """Per file with a matched prover: its RSS before the first attempt, its
-    peak over the attempts, and the level the file ends at (the prover's last
-    sampler row before the session closed) — the lasting cost beside the
+    peak over the attempts, and the level the file ends at — the prover's last
+    sampler row at or before the end of the file's last call before the close
+    (review 0268dbe B1: a row inside the close sees the prover tearing down);
+    ``end_censored`` when there is no such row. The lasting cost beside the
     per-attempt figures (review f3220d5 note)."""
     out: List[Dict[str, Any]] = []
     for f in files:
@@ -64,11 +86,12 @@ def file_levels(
         if not mem:
             continue
         pid = int(mem[0]["pid"])
-        t_end = float(f.get("t_end") or 0)
+        limit = last_call_end(f)
         rows = [
             r
             for r in samples
-            if float(r["t"]) <= t_end
+            if limit is not None
+            and float(r["t"]) <= limit
             and any(int(q["pid"]) == pid for q in r.get("procs") or [])
         ]
         end = None
@@ -82,6 +105,7 @@ def file_levels(
                 "start_mb": mem[0].get("rss_before_mb"),
                 "peak_mb": max(float(m.get("rss_peak_mb") or 0) for m in mem),
                 "end_mb": end,
+                "end_censored": end is None,
             }
         )
     return out
@@ -193,7 +217,8 @@ def _w1_lines(cell: Dict[str, Any], table: Sequence[Dict[str, Any]]) -> List[str
     seeds = ", ".join(_family_label(k, v) for k, v in fams.items())
     lines = [
         f"Seeds: {seeds}, checked right before {s['positions']} census-proved theorems of "
-        f"{s['files']} files, a session per file. Every seed takes the smallest budget; a seed "
+        f"{s['files']} files, a session per file (W = 1, rep {cell['manifest'].get('rep')}). "
+        "Every seed takes the smallest budget; a seed "
         "that still loops climbs to the larger ones while its family's count lasts, so the "
         "larger budgets' counts are maxima.",
         "",
@@ -201,7 +226,8 @@ def _w1_lines(cell: Dict[str, Any], table: Sequence[Dict[str, Any]]) -> List[str
         "source unchanged | retained p50 / max MB | peak growth max MB | censored |",
         "|---|---|---|---|---|---|---|---|---|---|",
     ]
-    for r in (r for r in table if r["workers"] == 1):
+    rep = cell["manifest"].get("rep")
+    for r in (r for r in table if r["workers"] == 1 and r.get("rep") == rep):
         lines.append(
             f"| {r['family']} | {_f(r['budget_s'], 0)} | {r['attempts']} | "
             f"{_f(r['timed_out_frac'], 3)} | {_f(r['stuck_line_frac'], 3)} | "
@@ -226,7 +252,7 @@ def _w1_lines(cell: Dict[str, Any], table: Sequence[Dict[str, Any]]) -> List[str
     if levels:
         per = "; ".join(
             f"{x['stem']} {_f(x['start_mb'], 0)} -> peak {_f(x['peak_mb'], 0)} -> "
-            f"end {_f(x['end_mb'], 0)}"
+            f"end {_f(x['end_mb'], 0) if not x['end_censored'] else 'n/a'}"
             for x in levels
         )
         lines += ["", f"Prover level per file (MB): {per}."]
@@ -245,12 +271,18 @@ def _contention_lines(c: Dict[str, Any]) -> List[str]:
     """One contention cell's paragraph and its by-state table."""
     t1 = c["t1_matched"] or {}
     straddle = c["straddle_share"]
+    if c["loop_vs_replay_blocks"]:
+        lvr = (
+            f"A corpus block while others loop takes {_f(c['loop_vs_replay_slowdown'], 3)}x "
+            "its time while the same number of others replay "
+            f"(p95 {_f(c['loop_vs_replay_slowdown_p95'], 3)}, "
+            f"{c['loop_vs_replay_blocks']} blocks); "
+        )
+    else:  # review 0268dbe S1: no broken sentence for a cell without the baseline
+        lvr = "No replay baseline at this W (no block ran while others replayed, none looping); "
     lines = [
         "",
-        f"Contention at W = {c['workers']} (rep {c['rep']}): {c['loops']} loops. A corpus "
-        f"block while others loop takes {_f(c['loop_vs_replay_slowdown'], 3)}x its time while "
-        f"the same number of others replay (p95 {_f(c['loop_vs_replay_slowdown_p95'], 3)}, "
-        f"{c['loop_vs_replay_blocks']} blocks); "
+        f"Contention at W = {c['workers']} (rep {c['rep']}): {c['loops']} loops. {lvr}"
         f"{_f(100 * straddle if straddle is not None else None)} % of blocks span a change "
         "of the others' states (they are keyed at their midpoint). Against T1's "
         f"W = {c['workers']} cell on {t1.get('blocks', 0)} matched blocks: p50 ratio "
