@@ -85,12 +85,12 @@ t6:                                          # rollout rate (design §T6 v0.4, p
   files_per_worker: 3                        # the T1 assignment (seed + rep): a nested prefix across W
   tier_poll_s: 5                             # GET /api/v1/memory tier and used memory, the whole cell
   integrity_fraction: 0.25                   # groups checked by source hash (start = end) at W > 1; all at W = 1
-  cell_timeout_s: 7200                       # the matrix runner's per-cell wall (S8), never below 7200: set it from
-                                             # trainmetrics.calibrate_t6 (the smoke's calibration cell + the full
-                                             # census: the slowest worker of the matrix x contention)
+  cell_timeout_s: 7200                       # the matrix runner's per-cell wall (S8) when a style has none of its own
   t6a:
     problems_per_file: 8                     # the first 8 census-proved theorems of each file
     candidate_budget_s: 20                   # every D9 candidate but the corpus proof (census rule)
+    cell_timeout_s: 7200                     # never below 7200: set from trainmetrics.calibrate_t6 (the smoke's
+                                             # calibration cells + the full census: the slowest worker x contention)
   t6b:                                       # step-level paths (D8, a subset)
     problems_per_file: 4                     # the first 4 census-proved theorems of 2 to 40 proof commands (S4)
     min_steps: 2
@@ -98,6 +98,7 @@ t6:                                          # rollout rate (design §T6 v0.4, p
     alternatives: [apply auto, apply simp, apply -, by auto, by simp]
     alternatives_per_step: 2                 # drawn per step, seeded
     alternative_budget_s: 10
+    cell_timeout_s: 7200                     # as t6a's, from trainmetrics.calibrate_t6
   local_smoke: {files_per_worker: 1, t6a: {problems_per_file: 3}, t6b: {problems_per_file: 2}}
 budget:                                      # design B3: min(max_s, max(min_s, per_command_s * n))
   per_command_s: 2

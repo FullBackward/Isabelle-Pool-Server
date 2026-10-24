@@ -443,18 +443,19 @@ def test_the_calibration_and_the_timeout_for_the_slowest_worker(tmp_path):
         "files_per_worker": 1,
         "t6a": {"problems_per_file": 4},
     }
-    est = calibrate_t6.estimate(cal, census, files, t6, seed=3, contention=3.0)
-    w = est["largest_worker"]
+    est = calibrate_t6.estimate({"t6a": cal}, census, files, t6, seed=3, contention=3.0)
+    w = est["t6a"]["largest_worker"]
     assert w["stems"] == ["Tb"]
     # setup 10 + census 0.1 x 3 + 3000 up to block 3, + per problem: its census time + 7 x 1.0
     assert w["estimate_s"] == round(10 + 0.3 + 3000 + (0.1 * 3 + 3000) + 4 * 7, 1)
-    assert est["suggested_cell_timeout_s"] == 18116  # ceil(6038.6 x 3), above the floor
+    # x 3 + the fresh server's start (180 s), above the floor (review 5d75d5b note)
+    assert est["t6a"]["suggested_cell_timeout_s"] == 18296  # ceil(6038.6 x 3 + 180)
     small = calibrate_t6.estimate(
-        cal,
+        {"t6a": cal},
         {**census, "files": census["files"][:1]},
         files[:1],
         t6,
         seed=3,
         contention=3.0,
     )
-    assert small["suggested_cell_timeout_s"] == 7200  # the floor
+    assert small["t6a"]["suggested_cell_timeout_s"] == 7200  # the floor

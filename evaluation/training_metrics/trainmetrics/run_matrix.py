@@ -5,7 +5,8 @@ error/partial cells), one runner per results tree (``RUNNER_LOCK``, as in
 memscale). ``--experiment t1`` (default: T1/T2, ``python -m
 trainmetrics.run_t1``, config ``workers`` / ``repeats``) or ``t6a`` (``python -m
 trainmetrics.run_t6 --style t6a``, config ``t6.workers`` / ``t6.repeats`` and
-``t6.cell_timeout_s``; ``--quota`` is then the files per worker).
+``t6.t6a.cell_timeout_s``) or ``t6b`` (the same with ``--style t6b``);
+``--quota`` is then the files per worker.
 
     python -m trainmetrics.run_matrix [--experiment t6a] [--workers 1,2,4] [--reps 1] [--local-smoke] [--ips-external] [--dry-run]
 """
@@ -34,6 +35,16 @@ EXPERIMENTS = ("t1",) + STYLES
 def _section(cfg: Dict[str, Any], experiment: str) -> Dict[str, Any]:
     """Where the experiment's W list and repeats live in the config."""
     return cfg if experiment == "t1" else dict(cfg.get("t6") or {})
+
+
+def cell_timeout_s(cfg: Dict[str, Any], experiment: str) -> float:
+    """The experiment's cell timeout: T1 7200 s; a T6 style its own
+    ``t6.<style>.cell_timeout_s``, else ``t6.cell_timeout_s``, else 7200 s."""
+    if experiment == "t1":
+        return 7200.0
+    t6 = dict(cfg.get("t6") or {})
+    style = dict(t6.get(experiment) or {})
+    return float(style.get("cell_timeout_s") or t6.get("cell_timeout_s") or 7200)
 
 
 def cells(
@@ -221,7 +232,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "--cell-timeout-s",
         type=float,
         default=None,
-        help="default 7200; T6: config t6.cell_timeout_s (set from the smoke's calibration)",
+        help="default 7200; T6: config t6.<style>.cell_timeout_s (trainmetrics.calibrate_t6)",
     )
     ap.add_argument(
         "--term-grace-s",
@@ -234,10 +245,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     args = ap.parse_args(argv)
     cfg = load_config(args.config)
     if args.cell_timeout_s is None:
-        sec = _section(cfg, args.experiment)
-        args.cell_timeout_s = float(
-            sec.get("cell_timeout_s", 7200) if args.experiment != "t1" else 7200
-        )
+        args.cell_timeout_s = cell_timeout_s(cfg, args.experiment)
     ws = [int(x) for x in args.workers.split(",") if x] or None
     plan = list(cells(cfg, ws, args.reps, args.experiment))
     print(f"{len(plan)} cells planned", flush=True)

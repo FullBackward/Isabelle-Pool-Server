@@ -300,3 +300,75 @@ def test_the_metrics_over_paths():
     assert s["matched"]["per_rollout_s"] == round(
         0.1 + 0.5 + 0.1 + 1 + 0.1 + 10 + 0.4, 4
     )
+
+
+def test_the_t6b_timeout_estimate_counts_every_step(tmp_path):
+    """Review ec85e74: a T6b worker is estimated per proof command (census
+    spans): a checkpoint, 2 alternatives at their calibrated mean, restores,
+    and a status poll per piece."""
+    from trainmetrics import calibrate_t6  # pylint: disable=import-outside-toplevel
+
+    files, census = _setup(tmp_path)
+    cal = {
+        "alternative_mean_s": 2.0,
+        "checkpoint_p50_s": 0.0,
+        "restore_p50_s": 0.0,
+        "setup_s": 0.0,
+    }
+    t6 = {"workers": [1], "repeats": 1, "files_per_worker": 1, "t6b": dict(T6["t6b"])}
+    est = calibrate_t6.estimate(
+        {"t6a": cal, "t6b": cal}, census, files, t6, seed=5, contention=1.0
+    )
+    w = est["t6b"]["largest_worker"]
+    # census 0.1 x 2 up to the second path's block, + 2 paths x (5 pieces x 0.11 + 4 steps x 2 x 2.0)
+    assert w["estimate_s"] == round(0.2 + 2 * (5 * 0.11 + 4 * 2 * 2.0), 1)
+    assert est["t6b"]["suggested_cell_timeout_s"] == 7200
+
+
+def test_the_matrix_and_the_analysis_take_t6b(tmp_path):
+    from trainmetrics import (  # pylint: disable=import-outside-toplevel
+        analyze_t6,
+        run_matrix,
+    )
+
+    cfg = {
+        "t6": {
+            "workers": [1],
+            "cell_timeout_s": 900,
+            "t6b": {"cell_timeout_s": 4000},
+            "t6a": {},
+        }
+    }
+    assert run_matrix.cell_timeout_s(cfg, "t6b") == 4000.0
+    assert run_matrix.cell_timeout_s(cfg, "t6a") == 900.0  # the shared default
+    assert run_matrix.cell_timeout_s({}, "t1") == 7200.0
+    ns = run_matrix.argparse.Namespace(
+        experiment="t6b",
+        config="c",
+        census="x.json",
+        out="o",
+        local_smoke=True,
+        ips_external=True,
+        url=None,
+        quota=0,
+    )
+    assert run_matrix.child_cmd(ns, 2, 0)[3:6] == [
+        "trainmetrics.run_t6",
+        "--style",
+        "t6b",
+    ]
+    files, census = _setup(tmp_path)
+    root = tmp_path / "results"
+    out = run_t6.cell_dir(root, "t6b", 1, 0)
+    body = asyncio.run(
+        run_t6.run_cell(
+            Fake(), T6, files, census, "t6b", 1, heap="HOL", seed=5, out_dir=out
+        )
+    )
+    body["rep"] = 0
+    (out / "manifest.json").write_text(json.dumps(body, default=str))
+    (root / "tables").mkdir()
+    text, n, _plots = analyze_t6.write_t6(root, root / "tables")
+    assert n == 1 and "## T6b step-level paths" in text and "| steps/h |" in text
+    assert "Share of alternatives kept" in text
+    assert (root / "tables" / "t6b_candidates.csv").exists()

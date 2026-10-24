@@ -12,8 +12,9 @@ document (the walk skips its advance); a path that is not proved is undone
 by restoring the path's checkpoint, and the corpus block advances as in T6a.
 
 Integrity (S1, as T6a's: never between a restore and a loop call): the node
-text is read at the path's start and end, both after settled verifies; the
-end text must be the start text plus the path's pieces (a proved path) or
+text is read at the path's start and end, both outside the loop (the start
+after a settled verify; the end after the last step's verify, or after the
+path's restore when it is undone); the end text must be the start text plus the path's pieces (a proved path) or
 the start text (an undone one), compared with whitespace normalised — the
 server inserts each chunk plus a newline (Edit_Utils.insert_text_edit) and
 the source route strips the node text."""
