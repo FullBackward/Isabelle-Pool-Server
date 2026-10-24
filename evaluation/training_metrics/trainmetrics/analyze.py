@@ -1,5 +1,6 @@
-"""Tables, plots and the report snippet from the results tree (stage 2: T1
-throughput and T2 latency; later stages add T3–T5).
+"""Tables, plots and the report snippet from the results tree (T1
+throughput, T2 latency; T5 bounded step from stage 3c-2, trainmetrics.analyze_t5;
+later stages add T3, T4, T6).
 
     python -m trainmetrics.analyze [--results results] [--census results/census/census.json]
 """
@@ -7,13 +8,13 @@ throughput and T2 latency; later stages add T3–T5).
 from __future__ import annotations
 
 import argparse
-import csv
-import json
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from . import EXPERIMENT_DIR
+from .analyze_t5 import write_t5
 from .census import load_census, load_config
+from .csvout import write_csv
 from .metrics_t12 import (
     load_t1_cells,
     series_t1,
@@ -21,27 +22,6 @@ from .metrics_t12 import (
     t2_table,
     zero_count_blocks,
 )
-
-
-def write_csv(path: Path, rows: List[Dict[str, Any]]) -> None:
-    """A CSV with the union of the rows' keys (nothing for no rows)."""
-    if not rows:
-        return
-    keys: List[str] = []
-    for r in rows:
-        for k in r:
-            if k not in keys:
-                keys.append(k)
-    with open(path, "w", encoding="utf-8", newline="") as fh:
-        w = csv.DictWriter(fh, fieldnames=keys)
-        w.writeheader()
-        for r in rows:
-            w.writerow(
-                {
-                    k: json.dumps(v) if isinstance(v, (dict, list)) else v
-                    for k, v in r.items()
-                }
-            )
 
 
 def plots(
@@ -202,6 +182,21 @@ def snippet_t12(
     return "\n".join(lines) + "\n"
 
 
+def write_t12(
+    results: Path, census: Dict[str, Any], cfg: Dict[str, Any], tables: Path
+) -> Tuple[str, int, int]:
+    """The T1 / T2 tables, plots and snippet text; (text, cells, plots)."""
+    cells = load_t1_cells(results)
+    rows = [summarize_cell(c, census) for c in cells]
+    series = series_t1(rows)
+    t2 = t2_table(cells, census, [int(w) for w in cfg.get("t2_workers", [1, 8])])
+    write_csv(tables / "t1_cells.csv", rows)
+    write_csv(tables / "t1_series.csv", series)
+    write_csv(tables / "t2_latency.csv", t2)
+    made = plots(series, t2, results / "plots")
+    return snippet_t12(series, t2, census), len(rows), len(made)
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     """CLI entry point."""
     ap = argparse.ArgumentParser(description=__doc__)
@@ -211,24 +206,18 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "--census", default=None, help="default: <results>/census/census.json"
     )
     args = ap.parse_args(argv)
-    cfg = load_config(args.config)
     results = Path(args.results)
     census = load_census(args.census or str(results / "census" / "census.json"))
-    cells = load_t1_cells(results)
-    rows = [summarize_cell(c, census) for c in cells]
-    series = series_t1(rows)
-    t2 = t2_table(cells, census, [int(w) for w in cfg.get("t2_workers", [1, 8])])
     tables = results / "tables"
     tables.mkdir(parents=True, exist_ok=True)
-    write_csv(tables / "t1_cells.csv", rows)
-    write_csv(tables / "t1_series.csv", series)
-    write_csv(tables / "t2_latency.csv", t2)
-    made = plots(series, t2, results / "plots")
-    text = snippet_t12(series, t2, census)
+    text, n_t1, n_plots = write_t12(results, census, load_config(args.config), tables)
+    t5_text, n_t5 = write_t5(results, census, tables)
+    text += ("\n" + t5_text) if t5_text else ""
     with open(results / "REPORT_SNIPPET.md", "w", encoding="utf-8") as fh:
         fh.write(text)
     print(
-        f"{len(rows)} T1 cells -> {tables}, {len(made)} plots, {results}/REPORT_SNIPPET.md"
+        f"{n_t1} T1 cells, {n_t5} T5 cells -> {tables}, {n_plots} plots, "
+        f"{results}/REPORT_SNIPPET.md"
     )
     print(text)
     return 0
