@@ -189,8 +189,9 @@ def snippet_t12(
 
 def write_t12(
     results: Path, census: Dict[str, Any], cfg: Dict[str, Any], tables: Path
-) -> Tuple[str, int, int]:
-    """The T1 / T2 tables, plots and snippet text; (text, cells, plots)."""
+) -> Tuple[str, int, int, int]:
+    """The T1 / T2 tables, plots and snippet text with the PIDE MCP row;
+    (text, T1 cells, plots, PIDE cells)."""
     cells = load_t1_cells(results)
     rows = [summarize_cell(c, census) for c in cells]
     series = series_t1(rows)
@@ -201,8 +202,8 @@ def write_t12(
     made = plots(series, t2, results / "plots")
     text = snippet_t12(series, t2, census) if cells else ""  # no T1 cell: no T1 tables
     ips_env = next((c.get("ips_env") for c in cells if c.get("ips_env")), None)
-    pide_text, _n_pide = write_pide(results, census, tables, series, ips_env)
-    return "\n".join(x for x in (text, pide_text) if x), len(rows), len(made)
+    pide_text, n_pide = write_pide(results, census, tables, series, ips_env)
+    return "\n".join(x for x in (text, pide_text) if x), len(rows), len(made), n_pide
 
 
 def write_all(
@@ -213,20 +214,21 @@ def write_all(
     (its Table: rollouts per hour, latency, branch cost, agreement, bounded
     step): T6 answers the first, T1 is the step rate and its scaling (with the
     PIDE row), T2 a by-product (D11), then T3, T4, T5."""
-    t12 = write_t12(results, census, cfg, tables)  # (text, cells, plots)
-    t5 = (*write_t5(results, census, tables), 0)
-    t4 = (*write_t4(results, tables), 0)
-    t3 = write_t3(results, tables)
-    t6 = write_t6(results, tables)
-    order = (t6, t12, t3, t4, t5)
-    counts = ", ".join(
-        f"{part[1]} {name} cells"
-        for name, part in (("T1", t12), ("T5", t5), ("T4", t4), ("T3", t3), ("T6", t6))
-    )
+    t12_text, n_t1, t12_plots, n_pide = write_t12(results, census, cfg, tables)
+    parts: Dict[str, Tuple[str, int, int]] = {  # (text, cells, plots)
+        "T1": (t12_text, n_t1, t12_plots),
+        "PIDE": ("", n_pide, 0),  # its paragraph is in T1's text
+        "T5": (*write_t5(results, census, tables), 0),
+        "T4": (*write_t4(results, tables), 0),
+        "T3": write_t3(results, tables),
+        "T6": write_t6(results, tables),
+    }
+    order = ("T6", "T1", "T3", "T4", "T5")
+    counts = ", ".join(f"{p[1]} {name} cells" for name, p in parts.items())
     return (
-        "\n".join(part[0] for part in order if part[0]),
+        "\n".join(parts[k][0] for k in order if parts[k][0]),
         counts,
-        sum(part[2] for part in order),
+        sum(p[2] for p in parts.values()),
     )
 
 

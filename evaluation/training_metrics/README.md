@@ -53,8 +53,10 @@ Ubuntu server; if the two differ, this README is right.
 - Step 5: the slowest worker of each T6 matrix × `--contention` (3; once T1 has run, T1's slowdown at W = 32 is the
   better value) + the server start, never below 7200 s. Re-run it after a finished T6a W = 1 cell for real timeout
   shares.
-- Long runs: under `nohup … &` or tmux, e.g. `nohup scripts/10_run_t1_t2.sh > results/t1.log 2>&1 &`. One runner per
-  results tree (`results/RUNNER_LOCK`).
+- Long runs: under `nohup … &` or tmux, e.g. `nohup scripts/10_run_t1_t2.sh >> results/t1.log 2>&1 &` (`>>`: a
+  restart keeps the log of the run that stopped). One runner per results tree (`results/RUNNER_LOCK`).
+- The smoke passes when `02_smoke.sh` exits 0; its T6b calibration cell may be `empty` (the smoke file has no proof
+  of 2–40 commands) and `calibrate_t6` then uses T6a's figures.
 - Analysis at any time: `20_analyze.sh` reads every finished cell and recomputes every number from the raw records.
 
 ## 2. Resume and failures
@@ -128,7 +130,8 @@ results/
 └── REPORT_SNIPPET.md                            # 20: the report's paragraphs, in the order of its questions
 ```
 
-Hand-over: the release asset (step 12), and the raw tree copied into `FullBackward/Isabelle-Pool-Server-results`
+Hand-over: the release asset (step 12; it goes to `origin`'s repository, `REPO=FullBackward/Isabelle-Pool-Server`
+overrides), and the raw tree copied into `FullBackward/Isabelle-Pool-Server-results`
 under `training-metrics-<date>/` (as the memory-scaling data). The tables and plots the report uses go to
 `docs/report/v2/figures/`; the `fig:rollout` figure is drawn from T6a's call sequence.
 

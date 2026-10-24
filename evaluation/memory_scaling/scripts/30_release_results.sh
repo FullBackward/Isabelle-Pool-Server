@@ -11,15 +11,16 @@ STAMP="$(date -u +%Y-%m-%d)"
 TAG="${TAG:-memscale-$STAMP}"
 FILE="${FILE:-$HOME/memory-scaling-results-$STAMP.tgz}"
 REPO="${REPO:-$(git -C "$HERE" remote get-url origin | sed -E 's#.*github.com[:/]##; s#\.git$##')}"
-if [ -z "${GH_TOKEN:-}" ] && [ -r "$HOME/.git-credentials" ]; then
-  GH_TOKEN="$(grep -o 'github.com' -m1 "$HOME/.git-credentials" >/dev/null && sed -nE 's#https://[^:]+:([^@]+)@github.com.*#\1#p' "$HOME/.git-credentials" | head -1)"
-fi
-[ -n "${GH_TOKEN:-}" ] || { echo "GH_TOKEN is not set and ~/.git-credentials has no github.com token"; exit 2; }
-export GH_TOKEN TAG FILE REPO
 echo "packing results/ -> $FILE"
 tar czf "$FILE" results/
 ls -lh "$FILE"
 [ -n "${DRY_RUN:-}" ] && { echo "DRY_RUN: would create release $TAG on $REPO and upload $(basename "$FILE")"; exit 0; }
+if [ -z "${GH_TOKEN:-}" ] && [ -r "$HOME/.git-credentials" ]; then
+  # `|| true`: no github.com line must reach the message below, not stop the script (set -e)
+  GH_TOKEN="$( { grep -o 'github.com' -m1 "$HOME/.git-credentials" >/dev/null && sed -nE 's#https://[^:]+:([^@]+)@github.com.*#\1#p' "$HOME/.git-credentials" | head -1; } || true)"
+fi
+[ -n "${GH_TOKEN:-}" ] || { echo "GH_TOKEN is not set and ~/.git-credentials has no github.com token"; exit 2; }
+export GH_TOKEN TAG FILE REPO
 python3 - <<'PY'
 import json, os, subprocess, urllib.error, urllib.request
 token, repo, tag, path = (os.environ[k] for k in ("GH_TOKEN", "REPO", "TAG", "FILE"))

@@ -8,5 +8,11 @@ set -u
 source "$(dirname "$0")/_py.sh"
 "$PY" -u -m trainmetrics.run_matrix "$@"
 rc=$?
-"$PY" -u -m trainmetrics.run_matrix --experiment pide "$@" || rc=1   # the PIDE MCP row (~20 min)
+# the PIDE MCP row (~20 min) at its own W (config pide.workers, D3: 1 and 8): a --workers meant for T1 is not passed
+PIDE_ARGS=(); skip=0
+for a in "$@"; do
+  if [ "$skip" = 1 ]; then skip=0; continue; fi
+  case "$a" in --workers) skip=1 ;; --workers=*) ;; *) PIDE_ARGS+=("$a") ;; esac
+done
+"$PY" -u -m trainmetrics.run_matrix --experiment pide ${PIDE_ARGS[@]+"${PIDE_ARGS[@]}"} || rc=1
 exit $rc

@@ -81,6 +81,7 @@ def test_the_t4_snippet_and_tables(tmp_path):
     assert analyze.main(["--results", str(root)]) == 0
     text = (root / "REPORT_SNIPPET.md").read_text()
     assert "## T4 agreement" in text and "1 of 2 agree" in text
+    assert "## T1" not in text  # review 7e93e46 S4: no T1 cell, no empty T1 tables
     assert (
         '`*** Bad bibtex_entry "McMillan-PhDThesis"' in text
     )  # the telling line, not the elapsed time

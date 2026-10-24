@@ -90,8 +90,13 @@ You can run T1 to T5. Do not run T6 (step 9.5). Send the output to the builder.
    ```
 2. The script deletes `results/smoke/` and then runs: a census of three small files, T1 with one and two
    workers, the PIDE MCP row with one worker, the T6a and T6b calibration cells, and the analysis.
-3. Each cell must show `ok`. If a cell does not show `ok`, do not continue. Read the log of that cell in
-   `results/smoke/`.
+3. When the script stops, show its exit status:
+   ```bash
+   echo $?
+   ```
+   It must show `0`. If it shows another number, do not continue. Read the logs in `results/smoke/runner-logs/`.
+4. The T1 lines and the PIDE MCP line show `ok`. The T6b calibration can show `empty`: the smoke file then has no
+   proof of 2 to 40 commands. This is correct. The calculation in step 8 then uses the T6a figures.
 
 ## 8. Set the T6 cell timeouts
 
@@ -110,24 +115,26 @@ starts one experiment in the background and writes its log.
 
 1. T1 throughput and the PIDE MCP row (about 1 hour 20 minutes):
    ```bash
-   nohup scripts/10_run_t1_t2.sh > results/t1.log 2>&1 &
+   nohup scripts/10_run_t1_t2.sh >> results/t1.log 2>&1 &
    ```
 2. T5 bounded step (about 1 hour):
    ```bash
-   nohup scripts/11_run_t5.sh > results/t5.log 2>&1 &
+   nohup scripts/11_run_t5.sh >> results/t5.log 2>&1 &
    ```
 3. T4 agreement (about 1 hour):
    ```bash
-   nohup scripts/12_run_t4.sh > results/t4.log 2>&1 &
+   nohup scripts/12_run_t4.sh >> results/t4.log 2>&1 &
    ```
 4. T3 branch cost (about 1 hour):
    ```bash
-   nohup scripts/13_run_t3.sh > results/t3.log 2>&1 &
+   nohup scripts/13_run_t3.sh >> results/t3.log 2>&1 &
    ```
 5. T6 rollout rate (about 3 hours):
    ```bash
-   nohup scripts/14_run_t6.sh > results/t6.log 2>&1 &
+   nohup scripts/14_run_t6.sh >> results/t6.log 2>&1 &
    ```
+
+NOTE: The commands add to the log (`>>`). A restart keeps the log of the run that stopped.
 
 To see the progress of an experiment, show the end of its log (example for T1):
 ```bash
@@ -170,7 +177,8 @@ refuses to start while another runner holds it.
    GH_TOKEN=<token> scripts/30_release_results.sh
    ```
    The script prints the download link. To make a second release on the same day, put `TAG=<name>` before the
-   command.
+   command. The release goes to the repository of `git remote get-url origin`. If that is not
+   `FullBackward/Isabelle-Pool-Server`, put `REPO=FullBackward/Isabelle-Pool-Server` before the command.
 2. If you do not have a token, pack the results by hand:
    ```bash
    tar czf ~/training-metrics-results.tgz results/

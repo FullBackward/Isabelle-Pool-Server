@@ -240,3 +240,19 @@ def test_census_relative_numbers_count_only_replays_that_ran(tmp_path):
     assert row["skipped_files"] == 1 and row["skipped_census_s"] == 0.5
     # replay time = 2 x (0.25 acquire + 0.05 enter + 2 x 0.1 verify) = 1.0 s
     assert row["acquire_share"] == 0.5 and row["slowdown_vs_census"] == 1.0
+
+
+def test_the_snippet_follows_the_report_questions(tmp_path, monkeypatch):
+    """Review 7e93e46 S4: T6 (rollouts per hour) before T1 (+ the PIDE row and
+    T2), then T3, T4, T5; the count line names the PIDE cells too."""
+    from trainmetrics import analyze  # pylint: disable=import-outside-toplevel
+
+    monkeypatch.setattr(analyze, "write_t12", lambda *a: ("## T1 x", 2, 1, 3))
+    monkeypatch.setattr(analyze, "write_t5", lambda *a: ("## T5 x", 1))
+    monkeypatch.setattr(analyze, "write_t4", lambda *a: ("## T4 x", 1))
+    monkeypatch.setattr(analyze, "write_t3", lambda *a: ("## T3 x", 1, 1))
+    monkeypatch.setattr(analyze, "write_t6", lambda *a: ("## T6a x\n## T6b x", 4, 2))
+    text, counts, plots = analyze.write_all(tmp_path, {}, {}, tmp_path)
+    heads = [line for line in text.splitlines() if line.startswith("## ")]
+    assert heads == ["## T6a x", "## T6b x", "## T1 x", "## T3 x", "## T4 x", "## T5 x"]
+    assert "3 PIDE cells" in counts and "2 T1 cells" in counts and plots == 4
