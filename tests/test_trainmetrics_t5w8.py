@@ -340,3 +340,22 @@ def test_a_late_helper_does_not_hide_its_prover():
         "positions": [],
     }
     assert metrics_t5.session_pids(samples, [rec]) == [(10, None)]
+
+
+def test_the_no_loop_baseline_is_pooled_whatever_the_order():
+    """Review e0f8ac6 B1: baseline groups that share a working count (here one
+    other replaying, the rest idle or done) are pooled, so the slowdown does
+    not depend on which group came first."""
+    one = {"ratio": 1.0, "queue_s": 0.0}
+    two = {"ratio": 2.0, "queue_s": 0.0}
+    mid = {"ratio": 1.5, "queue_s": 0.0}
+    # keys: (loop, replay, setup, idle, done) among three others
+    replay_idle = ((0, 1, 0, 2, 0), [one] * 10)
+    replay_done = ((0, 1, 0, 0, 2), [two] * 10)
+    loop_idle = ((1, 0, 0, 2, 0), [mid] * 10)
+    for order in (
+        [replay_idle, replay_done, loop_idle],
+        [replay_done, replay_idle, loop_idle],
+    ):
+        rel = contention._relative(dict(order))  # pylint: disable=protected-access
+        assert rel and all(abs(x - 1.0) < 1e-9 for x in rel)  # pooled p50 1.5 -> 1.0

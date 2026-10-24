@@ -15,7 +15,7 @@ import json
 import os
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Sequence, Tuple
 
 from .metrics_t12 import p50, p95
 
@@ -140,18 +140,24 @@ def _stats(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
 
 
 def _relative(groups: Dict[Tuple[int, ...], List[Dict[str, Any]]]) -> List[float]:
-    """Each block's ratio while k > 0 others loop, over the p50 of the blocks
-    while none loops, at the same number of others working (loop + replay)
-    and none in setup."""
-    base: Dict[int, Optional[float]] = {}
+    """Each block's ratio while k > 0 others loop, over the baseline at the
+    same number of others WORKING (loop + replay; idle and done are not
+    matched) with none in setup: the p50 of every no-loop block at that working
+    count, pooled over all the groups that share it (review e0f8ac6 B1: one
+    group per idle / done split used to overwrite the others, so the answer
+    depended on dict order)."""
+    pooled: Dict[int, List[float]] = {}
     for k, v in groups.items():
         if k[0] == 0 and k[2] == 0:
-            base[k[1]] = _stats(v)["ratio_p50"]
+            pooled.setdefault(k[1], []).extend(
+                float(r["ratio"]) for r in v if r["ratio"] is not None
+            )
+    base = {n: p50(xs) for n, xs in pooled.items() if xs}
     out: List[float] = []
     for k, v in groups.items():
         b0 = base.get(k[0] + k[1]) if k[0] > 0 and k[2] == 0 else None
         if b0:
-            out.extend(r["ratio"] / b0 for r in v if r["ratio"] is not None)
+            out.extend(float(r["ratio"]) / b0 for r in v if r["ratio"] is not None)
     return out
 
 
@@ -163,8 +169,10 @@ def state_table(
     block's midpoint (review 73f9cd4 S1: a block that merely misses a loop is
     no contention-free baseline, the others may be acquiring, the heaviest
     phase). ``loop_vs_replay.slowdown`` = the p50 of the blocks' ratios while
-    k others loop over their no-loop p50 at the same number of others working
-    (1.0: a loop costs the others no more than replay does)."""
+    k others loop over the pooled no-loop p50 at the same number of others
+    working, where working = loop + replay and idle / done are ignored in the
+    match, none in setup (:func:`_relative`; 1.0: a loop costs the others no
+    more than replay does)."""
     ivs = worker_intervals(files)
     groups: Dict[Tuple[int, ...], List[Dict[str, Any]]] = {}
     for f in files:
