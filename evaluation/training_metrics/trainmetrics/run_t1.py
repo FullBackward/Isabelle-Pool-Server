@@ -18,7 +18,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from .census import counts_by_stem, load_census, load_config, partial_by_stem
 from .corpus import CorpusFile, assignment, corpus_sha, load_corpus, load_paths
-from .harness import cell_arg_parser, open_registry, run_with_server
+from .harness import open_registry, run_with_server, worker_arg_parser
 from .replay import ReplayRecord, replay_file_fresh
 
 
@@ -213,12 +213,7 @@ async def amain(args: argparse.Namespace) -> int:
 
 def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     """CLI."""
-    ap = cell_arg_parser(__doc__)
-    ap.add_argument("--workers", type=int, required=True)
-    ap.add_argument("--rep", type=int, default=0)
-    ap.add_argument("--quota", type=int, default=0, help="files per worker (config)")
-    ap.add_argument("--files", default="", help="restrict the corpus to these stems")
-    return ap.parse_args(argv)
+    return worker_arg_parser(__doc__).parse_args(argv)
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:

@@ -100,6 +100,15 @@ t6:                                          # rollout rate (design §T6 v0.4, p
     alternative_budget_s: 10
     cell_timeout_s: 7200                     # as t6a's, from trainmetrics.calibrate_t6
   local_smoke: {files_per_worker: 1, t6a: {problems_per_file: 3}, t6b: {problems_per_file: 2}}
+pide:                                        # the PIDE MCP row of T1 (D3, plan B2, stage 8a): topology A, edit-and-settle
+  workers: [1, 8]                            # D3: no W = 32
+  repeats: 3                                 # as T1
+  poll_s: 0.1                                # get_state while a block settles: the resolution of the row (IPS's too)
+  command: [isabelle, pide_mcp]
+  extra_args: []                             # Isabelle's defaults, as in memscale (recorded: session_options);
+                                             # e.g. ["-o", "parallel_proofs=2"] to match IPS's
+  start_timeout_s: 900
+  no_build: true                             # the heap exists (the same as IPS's)
 budget:                                      # design B3: min(max_s, max(min_s, per_command_s * n))
   per_command_s: 2
   min_s: 30

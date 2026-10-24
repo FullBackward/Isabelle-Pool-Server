@@ -40,6 +40,17 @@ def cell_arg_parser(doc: Optional[str]) -> argparse.ArgumentParser:
     return ap
 
 
+def worker_arg_parser(doc: Optional[str]) -> argparse.ArgumentParser:
+    """:func:`cell_arg_parser` plus the options of a W-worker cell over the
+    T1 assignment (T1 and its PIDE MCP row)."""
+    ap = cell_arg_parser(doc)
+    ap.add_argument("--workers", type=int, required=True)
+    ap.add_argument("--rep", type=int, default=0)
+    ap.add_argument("--quota", type=int, default=0, help="files per worker (config)")
+    ap.add_argument("--files", default="", help="restrict the corpus to these stems")
+    return ap
+
+
 def write_manifest(out_dir: Path, body: Dict[str, Any]) -> Path:
     """``manifest.json`` (written at start and at the end, as in memscale)."""
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -58,9 +69,13 @@ async def run_with_server(  # pylint: disable=too-many-arguments,too-many-locals
     work: Work,
     url: Optional[str] = None,
     external: bool = False,
+    driver: Any = None,
 ) -> Dict[str, Any]:
     """Run ``work`` against a server for ``heap`` and return the manifest body
-    (``outcome``: ok, error, terminated; ``work`` sets ok)."""
+    (``outcome``: ok, error, terminated; ``work`` sets ok). ``driver``: a
+    ready tool driver instead of an IPS server (the PIDE MCP row, stage 8a):
+    ``work`` then gets the driver as its client, and the manifest's
+    ``server`` names the driver's first process group."""
     # pylint: disable=import-outside-toplevel
     from memscale.phases import environment_block
     from memscale.sampler import Sampler
@@ -68,7 +83,7 @@ async def run_with_server(  # pylint: disable=too-many-arguments,too-many-locals
     from client.async_client import PoolAsyncClient
 
     ips = cfg["ips"]
-    driver = make_driver(cfg, heap, url, external)
+    driver = driver if driver is not None else make_driver(cfg, heap, url, external)
     head = {
         **head,
         "outcome": "running",
@@ -85,30 +100,32 @@ async def run_with_server(  # pylint: disable=too-many-arguments,too-many-locals
         await driver.setup()
         # the server's pid/process group and cgroup at once, so the runner can
         # kill it if this cell is killed before its finally (review 830f9ac B1, S2)
-        body["server"] = {
-            "pid": driver.proc.pid if driver.proc is not None else None,
-            "pgid": driver.proc.pid if driver.proc is not None else None,
-            "cgroup_dir": driver.cgroup_dir,
-            "external": driver.external,
-            "started_at": driver.server_started_at,
-        }
+        body["server"] = _server_facts(driver)
         write_manifest(out_dir, body)
-        patterns = list(ips.get("root_patterns", [])) if driver.external else []
+        external = bool(getattr(driver, "external", False))
+        patterns = list(ips.get("root_patterns", [])) if external else []
         with Sampler(
             str(out_dir / "samples.jsonl"),
             root_pids=driver.root_pids(),
             patterns=patterns,
             interval_s=float(cfg.get("sample_interval_s", 1.0)),
-            cgroup_dir=driver.cgroup_dir,
+            cgroup_dir=getattr(driver, "cgroup_dir", None),
         ) as sampler:
-            async with PoolAsyncClient(
-                driver.url, timeout=BUDGET_MAX_S + 120.0
-            ) as client:
-                await work(client, sampler, body, lambda b: write_manifest(out_dir, b))
-                try:
-                    body["server_memory_after"] = await client.memory_status()
-                except Exception:  # pylint: disable=broad-exception-caught
-                    body["server_memory_after"] = None
+
+            def ckpt(b: Dict[str, Any]) -> None:
+                write_manifest(out_dir, b)
+
+            if not hasattr(driver, "url"):  # a tool driver is its own client
+                await work(driver, sampler, body, ckpt)
+            else:
+                async with PoolAsyncClient(
+                    driver.url, timeout=BUDGET_MAX_S + 120.0
+                ) as client:
+                    await work(client, sampler, body, ckpt)
+                    try:
+                        body["server_memory_after"] = await client.memory_status()
+                    except Exception:  # pylint: disable=broad-exception-caught
+                        body["server_memory_after"] = None
         body["driver"] = driver.describe()
     except asyncio.CancelledError:
         body["outcome"] = "terminated"
@@ -125,6 +142,24 @@ async def run_with_server(  # pylint: disable=too-many-arguments,too-many-locals
     return body
 
 
+def _server_facts(driver: Any) -> Dict[str, Any]:
+    """What the matrix runner needs to stop the cell's server if the cell is
+    killed (review 830f9ac B1, S2): its pid / process group and cgroup. An
+    IPS driver has ``proc`` (None when external); a tool driver's first root
+    process leads its own group (PIDE MCP: ``start_new_session``)."""
+    if hasattr(driver, "proc"):
+        pid = driver.proc.pid if driver.proc is not None else None
+    else:
+        pid = next(iter(driver.root_pids()), None)
+    return {
+        "pid": pid,
+        "pgid": pid,
+        "cgroup_dir": getattr(driver, "cgroup_dir", None),
+        "external": bool(getattr(driver, "external", False)),
+        "started_at": getattr(driver, "server_started_at", None),
+    }
+
+
 async def run_cli_cell(  # pylint: disable=too-many-arguments
     cfg: Dict[str, Any],
     cell: Callable[..., Awaitable[Any]],
@@ -138,11 +173,13 @@ async def run_cli_cell(  # pylint: disable=too-many-arguments
     url: Optional[str],
     external: bool,
     label: str,
+    driver: Any = None,
 ) -> int:
     """A cell's CLI body: ``cell(client, *cell_args, heap=, seed=, out_dir=,
     sampler=, body=, checkpoint=)`` under :func:`run_with_server`, ``extra``
     merged into the manifest first; prints the outcome and the summary and
-    returns the exit code (0 only for ok)."""
+    returns the exit code (0 only for ok). ``driver``: a tool driver instead
+    of an IPS server (see :func:`run_with_server`)."""
 
     async def work(client: Any, sampler: Any, body: Dict[str, Any], ckpt: Any) -> None:
         body.update(extra)
@@ -165,6 +202,7 @@ async def run_cli_cell(  # pylint: disable=too-many-arguments
         work=work,
         url=url,
         external=external,
+        driver=driver,
     )
     error = f" ({body.get('error')})" if body.get("error") else ""
     print(f"{label}: {body['outcome']}{error} -> {out_dir}", flush=True)

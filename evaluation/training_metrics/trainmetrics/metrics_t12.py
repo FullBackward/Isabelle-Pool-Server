@@ -41,11 +41,12 @@ def _r(x: Optional[float], nd: int = 3) -> Optional[float]:
     return None if x is None else round(x, nd)
 
 
-def load_t1_cells(results: Path) -> List[Dict[str, Any]]:
-    """Every finished T1 cell under ``results/t1``: the manifest plus
-    ``_replays`` and ``_samples_path``."""
+def load_t1_cells(results: Path, sub: str = "t1") -> List[Dict[str, Any]]:
+    """Every finished T1 cell under ``results/<sub>`` (``pide``: the PIDE MCP
+    row, written in T1's format): the manifest plus ``_replays`` and
+    ``_samples_path``."""
     out: List[Dict[str, Any]] = []
-    for mpath in sorted((results / "t1").glob("w*/rep*/manifest.json")):
+    for mpath in sorted((results / sub).glob("w*/rep*/manifest.json")):
         with open(mpath, "r", encoding="utf-8") as fh:
             m = dict(json.load(fh))
         reps: List[Dict[str, Any]] = []

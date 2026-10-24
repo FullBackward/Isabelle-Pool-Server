@@ -191,7 +191,9 @@ def test_a_w1_cell_on_a_fake_server(tmp_path):
     assert [a["budget_s"] for a in metis] == [5.0, 5.0] and srv.rollbacks == 2
     assert all(a["outcome"] == "kept" and a["rolled_back"] for a in metis)
     assert all(a["source_unchanged"] for a in atts)
-    assert all(a["t_settled"] >= a["t_start"] + a["wall_s"] for a in atts)  # 1676d29 B1
+    # 1676d29 B1; t_start is wall clock, wall_s a rounded monotonic span: allow 1 ms
+    # (review 7c93aba S1: with SETTLE_S 0 the pause is ~0 and the sum can miss by < 1 ms)
+    assert all(a["t_settled"] >= a["t_start"] + a["wall_s"] - 1e-3 for a in atts)
     assert all(
         p["verdict_match"] and p["recovery_s"] is not None for p in f["positions"]
     )

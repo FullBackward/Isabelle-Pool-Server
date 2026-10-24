@@ -6,7 +6,9 @@ memscale). ``--experiment t1`` (default: T1/T2, ``python -m
 trainmetrics.run_t1``, config ``workers`` / ``repeats``) or ``t6a`` (``python -m
 trainmetrics.run_t6 --style t6a``, config ``t6.workers`` / ``t6.repeats`` and
 ``t6.t6a.cell_timeout_s``) or ``t6b`` (the same with ``--style t6b``);
-``--quota`` is then the files per worker.
+``--quota`` is then the files per worker; ``pide`` (T1's PIDE MCP row,
+``python -m trainmetrics.drive_pide_chunks``, config ``pide.workers`` /
+``pide.repeats``).
 
     python -m trainmetrics.run_matrix [--experiment t6a] [--workers 1,2,4] [--reps 1] [--local-smoke] [--ips-external] [--dry-run]
 """
@@ -23,24 +25,27 @@ from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Sequence, Set, Tuple
 
 from .census import load_config
+from .drive_pide_chunks import cell_dir as pide_cell_dir
 from .harness import cell_arg_parser
 from .procctl import cgroup_busy, group_alive, group_tree, kill_group, kill_server
 from .run_t1 import cell_dir
 from .run_t6 import STYLES
 from .run_t6 import cell_dir as t6_cell_dir
 
-EXPERIMENTS = ("t1",) + STYLES
+EXPERIMENTS = ("t1", "pide") + STYLES
 
 
 def _section(cfg: Dict[str, Any], experiment: str) -> Dict[str, Any]:
     """Where the experiment's W list and repeats live in the config."""
-    return cfg if experiment == "t1" else dict(cfg.get("t6") or {})
+    if experiment in ("t1", "pide"):
+        return cfg if experiment == "t1" else dict(cfg.get("pide") or {})
+    return dict(cfg.get("t6") or {})
 
 
 def cell_timeout_s(cfg: Dict[str, Any], experiment: str) -> float:
     """The experiment's cell timeout: T1 7200 s; a T6 style its own
     ``t6.<style>.cell_timeout_s``, else ``t6.cell_timeout_s``, else 7200 s."""
-    if experiment == "t1":
+    if experiment in ("t1", "pide"):
         return 7200.0
     t6 = dict(cfg.get("t6") or {})
     style = dict(t6.get(experiment) or {})
@@ -66,6 +71,8 @@ def cell_path(out: Path, w: int, rep: int, experiment: str = "t1") -> Path:
     """The experiment's cell directory."""
     if experiment == "t1":
         return cell_dir(out, w, rep)
+    if experiment == "pide":
+        return pide_cell_dir(out, w, rep)
     return t6_cell_dir(out, experiment, w, rep)
 
 
@@ -100,7 +107,9 @@ def child_cmd(args: argparse.Namespace, w: int, rep: int) -> List[str]:
     """The cell's command line (run_t1, or run_t6 with its style)."""
     experiment = getattr(args, "experiment", "t1")
     module = ["trainmetrics.run_t1"]
-    if experiment != "t1":
+    if experiment == "pide":
+        module = ["trainmetrics.drive_pide_chunks"]
+    elif experiment != "t1":
         module = ["trainmetrics.run_t6", "--style", experiment]
     cmd = [
         sys.executable,
@@ -120,15 +129,15 @@ def child_cmd(args: argparse.Namespace, w: int, rep: int) -> List[str]:
     ]
     for flag, on in (
         ("--local-smoke", args.local_smoke),
-        ("--ips-external", args.ips_external),
+        ("--ips-external", args.ips_external and experiment != "pide"),
     ):
         if on:
             cmd.append(flag)
-    if args.url:
+    if args.url and experiment != "pide":  # the PIDE row starts its own MCP process
         cmd += ["--url", args.url]
     if args.quota:
         cmd += [
-            "--quota" if experiment == "t1" else "--files-per-worker",
+            "--quota" if experiment in ("t1", "pide") else "--files-per-worker",
             str(args.quota),
         ]
     return cmd

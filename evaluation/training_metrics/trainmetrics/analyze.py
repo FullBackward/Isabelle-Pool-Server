@@ -1,5 +1,5 @@
 """Tables, plots and the report snippet from the results tree (T1
-throughput, T2 latency; T5 bounded step, trainmetrics.analyze_t5; T4
+throughput with its PIDE MCP row, trainmetrics.analyze_pide; T2 latency; T5 bounded step, trainmetrics.analyze_t5; T4
 agreement, trainmetrics.analyze_t4; T3 branch cost, trainmetrics.analyze_t3;
 T6 rollout rate, trainmetrics.analyze_t6).
 
@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from . import EXPERIMENT_DIR
+from .analyze_pide import write_pide
 from .analyze_t3 import write_t3
 from .analyze_t4 import write_t4
 from .analyze_t5 import write_t5
@@ -198,7 +199,9 @@ def write_t12(
     write_csv(tables / "t1_series.csv", series)
     write_csv(tables / "t2_latency.csv", t2)
     made = plots(series, t2, results / "plots")
-    return snippet_t12(series, t2, census), len(rows), len(made)
+    text = snippet_t12(series, t2, census)
+    pide_text, _n_pide = write_pide(results, census, tables, series)
+    return text + ("\n" + pide_text if pide_text else ""), len(rows), len(made)
 
 
 def write_later(
