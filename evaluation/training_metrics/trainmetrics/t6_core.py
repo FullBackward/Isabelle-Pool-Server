@@ -7,9 +7,10 @@ stage 7), then the corpus block advances.
 Every call is an *event* ``{worker, stem, kind, t_start, wall_s, ...}`` in one
 list for the cell — kinds ``acquire``, ``enter``, ``advance`` (``phase``
 ``prefix`` before the file's first problem), ``checkpoint``, ``rollout``,
-``restore``, ``integrity`` and ``rollback`` (an advance kept unproved, undone
-before its retry) — so the rates and time shares are computed from the
-timestamps (:mod:`trainmetrics.metrics_t6`).
+``restore``, ``integrity``, ``rollback`` (an advance kept unproved, undone
+before its retry) and ``close`` (the session's, review f0d85df S2) — so the
+rates and time shares are computed from the timestamps
+(:mod:`trainmetrics.metrics_t6`).
 
 - **Outcome classes (plan_v1.6 B1):** a rollout is ``proved``,
   ``kept_unproved`` (undone by a restore), ``failed`` or ``timed_out``;
@@ -21,8 +22,10 @@ timestamps (:mod:`trainmetrics.metrics_t6`).
   file stops with ``advance_failed``.
 - **Integrity (S1, stage 6a):** the node source hash before the checkpoint
   and again at the group's end, after its last candidate (and restore): they
-  must be equal, so any text a restore or a discard left behind shows. Every
-  group at W = 1, a seeded quarter at W > 1; its time is its own kind. Not
+  must be equal, so any text a restore or a discard left behind shows; if not,
+  the file stops (``integrity_failed``) and the group's rollouts are counted
+  apart (review f0d85df S1). Every group at W = 1, a seeded quarter at
+  W > 1; its time is its own kind. Not
   after each restore: a source read waits for a stable snapshot, so right
   after a restore it takes ~0.11 s against 4-9 ms settled (stage 6a live),
   time the next verify mostly does not pay (T3: -14 +- 19 ms on short
@@ -266,7 +269,9 @@ def group_t6a(budget_s: float) -> Group:
             if not res.get("success"):
                 return "restore_failed"
         if check:
-            await ctx.source(expect=state, check=True, index=i, at="group_end")
+            end = await ctx.source(expect=state, check=True, index=i, at="group_end")
+            if end is None or end != state:  # the document is not what the loop assumes
+                return "integrity_failed"
         ctx.rec.groups_done += 1
         return None
 
@@ -350,24 +355,40 @@ async def run_file(
     rec = FileRecord(worker=worker, stem=cf.stem, t_start=time.time())
     rec.problems = problems_of(cf, census_file, cell.n_problems)
     acq = await _acquire(cell, cf, rec) if rec.problems else None
-    if acq is not None:
-        try:
-            async with open_session(
-                cell.client, acq, cell.registry, cell.on_change, rec.unclosed
-            ) as sess:
-                rec.session_id = sess.session_id
-                ctx = FileCtx(
-                    cell.client,
-                    sess,
-                    cf,
-                    census_file.get("blocks") or [],
-                    rec,
-                    cell.events,
-                    cell.seed,
-                    cell.integrity_p,
-                )
+    if acq is None:
+        rec.t_end = time.time()
+        return rec
+    mark: List[float] = []  # when the close began (wall clock, monotonic)
+    try:
+        async with open_session(
+            cell.client, acq, cell.registry, cell.on_change, rec.unclosed
+        ) as sess:
+            rec.session_id = sess.session_id
+            ctx = FileCtx(
+                cell.client,
+                sess,
+                cf,
+                census_file.get("blocks") or [],
+                rec,
+                cell.events,
+                cell.seed,
+                cell.integrity_p,
+            )
+            try:
                 rec.stopped = await _walk(ctx, cell.group)
-        except Exception as exc:  # pylint: disable=broad-exception-caught
-            rec.stopped = f"error: {type(exc).__name__}: {exc}"[:300]
+            finally:
+                mark += [time.time(), time.monotonic()]
+    except Exception as exc:  # pylint: disable=broad-exception-caught
+        rec.stopped = f"error: {type(exc).__name__}: {exc}"[:300]
+    if mark:
+        cell.events.append(
+            {
+                "worker": worker,
+                "stem": cf.stem,
+                "kind": "close",
+                "t_start": round(mark[0], 4),
+                "wall_s": round(time.monotonic() - mark[1], 4),
+            }
+        )
     rec.t_end = time.time()
     return rec

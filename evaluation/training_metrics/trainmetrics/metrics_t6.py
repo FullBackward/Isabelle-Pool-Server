@@ -8,7 +8,8 @@ Rates (S2), defined once:
 - *loop rate* = sum over workers of rollouts_w / loop_w, per hour, where
   loop_w is worker w's wall time from its first checkpoint to the end of its
   last rollout (or the restore after it), minus the acquire, enter, prefix,
-  advance, rollback and integrity time that started inside that span.
+  advance, rollback, integrity and close time that started inside that span
+  (the close: review f0d85df S2, a worker's span covers its file switches).
 
 Integrity reads sit before a group's checkpoint and at its end, never between
 loop calls (:mod:`trainmetrics.t6_core`), so excluding them moves no loop
@@ -16,20 +17,21 @@ work out of the loop time.
 
 A *rollout* is a candidate whose outcome is proved, kept unproved, failed or
 timed out (``t6_core.COUNTED``); memory, prover death, a gone session and
-errors are counted apart. *Problems* are completed groups. Time shares are
+errors are counted apart, and so are the candidates of a group whose
+integrity check failed (review f0d85df S1: they ran in a changed document). *Problems* are completed groups. Time shares are
 call time per kind (the rollouts per outcome) over W x the window; the rest
 is the client's time between calls and workers that finished early.
 Queueing (S6) is a verify's client wall minus the server's execution time."""
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
 from .metrics_t12 import p50, p95
 from .t6_core import COUNTED
 
 LOOP = ("checkpoint", "rollout", "restore")
-OUTSIDE = ("acquire", "enter", "advance", "rollback", "integrity")
+OUTSIDE = ("acquire", "enter", "advance", "rollback", "integrity", "close")
 
 
 def _r(x: Optional[float], nd: int = 3) -> Optional[float]:
@@ -63,8 +65,28 @@ def loop_time(events: Sequence[Dict[str, Any]]) -> Optional[float]:
     return max(0.0, t1 - t0 - outside)
 
 
+def _key(e: Dict[str, Any]) -> Tuple[Any, Any, Any]:
+    return (e["worker"], e["stem"], e.get("index"))
+
+
+def failed_groups(events: Sequence[Dict[str, Any]]) -> Set[Tuple[Any, Any, Any]]:
+    """(worker, stem, index) of the groups whose end check failed."""
+    return {
+        _key(e)
+        for e in events
+        if e["kind"] == "integrity"
+        and e.get("at") == "group_end"
+        and e.get("ok") is False
+    }
+
+
 def _rollouts(events: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    return [e for e in events if e["kind"] == "rollout" and e.get("outcome") in COUNTED]
+    bad = failed_groups(events)
+    return [
+        e
+        for e in events
+        if e["kind"] == "rollout" and e.get("outcome") in COUNTED and _key(e) not in bad
+    ]
 
 
 def _rates(
@@ -156,6 +178,8 @@ def _counts(events: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
     """Integrity checks, advances, and the outcomes outside the rollouts."""
     integ = [e for e in events if e["kind"] == "integrity" and e.get("ok") is not None]
     adv = [e for e in events if e["kind"] == "advance"]
+    bad = failed_groups(events)
+    groups = {_key(e) for e in events if e["kind"] == "checkpoint"}
     apart: Dict[str, int] = {}
     for e in events:
         if e["kind"] == "rollout" and e.get("outcome") not in COUNTED + (
@@ -167,6 +191,16 @@ def _counts(events: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
         "integrity": {
             "checked": len(integ),
             "ok": sum(1 for e in integ if e["ok"]),
+            "groups": len(groups),
+            "groups_unchecked": len(groups) - len(integ),
+            "failed_groups": sorted(bad),
+            "rollouts_in_failed_groups": sum(
+                1
+                for e in events
+                if e["kind"] == "rollout"
+                and e.get("outcome") in COUNTED
+                and _key(e) in bad
+            ),
             "reads": _stats(
                 [float(e["wall_s"]) for e in events if e["kind"] == "integrity"]
             ),

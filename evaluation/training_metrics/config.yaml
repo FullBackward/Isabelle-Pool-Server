@@ -84,7 +84,9 @@ t6:                                          # rollout rate (design §T6 v0.4, p
   repeats: 2
   files_per_worker: 3                        # the T1 assignment (seed + rep): a nested prefix across W
   tier_poll_s: 5                             # GET /api/v1/memory tier and used memory, the whole cell
-  integrity_fraction: 0.25                   # restores checked by source hash at W > 1 (every one at W = 1)
+  integrity_fraction: 0.25                   # groups checked by source hash (start = end) at W > 1; all at W = 1
+  cell_timeout_s: 7200                       # the matrix runner's per-cell wall (S8): set it from the smoke's T6a
+                                             # calibration (scripts/02_smoke.sh prints suggested_cell_timeout_s)
   t6a:
     problems_per_file: 8                     # the first 8 census-proved theorems of each file
     candidate_budget_s: 20                   # every D9 candidate but the corpus proof (census rule)

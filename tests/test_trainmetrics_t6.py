@@ -243,7 +243,10 @@ def test_every_group_is_checked_at_w1(tmp_path):
                 assert ev[k + 1]["at"] == "group_end"
     integ = body["summary"]["integrity"]
     assert integ["checked"] == integ["ok"] == 2 and integ["reads"]["n"] == 4
+    assert integ["groups"] == 2 and integ["groups_unchecked"] == 0
     assert body["matched_stems"] == ["Ta"]
+    # review f0d85df S2: the session's close is an event (outside the loop)
+    assert [e["kind"] for e in ev][-1] == "close"
 
 
 def test_a_leftover_after_the_group_fails_the_check(tmp_path):
@@ -260,7 +263,13 @@ def test_a_leftover_after_the_group_fails_the_check(tmp_path):
 
     srv.restore_checkpoint = sloppy
     body = _cell(tmp_path, srv, files, census, workers=1)
-    assert body["summary"]["integrity"]["ok"] == 0
+    s = body["summary"]
+    # review f0d85df S1: the file stops, the group's rollouts are counted apart
+    assert s["integrity"]["ok"] == 0 and s["integrity"]["failed_groups"] == [
+        (0, "Ta", 0)
+    ]
+    assert s["stopped"] == [("Ta", 0, "integrity_failed")]
+    assert s["rollouts"] == 0 and s["integrity"]["rollouts_in_failed_groups"] == 8
 
 
 def test_an_advance_is_retried_once_at_the_maximum_budget(tmp_path):
@@ -319,14 +328,15 @@ def test_the_loop_time_and_the_rates():
         _e(0, "restore", 11.15, 0.1),
         _e(0, "rollout", 11.25, 2.0, outcome="failed", candidate="by_auto"),
         _e(0, "integrity", 13.25, 0.15, at="group_end", ok=True),
-        _e(0, "advance", 13.4, 1.0, phase="advance", proved=True, census_proved=True),
+        _e(0, "advance", 13.4, 0.6, phase="advance", proved=True, census_proved=True),
+        _e(0, "close", 14.0, 0.4),  # a file switch inside the span: outside the loop
         _e(0, "checkpoint", 14.4, 0.1),
         _e(0, "rollout", 14.5, 1.5, outcome="timed_out", candidate="by_simp"),
         _e(0, "rollout", 16.0, 0.0, outcome="not_applicable", candidate="truncated"),
         _e(0, "rollout", 16.0, 0.5, outcome="memory", candidate="sorry"),
     ]
     # from the first checkpoint (10.05) to the last rollout's end (16.5), minus
-    # the group-end read (0.15) and the advance (1.0) inside
+    # the group-end read (0.15), the advance (0.6) and the close (0.4) inside
     assert metrics_t6.loop_time(events) == pytest.approx(6.45 - 1.15)
     s = metrics_t6.summarize_t6(
         events,
@@ -344,3 +354,80 @@ def test_the_loop_time_and_the_rates():
     assert s["matched"]["per_rollout_s"] == round(
         (0.1 + 1 + 0.1 + 2 + 0.1 + 1.5 + 0.5) / 3, 4
     )
+
+
+def test_the_matrix_runs_t6a_cells_from_the_t6_section(tmp_path):
+    from trainmetrics import run_matrix  # pylint: disable=import-outside-toplevel
+
+    cfg = {"workers": [1, 2, 4], "repeats": 3, "t6": {"workers": [8, 1], "repeats": 2}}
+    assert list(run_matrix.cells(cfg, experiment="t6a")) == [
+        (1, 0),
+        (1, 1),
+        (8, 0),
+        (8, 1),
+    ]
+    assert (
+        run_matrix.cell_path(tmp_path, 8, 1, "t6a") == tmp_path / "t6a" / "w8" / "rep1"
+    )
+    ns = run_matrix.argparse.Namespace(
+        experiment="t6a",
+        config="c",
+        census="x.json",
+        out="o",
+        local_smoke=False,
+        ips_external=True,
+        url=None,
+        quota=1,
+    )
+    cmd = run_matrix.child_cmd(ns, 8, 1)
+    assert cmd[3:6] == ["trainmetrics.run_t6", "--style", "t6a"]
+    assert cmd[-2:] == ["--files-per-worker", "1"] and "--ips-external" in cmd
+
+
+def _cells_on_disk(tmp_path):
+    files, census, originals = _setup(tmp_path, names=("Ta", "Tb"))
+    root = tmp_path / "results"
+    for w in (1, 2):
+        out = run_t6.cell_dir(root, "t6a", w, 0)
+        body = asyncio.run(
+            run_t6.run_cell(
+                Fake(originals),
+                T6,
+                files,
+                census,
+                "t6a",
+                w,
+                heap="HOL",
+                seed=3,
+                out_dir=out,
+            )
+        )
+        body["rep"] = 0
+        (out / "manifest.json").write_text(json.dumps(body, default=str))
+    return root
+
+
+def test_the_t6a_analysis_and_the_calibration(tmp_path):
+    from trainmetrics import analyze_t6  # pylint: disable=import-outside-toplevel
+
+    root = _cells_on_disk(tmp_path)
+    tables = root / "tables"
+    tables.mkdir()
+    text, n, _plots = analyze_t6.write_t6(root, tables)
+    assert n == 2 and "## T6a whole-proof rollouts" in text
+    rows = [analyze_t6.cell_row(c) for c in analyze_t6.load_t6_cells(root, "t6a")]
+    ser = analyze_t6.series(rows)
+    assert [s["workers"] for s in ser] == [1, 2] and ser[0]["e2e_speedup"] == 1.0
+    assert "| 1 | 1 |" in text and "| 2 | 1 |" in text
+    for name in ("t6a_cells.csv", "t6a_series.csv", "t6a_candidates.csv"):
+        assert (tables / name).exists()
+    cal = analyze_t6.calibration(
+        run_t6.cell_dir(root, "t6a", 1, 0), {"t6": {"files_per_worker": 3}}
+    )
+    assert cal["rollouts"] == 16 and cal["timeout_share"] == 0.0
+    cell = run_t6.cell_dir(root, "t6a", 1, 0)
+    recs = [json.loads(x) for x in (cell / "files.jsonl").read_text().splitlines()]
+    longest = max(
+        r["t_end"] - r["t_start"] for r in recs
+    )  # 3 x files per worker x that
+    assert cal["suggested_cell_timeout_s"] == int(3 * 3 * longest)

@@ -1,7 +1,7 @@
 """Tables, plots and the report snippet from the results tree (T1
 throughput, T2 latency; T5 bounded step, trainmetrics.analyze_t5; T4
 agreement, trainmetrics.analyze_t4; T3 branch cost, trainmetrics.analyze_t3;
-stage 6 adds T6).
+T6 rollout rate, trainmetrics.analyze_t6).
 
     python -m trainmetrics.analyze [--results results] [--census results/census/census.json]
 """
@@ -16,6 +16,7 @@ from . import EXPERIMENT_DIR
 from .analyze_t3 import write_t3
 from .analyze_t4 import write_t4
 from .analyze_t5 import write_t5
+from .analyze_t6 import write_t6
 from .census import load_census, load_config
 from .csvout import write_csv
 from .metrics_t12 import (
@@ -203,12 +204,13 @@ def write_t12(
 def write_later(
     results: Path, census: Dict[str, Any], tables: Path
 ) -> Tuple[List[str], str, int]:
-    """T5, T4 and T3: their snippet texts, the cell counts, T3's plots."""
+    """T5, T4, T3 and T6: their snippet texts, the cell counts, their plots."""
     t5_text, n_t5 = write_t5(results, census, tables)
     t4_text, n_t4 = write_t4(results, tables)
     t3_text, n_t3, t3_plots = write_t3(results, tables)
-    counts = f"{n_t5} T5 cells, {n_t4} T4 cells, {n_t3} T3 cells"
-    return [t5_text, t4_text, t3_text], counts, t3_plots
+    t6_text, n_t6, t6_plots = write_t6(results, tables)
+    counts = f"{n_t5} T5 cells, {n_t4} T4 cells, {n_t3} T3 cells, {n_t6} T6 cells"
+    return [t5_text, t4_text, t3_text, t6_text], counts, t3_plots + t6_plots
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
