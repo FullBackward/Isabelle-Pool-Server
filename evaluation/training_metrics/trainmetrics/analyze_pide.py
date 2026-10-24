@@ -46,7 +46,10 @@ def snippet_pide(
         "with the file's imports (D6), PIDE MCP opens a scratch theory per file on the worker's one "
         "session, started before the window — compare the verify-only columns. Proof checking: "
         f"PIDE MCP sessions {opts}; IPS `parallel_proofs={env.get('ISABELLE_PARALLEL_PROOFS', '?')}` "
-        "(ISABELLE_PARALLEL_PROOFS).",
+        "(ISABELLE_PARALLEL_PROOFS); both are interactive PIDE sessions, where any value above 0 is "
+        "Isabelle's interactive level 3, so the rows check proofs alike. Latencies step by the 0.1 s "
+        "poll in both rows (a block settles at the first or the second reading), so a p50 of 0.12 "
+        "against 0.21 s is one poll, not a twofold gap: chunks/min is the comparison.",
         "",
         "| W | tool | chunks/min (verify only) | chunks/min (incl. setup) | census work rate | p50 / p95 s "
         "| timeout rate | PIDE / IPS (verify only) |",

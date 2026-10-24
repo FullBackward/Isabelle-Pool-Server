@@ -199,22 +199,35 @@ def write_t12(
     write_csv(tables / "t1_series.csv", series)
     write_csv(tables / "t2_latency.csv", t2)
     made = plots(series, t2, results / "plots")
-    text = snippet_t12(series, t2, census)
+    text = snippet_t12(series, t2, census) if cells else ""  # no T1 cell: no T1 tables
     ips_env = next((c.get("ips_env") for c in cells if c.get("ips_env")), None)
     pide_text, _n_pide = write_pide(results, census, tables, series, ips_env)
-    return text + ("\n" + pide_text if pide_text else ""), len(rows), len(made)
+    return "\n".join(x for x in (text, pide_text) if x), len(rows), len(made)
 
 
-def write_later(
-    results: Path, census: Dict[str, Any], tables: Path
-) -> Tuple[List[str], str, int]:
-    """T5, T4, T3 and T6: their snippet texts, the cell counts, their plots."""
-    t5_text, n_t5 = write_t5(results, census, tables)
-    t4_text, n_t4 = write_t4(results, tables)
-    t3_text, n_t3, t3_plots = write_t3(results, tables)
-    t6_text, n_t6, t6_plots = write_t6(results, tables)
-    counts = f"{n_t5} T5 cells, {n_t4} T4 cells, {n_t3} T3 cells, {n_t6} T6 cells"
-    return [t5_text, t4_text, t3_text, t6_text], counts, t3_plots + t6_plots
+def write_all(
+    results: Path, census: Dict[str, Any], cfg: Dict[str, Any], tables: Path
+) -> Tuple[str, str, int]:
+    """Every experiment's tables, plots and snippet text; (the snippet, the
+    cell counts, the plots). The paragraphs follow the report's questions
+    (its Table: rollouts per hour, latency, branch cost, agreement, bounded
+    step): T6 answers the first, T1 is the step rate and its scaling (with the
+    PIDE row), T2 a by-product (D11), then T3, T4, T5."""
+    t12 = write_t12(results, census, cfg, tables)  # (text, cells, plots)
+    t5 = (*write_t5(results, census, tables), 0)
+    t4 = (*write_t4(results, tables), 0)
+    t3 = write_t3(results, tables)
+    t6 = write_t6(results, tables)
+    order = (t6, t12, t3, t4, t5)
+    counts = ", ".join(
+        f"{part[1]} {name} cells"
+        for name, part in (("T1", t12), ("T5", t5), ("T4", t4), ("T3", t3), ("T6", t6))
+    )
+    return (
+        "\n".join(part[0] for part in order if part[0]),
+        counts,
+        sum(part[2] for part in order),
+    )
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
@@ -230,15 +243,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     census = load_census(args.census or str(results / "census" / "census.json"))
     tables = results / "tables"
     tables.mkdir(parents=True, exist_ok=True)
-    text, n_t1, n_plots = write_t12(results, census, load_config(args.config), tables)
-    later, counts, t3_plots = write_later(results, census, tables)
-    text += "".join("\n" + x for x in later if x)
+    text, counts, n_plots = write_all(results, census, load_config(args.config), tables)
     with open(results / "REPORT_SNIPPET.md", "w", encoding="utf-8") as fh:
         fh.write(text)
-    print(
-        f"{n_t1} T1 cells, {counts} -> {tables}, {n_plots + t3_plots} plots, "
-        f"{results}/REPORT_SNIPPET.md"
-    )
+    print(f"{counts} -> {tables}, {n_plots} plots, {results}/REPORT_SNIPPET.md")
     print(text)
     return 0
 

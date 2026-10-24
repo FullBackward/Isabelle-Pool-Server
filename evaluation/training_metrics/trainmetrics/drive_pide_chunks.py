@@ -21,8 +21,10 @@ and added no failed, bad or error command; one not settled within the census bud
 ends its file (PIDE MCP cannot cancel a running command).
 
 The sessions run with ``pide.session_options`` (D12: ``parallel_proofs=2``,
-IPS's ``ISABELLE_PARALLEL_PROOFS``), so the ratio compares the tools, not
-the setting.
+IPS's ``ISABELLE_PARALLEL_PROOFS``), recorded for uniformity: both tools run
+interactive PIDE sessions, where any ``parallel_proofs > 0`` is Isabelle's
+interactive level 3 (Pure/PIDE/interactive.ML), so the rows check proofs
+alike either way (review 04339cf S1).
 
 Records are written in T1's format (``replays.jsonl``), so the T1 analysis
 computes the row exactly as for IPS.

@@ -243,7 +243,8 @@ class PIDEDriver:  # pylint: disable=too-many-instance-attributes
         opts = [a for a in self.command if "=" in a] + self.session_opts
         return {
             "isabelle_options": opts
-            or "defaults (parallel_proofs 1, threads = hardware)"
+            or "defaults (parallel_proofs 1: Isabelle's interactive level 3 in a PIDE "
+            "session; threads = hardware)"
         }
 
     def root_pids(self) -> List[int]:

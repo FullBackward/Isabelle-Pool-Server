@@ -5,7 +5,7 @@
 # server unless --ips-external. The cell prints the census replay time it repeats; about 1 h on the server.
 #   nohup scripts/13_run_t3.sh > results/t3.log 2>&1 &
 # Local container (HOL smoke corpus):
-#   PYTHON=python scripts/13_run_t3.sh --local-smoke --ips-external --census results/smoke/census_3d/census.json --out results/smoke
+#   PYTHON=python scripts/13_run_t3.sh --local-smoke --ips-external --census results/smoke/census/census.json --out results/smoke
 set -u
 source "$(dirname "$0")/_py.sh"
 exec "$PY" -u -m trainmetrics.run_t3 "$@"
