@@ -291,6 +291,9 @@ def test_the_cold_build_uses_the_declared_theory_name():
         run_t4.declared_name('theory "Quoted_Name"\n  imports Main\nbegin\nend')
         == "Quoted_Name"
     )
+    # review 51f1be2 S1: a markup command before the header mentions "theory"
+    text = "section \\<open>The theory of everything\\<close>\n\ntheory Foo\n  imports Main\nbegin\nend"
+    assert run_t4.declared_name(text) == "Foo"
 
 
 def test_a_refusal_before_building_is_not_a_cache_hit():

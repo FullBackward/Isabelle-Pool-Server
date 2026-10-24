@@ -1,6 +1,6 @@
 """Tables, plots and the report snippet from the results tree (T1
-throughput, T2 latency; T5 bounded step from stage 3c-2, trainmetrics.analyze_t5;
-later stages add T3, T4, T6).
+throughput, T2 latency; T5 bounded step, trainmetrics.analyze_t5; T4
+agreement, trainmetrics.analyze_t4; later stages add T3, T6).
 
     python -m trainmetrics.analyze [--results results] [--census results/census/census.json]
 """
@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from . import EXPERIMENT_DIR
+from .analyze_t4 import write_t4
 from .analyze_t5 import write_t5
 from .census import load_census, load_config
 from .csvout import write_csv
@@ -212,11 +213,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     tables.mkdir(parents=True, exist_ok=True)
     text, n_t1, n_plots = write_t12(results, census, load_config(args.config), tables)
     t5_text, n_t5 = write_t5(results, census, tables)
-    text += ("\n" + t5_text) if t5_text else ""
+    t4_text, n_t4 = write_t4(results, tables)
+    text += "".join("\n" + x for x in (t5_text, t4_text) if x)
     with open(results / "REPORT_SNIPPET.md", "w", encoding="utf-8") as fh:
         fh.write(text)
     print(
-        f"{n_t1} T1 cells, {n_t5} T5 cells -> {tables}, {n_plots} plots, "
+        f"{n_t1} T1 cells, {n_t5} T5 cells, {n_t4} T4 cells -> {tables}, {n_plots} plots, "
         f"{results}/REPORT_SNIPPET.md"
     )
     print(text)

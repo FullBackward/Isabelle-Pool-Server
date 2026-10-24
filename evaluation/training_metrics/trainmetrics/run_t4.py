@@ -44,13 +44,18 @@ from .spans import strip_comments
 from .t5_core import DEAD, classify
 
 BUILD_RETRIES = 12
-THEORY_RE = re.compile(r"\btheory\s+\"?([^\s\"]+)")
+# the header: "theory NAME" at the start of a line, then "imports" (review
+# 51f1be2 S1: a markup command before it may contain the word "theory")
+THEORY_RE = re.compile(r'^\s*theory\s+"?([^\s"]+)"?\s+imports\b', re.M)
 
 
 def declared_name(file_text: str) -> str:
-    """The theory name the file declares (the cold build requires it; a file
-    need not be named after its theory, e.g. examples/mcp_lsp_demo.thy
-    declares McpLspDemo)."""
+    """The theory name the file's header declares (the cold build requires
+    it; a file need not be named after its theory, e.g.
+    examples/mcp_lsp_demo.thy declares McpLspDemo). Comments are stripped
+    first; a markup command before the header (``section \\<open>The theory
+    of …\\<close>``) is skipped because the match is anchored on a line
+    start and needs ``imports``."""
     m = THEORY_RE.search(strip_comments(file_text))
     return m.group(1) if m else ""
 

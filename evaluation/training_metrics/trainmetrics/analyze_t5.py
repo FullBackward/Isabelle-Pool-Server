@@ -10,7 +10,6 @@ loss against T1's cell at the same W on matched blocks (reviews f3220d5,
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -22,7 +21,7 @@ from .contention import (
     tier_summary,
     worker_intervals,
 )
-from .csvout import write_csv
+from .csvout import ok_cells, write_csv
 from .metrics_t5 import MB, annotate, load_samples, summarize
 from .metrics_t12 import p50, p95
 
@@ -31,14 +30,7 @@ def load_t5_cells(results: Path) -> List[Dict[str, Any]]:
     """Every finished (ok) T5 cell under ``<results>/t5/w*/rep*``: its
     manifest, its file records (re-annotated from its samples) and samples."""
     cells: List[Dict[str, Any]] = []
-    for mpath in sorted(results.glob("t5/w*/rep*/manifest.json")):
-        try:
-            m = json.loads(mpath.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            continue
-        if m.get("outcome") != "ok":
-            continue
-        d = mpath.parent
+    for d, m in ok_cells(results, "t5/w*/rep*/manifest.json"):
         files = load_samples(d / "positions.jsonl")
         samples = load_samples(d / "samples.jsonl")
         annotate(files, samples, by_session=int(m.get("workers") or 1) > 1)
