@@ -158,6 +158,9 @@ def _lifetimes(
     return out
 
 
+PROVER_MIN_MB = 200.0  # a session prover maps its heap image (>= ~800 MB on HOL)
+
+
 def _window_cpu(samples: Sequence[Dict[str, Any]], pid: int, a: float, b: float) -> int:
     """CPU ticks of ``pid`` between its first and last sampler row in [a, b]."""
     ticks = [
@@ -168,6 +171,14 @@ def _window_cpu(samples: Sequence[Dict[str, Any]], pid: int, a: float, b: float)
     return ticks[-1] - ticks[0] if len(ticks) > 1 else 0
 
 
+def _peak_mb(samples: Sequence[Dict[str, Any]], pid: int) -> float:
+    """The highest RSS (MB) ``pid`` reached in the sampler rows."""
+    return max(
+        (int(_polys(r)[pid]["rss"]) / MB for r in samples if pid in _polys(r)),
+        default=0.0,
+    )
+
+
 def _candidates(
     samples: Sequence[Dict[str, Any]],
     life: Dict[int, Tuple[float, float, int, int]],
@@ -175,30 +186,19 @@ def _candidates(
 ) -> List[int]:
     """Provers that could be a file session's: last seen within 5 s of its
     close; born during its acquisition when any is (a fresh session per file,
-    D6); at least 20 CPU ticks over its lifetime; a helper (the second poly a
-    session starts, seen live: born up to 5 s after its prover, gone with it,
-    ~7 % of its CPU) is dropped in favour of its prover."""
+    D6); at least 20 CPU ticks over its lifetime; prover-sized (a session
+    also starts a helper poly that stays ~30 MB and is born up to 5 s or more
+    after its prover under load, review 73f9cd4 S2: it is dropped by its size,
+    PROVER_MIN_MB, not by its birth)."""
     t0 = float(record.get("t_start") or 0)
     ready = t0 + float(record.get("acquire_s") or 0)
     t_end = float(record.get("t_end") or 0)
     near = [
         p for p, v in life.items() if v[0] <= ready + 2.0 and abs(v[1] - t_end) <= 5.0
     ]
+    near = [p for p in near if _peak_mb(samples, p) >= PROVER_MIN_MB]
     born = [p for p in near if t0 - 1.0 <= life[p][0] <= ready + 1.0]
-    cpu = {p: _window_cpu(samples, p, ready, t_end) for p in (born or near)}
-    busy = sorted((p for p in cpu if cpu[p] >= 20), key=lambda p: -cpu[p])
-    kept: List[int] = []
-    for p in busy:
-        helper_of = [
-            k
-            for k in kept
-            if abs(life[p][0] - life[k][0]) <= 5.0
-            and abs(life[p][1] - life[k][1]) <= 1.5
-            and cpu[p] * 8 < cpu[k]
-        ]
-        if not helper_of:
-            kept.append(p)
-    return kept
+    return [p for p in (born or near) if _window_cpu(samples, p, ready, t_end) >= 20]
 
 
 def session_pids(

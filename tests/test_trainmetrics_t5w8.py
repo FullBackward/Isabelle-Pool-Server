@@ -157,35 +157,71 @@ def test_a_contention_cell_on_a_fake_server(tmp_path):
     s = body["summary"]
     assert s["tiers"]["states"]["ok"] == len(tiers) and s["tiers"]["used_max_mb"] > 900
     assert s["contention"]["loops"] == 4
-    assert s["contention"]["overlapping"]["n"] + s["contention"]["clear"]["n"] == 8
+    assert sum(r["n"] for r in s["contention"]["by_state"]) == 8
 
 
-def test_the_overlap_split_counts_only_other_workers_loops():
-    def att(t, wall):
-        return {"outcome": "timed_out", "t_start": t, "wall_s": wall}
+def test_blocks_are_grouped_by_what_the_other_workers_were_doing():
+    """Review 73f9cd4 S1: a block that misses a loop is no quiet baseline; the
+    comparison is a loop against replay at the same number of others working."""
+
+    def att(t, wall, outcome="timed_out"):
+        return {"outcome": outcome, "t_start": t, "wall_s": wall}
 
     def blk(i, t, wall):
         return {"index": i, "t_start": t, "wall_s": wall, "execution_time": wall - 0.1}
 
     files = [
-        {
+        {  # worker 0: setup 0-2, replay 2-10, a loop 10-20, replay 20-30, done at 31
             "stem": "A",
             "worker": 0,
+            "t_start": 0.0,
+            "acquire_s": 1.5,
+            "enter_s": 0.5,
+            "t_end": 31.0,
             "positions": [{"attempts": [att(10.0, 10.0)]}],
-            "blocks": [blk(0, 12.0, 1.0)],
-        },  # its own loop: clear
-        {
+            "blocks": [blk(0, 2.0, 8.0), blk(1, 20.0, 10.0)],
+        },
+        {  # worker 1: one block per state of worker 0
             "stem": "B",
             "worker": 1,
+            "t_start": 0.0,
+            "acquire_s": 0.2,
+            "enter_s": 0.1,
+            "t_end": 41.0,
             "positions": [],
-            "blocks": [blk(0, 12.0, 2.0), blk(1, 30.0, 1.0)],
+            "blocks": [
+                blk(0, 0.5, 1.0),
+                blk(1, 5.0, 1.0),
+                blk(2, 14.0, 2.0),
+                blk(3, 25.0, 1.0),
+                blk(4, 35.0, 1.0),
+            ],
         },
     ]
-    walls = {("A", 0): 1.0, ("B", 0): 1.0, ("B", 1): 1.0}
-    t = contention.overlap_table(files, walls)
-    assert t["loops"] == 1 and t["overlapping"]["n"] == 1 and t["clear"]["n"] == 2
-    assert t["overlapping"]["ratio_p50"] == 2.0 and t["clear"]["ratio_p50"] == 1.0
-    assert t["slowdown"] == 2.0 and t["overlapping"]["queue_p50_s"] == 0.1
+    walls = {
+        ("A", 0): 8.0,
+        ("A", 1): 10.0,
+        ("B", 0): 1.0,
+        ("B", 1): 1.0,
+        ("B", 2): 1.0,
+        ("B", 3): 1.0,
+        ("B", 4): 1.0,
+    }
+    t = contention.state_table(files, walls)
+    by = {tuple(k for k in contention.STATES if r[k]): r for r in t["by_state"]}
+    # worker 1's blocks: during 0's setup, replay, loop, replay, after it finished
+    assert (
+        by[("setup",)]["n"] == 1 and by[("loop",)]["n"] == 1 and by[("done",)]["n"] == 1
+    )
+    assert by[("loop",)]["ratio_p50"] == 2.0 and by[("replay",)]["ratio_p50"] == 1.0
+    # B is in setup while A's first block starts (midpoint 6.0: replaying)
+    assert t["loops"] == 1
+    assert t["loop_vs_replay"] == {"blocks": 1, "slowdown": 2.0, "slowdown_p95": 2.0}
+    iv, end = contention.worker_intervals(files)[0]
+    assert contention.state_at(iv, end, 15.0) == "loop"
+    assert contention.state_at(iv, end, 1.0) == "setup"
+    assert contention.state_at(iv, end, 30.5) == "idle"
+    assert contention.state_at(iv, end, 40.0) == "done"
 
 
 def test_the_tier_poll_and_its_summary(tmp_path):
@@ -283,3 +319,24 @@ def test_sessions_provers_are_found_by_their_lifetimes():
     assert metrics_t5.session_pids(twin, [rec_c, rec_d]) == [(None, "ambiguous")] * 2
     late = dict(rec_a, t_start=200.0, t_end=210.0)
     assert metrics_t5.session_pids(samples, [late]) == [(None, "no_match")]
+
+
+def test_a_late_helper_does_not_hide_its_prover():
+    """Review 73f9cd4 S2: under load the acquisition took long and the helper
+    poly was born 5.5 s after its prover, both inside the acquisition; it
+    stays ~30 MB (with tens of CPU ticks, above the 20-tick floor), so it is
+    dropped by its size, not by its birth."""
+    rows = [(100.0 + i, {10: (900 + 10 * i, 300 * i)}) for i in range(6)]
+    rows += [
+        (105.5 + i, {10: (960, 1800 + 300 * i), 11: (30, 5 * i)}) for i in range(10)
+    ]
+    samples = [_sample(t, p) for t, p in rows] + [_sample(116.0, {})]
+    rec = {
+        "stem": "A",
+        "worker": 0,
+        "t_start": 99.5,
+        "acquire_s": 8.0,
+        "t_end": 115.8,
+        "positions": [],
+    }
+    assert metrics_t5.session_pids(samples, [rec]) == [(10, None)]

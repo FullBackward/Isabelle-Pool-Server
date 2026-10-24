@@ -23,8 +23,8 @@ from typing import Any, Callable, Dict, List, Optional, Sequence
 from .contention import (
     census_walls,
     executor_threads,
-    overlap_table,
     poll_tiers,
+    state_table,
     tier_summary,
 )
 from .corpus import CorpusFile, assignment, corpus_sha
@@ -207,7 +207,7 @@ async def run_cell(  # pylint: disable=too-many-arguments,too-many-locals
     }
     body["summary"] = {
         **summarize(dicts),
-        "contention": overlap_table(dicts, census_walls(census)),
+        "contention": state_table(dicts, census_walls(census)),
         "tiers": tier_summary(load_samples(out_dir / "tiers.jsonl")),
     }
     blocks = sum(len(d["blocks"]) for d in dicts)
