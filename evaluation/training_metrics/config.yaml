@@ -79,6 +79,16 @@ t3:                                          # branch cost (design §T3, plan st
   restore_repeats: 3                         # restore + the next block at once (the branch cost; review 07120bc B1)
   settled_repeats: 3                         # settled verifies of that block: the first, then one per rollback
   local_smoke: {states: 9}
+t6:                                          # rollout rate (design §T6 v0.4, plan stages 6-7; D8-D11)
+  workers: [1, 8, 32]                        # D10, per style
+  repeats: 2
+  files_per_worker: 3                        # the T1 assignment (seed + rep): a nested prefix across W
+  tier_poll_s: 5                             # GET /api/v1/memory tier and used memory, the whole cell
+  integrity_fraction: 0.25                   # restores checked by source hash at W > 1 (every one at W = 1)
+  t6a:
+    problems_per_file: 8                     # the first 8 census-proved theorems of each file
+    candidate_budget_s: 20                   # every D9 candidate but the corpus proof (census rule)
+  local_smoke: {files_per_worker: 1, t6a: {problems_per_file: 3}}
 budget:                                      # design B3: min(max_s, max(min_s, per_command_s * n))
   per_command_s: 2
   min_s: 30
