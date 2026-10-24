@@ -8,9 +8,9 @@ Per variant the confusion matrix: both accept, in-session proved but cold
 rejected (the safety finding, target 0), in-session rejected but cold
 accepted, both reject. The unchanged variant is the baseline: a mutant is
 judged only where its block's file as written proves in-session and builds
-cold (else ``baseline_failed``). For a mutant, "both accept" means the
-mutation did not break the proof (listed as ineffective, not counted in the
-rejection rates)."""
+cold (else ``baseline_failed``). "Both accept" is a safety finding for a
+``sorry`` or truncated mutant (both checkers unsound) and an ineffective
+mutation for a ``wrong_fact`` one (review a0ddeaa B1)."""
 
 from __future__ import annotations
 
@@ -57,17 +57,27 @@ def _part_a(rows: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
 
 
 def _variant(
-    rows: List[Dict[str, Any]], baseline: Optional[Dict[Any, bool]] = None
+    rows: List[Dict[str, Any]],
+    baseline: Optional[Dict[Any, bool]] = None,
+    kind: str = "unchanged",
 ) -> Dict[str, Any]:
     """The matrix for one variant. With ``baseline`` (a mutant) a block is
     judged only when its unchanged file proves in-session AND builds cold:
     otherwise the cold rejection of the mutant says nothing about the
     mutation (seen locally: CTL fails cold as written, for its citations);
-    such blocks are counted apart."""
+    such blocks are ``baseline_failed``; ``apart`` counts only outcomes outside
+    the matrix (memory, prover death, no cold answer; review a0ddeaa S2).
+
+    What "both accept" means depends on the mutant (review a0ddeaa B1): a
+    ``sorry`` or a truncated proof is never a proof, so both checkers accepting
+    it means both are unsound — a safety finding, kept in the rates; an
+    undefined fact is always an error, so both accepting a ``wrong_fact``
+    means the mutator missed — listed as ineffective, out of the rates."""
     applicable = [r for r in rows if r["applicable"]]
-    judged = [r for r in applicable if _in(r) is not None and _cold(r) is not None]
+    answered = [r for r in applicable if _in(r) is not None and _cold(r) is not None]
+    judged = answered
     if baseline is not None:
-        judged = [r for r in judged if baseline.get((r["stem"], r["index"]))]
+        judged = [r for r in answered if baseline.get((r["stem"], r["index"]))]
     cell = {
         "both_accept": [r for r in judged if _in(r) and _cold(r)],
         "in_session_only": [r for r in judged if _in(r) and not _cold(r)],
@@ -79,21 +89,22 @@ def _variant(
         {
             "blocks": len(rows),
             "not_applicable": len(rows) - len(applicable),
-            "apart": len(applicable) - len(judged),
+            "apart": len(applicable) - len(answered),
         }
     )
     if baseline is None:
         return out
-    effective = len(judged) - len(cell["both_accept"])
+    missed = cell["both_accept"] if kind == "wrong_fact" else []
+    unsound = [] if kind == "wrong_fact" else cell["both_accept"]
+    effective = len(judged) - len(missed)
     out.update(
         {
-            "baseline_failed": sum(
-                1 for r in applicable if not baseline.get((r["stem"], r["index"]))
-            ),
+            "baseline_failed": len(answered) - len(judged),
             "safety_findings": [
                 (r["stem"], r["index"]) for r in cell["in_session_only"]
             ],
-            "ineffective": [(r["stem"], r["index"]) for r in cell["both_accept"]],
+            "both_unsound": [(r["stem"], r["index"]) for r in unsound],
+            "ineffective": [(r["stem"], r["index"]) for r in missed],
             "in_session_reject_rate": (
                 round(
                     (len(cell["cold_only"]) + len(cell["both_reject"])) / effective, 4
@@ -123,5 +134,5 @@ def summarize_t4(
     baseline = {(r["stem"], r["index"]): bool(_in(r) and _cold(r)) for r in unchanged}
     variants: Dict[str, Any] = {"unchanged": _variant(unchanged)}
     for v in ("sorry", "truncated", "wrong_fact"):
-        variants[v] = _variant([r for r in part_b if r["variant"] == v], baseline)
+        variants[v] = _variant([r for r in part_b if r["variant"] == v], baseline, v)
     return {"part_a": _part_a(part_a), "part_b": variants}

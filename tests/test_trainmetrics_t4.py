@@ -204,25 +204,33 @@ def _row(variant, in_proved, cold, outcome="failed", applicable=True):
     }
 
 
-def test_the_t4_summary_lists_safety_findings_and_ineffective_mutants():
+def test_both_accepting_a_sorry_is_unsound_but_a_wrong_fact_is_a_missed_mutation():
+    """Review a0ddeaa B1: a sorry or truncated proof is never a proof, so both
+    checkers accepting it is a safety finding kept in the rates; both accepting
+    a wrong fact means the mutator missed (ineffective, out of the rates)."""
     part_b = [
         _row("unchanged", True, True, outcome="ok"),  # block A#1's baseline holds
         _row("sorry", False, False),
-        _row("sorry", True, True, outcome="kept"),  # ineffective: both accept
-        _row("sorry", True, False, outcome="kept"),  # the safety finding
+        _row("sorry", True, True, outcome="kept"),  # both unsound
+        _row("sorry", True, False, outcome="kept"),  # in-session unsound
         _row("sorry", False, None),  # the build did not answer: apart
         _row("sorry", None, None, applicable=False),
+        _row("wrong_fact", False, False),
+        _row("wrong_fact", True, True, outcome="ok"),  # the mutator missed
         _row("wrong_fact", False, False, outcome="memory"),  # apart
     ]
     pb = metrics_t4.summarize_t4([], part_b)["part_b"]
     s = pb["sorry"]
     assert s["both_reject"] == 1 and s["both_accept"] == 1 and s["in_session_only"] == 1
-    assert s["ineffective"] == [("A", 1)] and s["safety_findings"] == [("A", 1)]
-    assert s["apart"] == 1 and s["not_applicable"] == 1
-    assert (
-        s["in_session_reject_rate"] == 0.5
-    )  # 1 of the 2 effective mutants rejected in-session
-    assert pb["wrong_fact"]["apart"] == 1
+    assert s["both_unsound"] == [("A", 1)] and s["ineffective"] == []
+    assert s["safety_findings"] == [("A", 1)]
+    assert s["apart"] == 1 and s["not_applicable"] == 1 and s["baseline_failed"] == 0
+    # the unsound acceptance stays in the rates: 1 of 3 rejected in-session
+    assert s["in_session_reject_rate"] == round(1 / 3, 4)
+    assert s["cold_reject_rate"] == round(2 / 3, 4)
+    w = pb["wrong_fact"]
+    assert w["ineffective"] == [("A", 1)] and w["both_unsound"] == []
+    assert w["in_session_reject_rate"] == 1.0 and w["apart"] == 1
     a = metrics_t4.summarize_t4(
         [
             {
@@ -241,6 +249,21 @@ def test_the_t4_summary_lists_safety_findings_and_ineffective_mutants():
     )
 
 
+def test_a_cached_cold_verdict_is_marked(monkeypatch):
+    """Review a0ddeaa S1: the server answers a cache hit with execution_time 0.0."""
+
+    class Cached:
+        async def verify_bigstep_text(self, stem, text, *, field=None, timeout=None):
+            return _Resp(200, {"success": True, "execution_time": 0.0})
+
+    out = asyncio.run(
+        run_t4.cold_build(
+            Cached(), "S", "t", heap="HOL", timeout_s=1, sem=asyncio.Semaphore(1)
+        )
+    )
+    assert out["accepted"] and out["cached"]
+
+
 def test_a_mutant_of_a_file_that_fails_cold_as_written_is_not_judged():
     """The baseline: CTL fails cold as written (its citations), so its mutants'
     cold rejections say nothing about the mutations."""
@@ -252,5 +275,39 @@ def test_a_mutant_of_a_file_that_fails_cold_as_written_is_not_judged():
     ]
     pb = metrics_t4.summarize_t4([], rows)["part_b"]
     assert pb["sorry"]["both_reject"] == 1 and pb["sorry"]["baseline_failed"] == 1
-    assert pb["sorry"]["apart"] == 1 and "safety_findings" not in pb["unchanged"]
+    assert pb["sorry"]["apart"] == 0  # review a0ddeaa S2: the baseline is not "apart"
+    assert "safety_findings" not in pb["unchanged"]
     assert pb["unchanged"]["in_session_only"] == 1  # the baseline row reports it
+
+
+def test_the_cold_build_uses_the_declared_theory_name():
+    """A file need not be named after its theory (examples/mcp_lsp_demo.thy
+    declares McpLspDemo); the build is refused unless the names match."""
+    assert (
+        run_t4.declared_name("(* c *)\ntheory McpLspDemo imports Main begin\nend")
+        == "McpLspDemo"
+    )
+    assert (
+        run_t4.declared_name('theory "Quoted_Name"\n  imports Main\nbegin\nend')
+        == "Quoted_Name"
+    )
+
+
+def test_a_refusal_before_building_is_not_a_cache_hit():
+    class Refused:
+        async def verify_bigstep_text(self, stem, text, *, field=None, timeout=None):
+            return _Resp(
+                200,
+                {
+                    "success": False,
+                    "error": "Declared theory name",
+                    "execution_time": 0.0,
+                },
+            )
+
+    out = asyncio.run(
+        run_t4.cold_build(
+            Refused(), "S", "t", heap="HOL", timeout_s=1, sem=asyncio.Semaphore(1)
+        )
+    )
+    assert out["accepted"] is False and not out["cached"]

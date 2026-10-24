@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import re
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -39,9 +40,19 @@ from .metrics_t4 import summarize_t4
 from .metrics_t5 import load_samples
 from .replay import RETRYABLE, SessionRef, _acquire_retrying, close_all, verify_in_file
 from .run_t1 import usable_stems
+from .spans import strip_comments
 from .t5_core import DEAD, classify
 
 BUILD_RETRIES = 12
+THEORY_RE = re.compile(r"\btheory\s+\"?([^\s\"]+)")
+
+
+def declared_name(file_text: str) -> str:
+    """The theory name the file declares (the cold build requires it; a file
+    need not be named after its theory, e.g. examples/mcp_lsp_demo.thy
+    declares McpLspDemo)."""
+    m = THEORY_RE.search(strip_comments(file_text))
+    return m.group(1) if m else ""
 
 
 @dataclass
@@ -212,6 +223,7 @@ async def cold_build(  # pylint: disable=too-many-arguments
                 await asyncio.sleep(max(1.0, float(r.headers.get("Retry-After", 5))))
                 continue
             ok = r.status_code == 200
+            wall = round(time.monotonic() - t0, 3)
             return {
                 "accepted": bool(body.get("success")) if ok else None,
                 "http": r.status_code,
@@ -221,7 +233,15 @@ async def cold_build(  # pylint: disable=too-many-arguments
                     else str(body.get("error") or body.get("detail") or "")[-300:]
                 ),
                 "server_s": body.get("execution_time"),
-                "wall_s": round(time.monotonic() - t0, 3),
+                # the server keeps successful builds in a per-process cache and
+                # answers a hit with execution_time 0.0 (review a0ddeaa S1)
+                "cached": bool(
+                    ok
+                    and body.get("success")
+                    and body.get("execution_time") == 0.0
+                    and wall < 0.5
+                ),
+                "wall_s": wall,
                 "retries": retries,
             }
 
@@ -327,10 +347,11 @@ async def _cold_pass(  # pylint: disable=too-many-arguments
     texts = {cf.stem: Path(cf.path).read_text(encoding="utf-8") for cf in usable}
     by_stem = {cf.stem: cf for cf in usable}
     mutants = [v for v in records if v.applicable and v.variant != "unchanged"]
-    jobs = [cold_build(client, a["stem"], texts[a["stem"]], **kw) for a in part_a]
+    name = {stem: declared_name(text) for stem, text in texts.items()}
+    jobs = [cold_build(client, name[a["stem"]], texts[a["stem"]], **kw) for a in part_a]
     jobs += [
         cold_build(
-            client, v.stem, _mutant_text(by_stem[v.stem], texts[v.stem], v), **kw
+            client, name[v.stem], _mutant_text(by_stem[v.stem], texts[v.stem], v), **kw
         )
         for v in mutants
     ]
@@ -409,6 +430,18 @@ async def run_cell(  # pylint: disable=too-many-arguments,too-many-locals
     tiers = tier_summary(load_samples(out_dir / "tiers.jsonl"))
     body["summary"] = {**summarize_t4(part_a, b_rows), "tiers": tiers}
     body["builds_bigstep_max_seen"] = tiers.get("builds_bigstep_max")
+    cached = sum(1 for a in part_a if (a.get("cold") or {}).get("cached")) + sum(
+        1
+        for r in b_rows
+        if r["variant"] != "unchanged" and (r.get("cold") or {}).get("cached")
+    )
+    body["cold_cached"] = cached
+    if cached and not (body.get("server") or {}).get("external"):
+        body["warning"] = (
+            f"{cached} cold verdicts came from the server's build cache on a fresh server "
+            "(expected none): inspect before reading build times"
+        )
+        print(f"WARNING: {body['warning']}", flush=True)
     body["unclosed_sessions"] = [
         {"session_id": k, "lease_id": v} for k, v in registry.items()
     ]
