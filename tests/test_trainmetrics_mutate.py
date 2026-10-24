@@ -99,3 +99,33 @@ def test_variants_are_deterministic_and_the_splice_changes_one_block(tmp_path):
     assert mutate.sample_blocks([cf], census, 1, rng_seed=1) == mutate.sample_blocks(
         [cf], census, 1, rng_seed=1
     )
+
+
+def test_a_wrong_fact_never_renames_a_binding():
+    """Review ab492af B1: a label (have run_after:), a label with attributes,
+    an obtain label, the left side of note =, fixed variables, a schematic
+    ?name are definitions, not references; renaming an unused one is no
+    mutation. Server_Concurrency block 16's shape first."""
+    block16 = (
+        'lemma l:\n  assumes "A"\n  shows "B"\n  proof -\n'
+        '  have run_after: "C"\n    by (simp add: upd_sess_def)\n'
+        "  then show ?thesis\n    by simp\nqed"
+    )
+    assert [n for _o, n in mutate.fact_names(block16)] == ["upd_sess_def"]
+    shapes = {
+        'have f_int [simp, intro]: "Q" using g_h by simp': "g_h",
+        'obtain r_1 where r_pos: "0 < r_1" using bar_baz by blast': "bar_baz",
+        "note a_b = c_d": "c_d",
+        "fix x_1 y_2\n  show ?thesis using e_f by simp": "e_f",
+        'let ?x_y = "t"\n  show ?thesis using z_w by simp': "z_w",
+    }
+    for body, want in shapes.items():
+        block = f'lemma foo: "P"\nproof -\n  {body}\n  then show ?thesis by simp\nqed'
+        assert mutate.fact_names(block)[0][1] == want, body
+    # references stay references: with attributes, with symbols
+    assert (
+        mutate.fact_names('lemma foo: "P" using foo_bar [of x] by simp')[0][1]
+        == "foo_bar"
+    )
+    sym = 'lemma foo: "P" using ac_\\<phi> by simp'
+    assert mutate.wrong_fact(sym) == sym.replace("ac_\\<phi>", mutate.NO_SUCH_FACT)

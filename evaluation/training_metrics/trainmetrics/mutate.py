@@ -3,7 +3,9 @@ theorem block in four variants, one mutation per build (design review S7).
 
 - ``unchanged``: the block as written.
 - ``sorry``: the statement, then ``sorry`` (in-session: kept with
-  ``used_sorry``; cold: rejected, the build has no ``quick_and_dirty``).
+  ``used_sorry``; cold: rejected, the build has no ``quick_and_dirty``); a
+  document command the splitter attached after the proof is dropped with it
+  (review ab492af note: harmless, but only ``truncated`` keeps it).
 - ``truncated`` (plan review Q4): the final ``qed`` / ``done`` of the proof
   dropped (with its method, ``qed auto``), or for a proof that ends with a
   terminal method (``by …``, ``.``, ``..``) that method dropped; never a cut
@@ -34,7 +36,32 @@ ISAR = set(
     "ultimately obtain where and case next qed done fix assume presume let define proof "
     "by apply sorry oops is for if supply including subgoal back defer prefer".split()
 )
-NAME_RE = re.compile(r"[A-Za-z][A-Za-z0-9_'.]*")
+# a name, symbols such as \<phi> included (review ab492af B1: ``ac_\<phi>``)
+NAME_RE = re.compile(r"[A-Za-z](?:[A-Za-z0-9_'.]|\\<[^>]*>)*")
+VAR_INTRO = ("fix", "obtain", "define", "let", "case", "for")  # variables follow
+
+
+def _is_binding(words: List[Tuple[int, str]], k: int) -> bool:
+    """Is word k a name being DEFINED (a label ``name:`` or
+    ``name [attr, attr]:``, the left side of ``note name = …``), not a
+    reference (``name [of x]`` is one)? Review ab492af B1: renaming a label
+    that is never used is no mutation."""
+    word = words[k][1]
+    if word.endswith(":") and not word.endswith("::"):
+        return True
+    j = k + 1
+    if j < len(words) and words[j][1].startswith("["):  # skip the attribute list
+        while j < len(words) and "]" not in words[j][1]:
+            j += 1
+        if (
+            j < len(words)
+            and words[j][1].endswith(":")
+            and not words[j][1].endswith("::")
+        ):
+            return True
+        j += 1
+    nxt = words[j][1] if j < len(words) else ""
+    return nxt == "=" or (nxt.startswith(":") and not nxt.startswith("::"))
 
 
 def statement_and_proof(block: str) -> Optional[Tuple[str, str, int]]:
@@ -91,21 +118,32 @@ def truncated(block: str) -> Optional[str]:
 
 
 def fact_names(block: str) -> List[Tuple[int, str]]:
-    """(offset, name) of the fact-like names in the proof part: outside
-    strings and cartouches, not a method name (the word after ``by`` /
-    ``apply`` or one starting with "("), not an Isar keyword, and with a
-    ``_`` or ``.`` (``imp_def``, ``add.commute``)."""
+    """(offset, name) of the fact names the proof REFERS to: outside strings
+    and cartouches, not a method name (the word after ``by`` / ``apply`` or one
+    starting with "("), not an Isar keyword, with a ``_`` or ``.``
+    (``imp_def``, ``add.commute``), and not a binding (review ab492af B1): a
+    label (``have run_after:``), the left side of ``note … =``, the variables
+    after ``fix`` / ``obtain`` / ``define`` / ``let`` / ``case`` / ``for``, a
+    schematic ``?name``."""
     sp = statement_and_proof(block)
     if sp is None:
         return []
+    words = [(o, w) for o, w in top_level_words(block) if o >= sp[2]]
     out: List[Tuple[int, str]] = []
-    prev = ""
-    for off, word in top_level_words(block):
-        if off < sp[2]:
-            continue
-        method_slot = prev in ("by", "apply") or word.startswith("(")
+    prev, in_vars = "", False
+    for k, (off, word) in enumerate(words):
+        if word in VAR_INTRO:
+            in_vars = True
+        elif word in ISAR or word.startswith(('"', "\\<open>", "\u2039")):
+            in_vars = word in VAR_INTRO
+        skip = (
+            prev in ("by", "apply")
+            or word.startswith(("(", "?"))
+            or in_vars
+            or _is_binding(words, k)
+        )
         prev = word
-        if method_slot:
+        if skip:
             continue
         for m in NAME_RE.finditer(word):
             name = m.group(0).rstrip(".")
