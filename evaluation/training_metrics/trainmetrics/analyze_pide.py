@@ -24,9 +24,12 @@ def snippet_pide(
     pide: Sequence[Dict[str, Any]],
     ips: Sequence[Dict[str, Any]],
     cells: Sequence[Dict[str, Any]],
+    ips_env: Optional[Dict[str, Any]] = None,
 ) -> str:
-    """The PIDE MCP row paragraph."""
+    """The PIDE MCP row paragraph; ``ips_env``: the IPS cells' server env
+    (its proof-checking settings are stated beside PIDE's, review 9ad8799 S1)."""
     by_w = {int(s["workers"]): s for s in ips}
+    env = ips_env or {}
     opts = (
         (cells[0].get("session_options") or {}).get("isabelle_options")
         if cells
@@ -41,8 +44,9 @@ def snippet_pide(
         f"(polled every {poll} s: the same 0.1 s resolution as IPS's `verify_chunk`). Edit-and-settle "
         "throughput, not a verdict call. Setup differs by design: IPS acquires a session per file "
         "with the file's imports (D6), PIDE MCP opens a scratch theory per file on the worker's one "
-        "session, started before the window — compare the verify-only columns. Session options: "
-        f"{opts}.",
+        "session, started before the window — compare the verify-only columns. Proof checking: "
+        f"PIDE MCP sessions {opts}; IPS `parallel_proofs={env.get('ISABELLE_PARALLEL_PROOFS', '?')}` "
+        "(ISABELLE_PARALLEL_PROOFS).",
         "",
         "| W | tool | chunks/min (verify only) | chunks/min (incl. setup) | census work rate | p50 / p95 s "
         "| timeout rate | PIDE / IPS (verify only) |",
@@ -73,6 +77,7 @@ def write_pide(
     census: Dict[str, Any],
     tables: Path,
     ips_series: Sequence[Dict[str, Any]],
+    ips_env: Optional[Dict[str, Any]] = None,
 ) -> Tuple[str, int]:
     """The PIDE row's tables and paragraph ("" without a PIDE cell); (text, cells)."""
     cells = load_t1_cells(results, "pide")
@@ -84,4 +89,4 @@ def write_pide(
     ser = series_t1(rows)
     write_csv(tables / "t1_pide_cells.csv", rows)
     write_csv(tables / "t1_pide_series.csv", ser)
-    return snippet_pide(ser, ips_series, cells), len(cells)
+    return snippet_pide(ser, ips_series, cells, ips_env), len(cells)

@@ -105,8 +105,9 @@ pide:                                        # the PIDE MCP row of T1 (D3, plan 
   repeats: 3                                 # as T1
   poll_s: 0.1                                # get_state while a block settles: the resolution of the row (IPS's too)
   command: [isabelle, pide_mcp]
-  extra_args: []                             # Isabelle's defaults, as in memscale (recorded: session_options);
-                                             # e.g. ["-o", "parallel_proofs=2"] to match IPS's
+  extra_args: []                             # pide_mcp command-line arguments
+  session_options: [parallel_proofs=2]       # D12 (owner, 2026-10-24): the same proof parallelism as IPS's
+                                             # ISABELLE_PARALLEL_PROOFS (start_session's `options`; recorded)
   start_timeout_s: 900
   no_build: true                             # the heap exists (the same as IPS's)
 budget:                                      # design B3: min(max_s, max(min_s, per_command_s * n))

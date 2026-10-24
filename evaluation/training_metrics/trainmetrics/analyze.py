@@ -200,7 +200,8 @@ def write_t12(
     write_csv(tables / "t2_latency.csv", t2)
     made = plots(series, t2, results / "plots")
     text = snippet_t12(series, t2, census)
-    pide_text, _n_pide = write_pide(results, census, tables, series)
+    ips_env = next((c.get("ips_env") for c in cells if c.get("ips_env")), None)
+    pide_text, _n_pide = write_pide(results, census, tables, series, ips_env)
     return text + ("\n" + pide_text if pide_text else ""), len(rows), len(made)
 
 

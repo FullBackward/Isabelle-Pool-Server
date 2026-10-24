@@ -20,6 +20,10 @@ and PIDE's own delta is kept beside it. A block is *proved* when it settled
 and added no failed, bad or error command; one not settled within the census budget is *timed out* and
 ends its file (PIDE MCP cannot cancel a running command).
 
+The sessions run with ``pide.session_options`` (D12: ``parallel_proofs=2``,
+IPS's ``ISABELLE_PARALLEL_PROOFS``), so the ratio compares the tools, not
+the setting.
+
 Records are written in T1's format (``replays.jsonl``), so the T1 analysis
 computes the row exactly as for IPS.
 
@@ -36,6 +40,8 @@ import time
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+
+from memscale.drive_pide import state_args
 
 from .census import load_census, load_config
 from .corpus import CorpusFile, assignment, corpus_sha, load_corpus, load_paths
@@ -77,15 +83,7 @@ class Scratch:  # pylint: disable=too-many-instance-attributes
         self.now: Dict[str, int] = {}  # the counts after the last append
 
     def _args(self) -> Dict[str, Any]:
-        return {
-            "session": self.sid,
-            "origin": self.path,
-            "include_types": False,
-            "include_facts": False,
-            "include_infos": False,
-            "include_full_markup": False,
-            "commands_limit": 0,
-        }
+        return state_args(self.sid, self.path)
 
     async def new_file(self, imports: Sequence[str]) -> None:
         """A scratch theory with the file's imports (its name is the scratch's)."""
@@ -334,6 +332,7 @@ async def amain(args: argparse.Namespace) -> int:
         start_timeout_s=float(pcfg.get("start_timeout_s", 900)),
         no_build=bool(pcfg.get("no_build", True)),
         log_dir=str(out_dir / "pide-logs"),
+        session_options=[str(o) for o in pcfg.get("session_options") or []],
     )
     return await run_cli_cell(
         cfg,

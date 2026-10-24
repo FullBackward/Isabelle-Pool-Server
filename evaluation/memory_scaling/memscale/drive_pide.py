@@ -47,6 +47,7 @@ class PIDEDriver:  # pylint: disable=too-many-instance-attributes
         load_timeout_s: float = 900.0,
         no_build: bool = True,
         log_dir: str = "results/pide-logs",
+        session_options: Optional[List[str]] = None,
     ) -> None:
         assert topology in ("A", "B")
         self.heap = heap
@@ -59,6 +60,9 @@ class PIDEDriver:  # pylint: disable=too-many-instance-attributes
         self.load_timeout_s = load_timeout_s
         self.no_build = no_build
         self.log_dir = log_dir
+        # Isabelle system options for each started session (`start_session`'s
+        # `options`, e.g. "parallel_proofs=2"); none: the defaults
+        self.session_opts = list(session_options or [])
         self.procs: List[StdioMCP] = []  # A: one; B: one per session
         self.session_ids: Dict[int, str] = {}
         self.scratch: Dict[int, str] = {}
@@ -99,10 +103,15 @@ class PIDEDriver:  # pylint: disable=too-many-instance-attributes
         server run of 2026-10-21 died on IndexError at the fifth session)."""
         if self.topology == "B" and i >= len(self.procs):
             self.procs.append(await self._spawn(f"{self.heap}-B{i}"))
+        args: Dict[str, Any] = {
+            "logic": self.heap,
+            "session": f"s{i}",
+            "no_build": self.no_build,
+        }
+        if self.session_opts:
+            args["options"] = self.session_opts
         res = await self._mcp(i).call(
-            "start_session",
-            {"logic": self.heap, "session": f"s{i}", "no_build": self.no_build},
-            timeout_s=self.start_timeout_s,
+            "start_session", args, timeout_s=self.start_timeout_s
         )
         self.session_ids[i] = str(res.get("session") or f"s{i}")
 
@@ -203,17 +212,7 @@ class PIDEDriver:  # pylint: disable=too-many-instance-attributes
             await asyncio.sleep(self.poll_s)
 
     def _state_args(self, i: int) -> Dict[str, Any]:
-        """Counts only: no types/facts/infos/markup and no command details,
-        so the answer is small (a full state is megabytes on one line)."""
-        return {
-            "session": self.session_ids[i],
-            "origin": self.scratch[i],
-            "include_types": False,
-            "include_facts": False,
-            "include_infos": False,
-            "include_full_markup": False,
-            "commands_limit": 0,
-        }
+        return state_args(self.session_ids[i], self.scratch[i])
 
     async def state(self, i: int) -> Dict[str, Any]:
         """``get_state`` of session i's scratch (E4's "keeps answering" probe)."""
@@ -241,7 +240,7 @@ class PIDEDriver:  # pylint: disable=too-many-instance-attributes
     def session_options(self) -> Dict[str, Any]:
         """PIDE MCP starts sessions with Isabelle's defaults unless `-o` options
         are passed (config `extra_args`); recorded for fairness (13c06cf S3)."""
-        opts = [a for a in self.command if "=" in a]
+        opts = [a for a in self.command if "=" in a] + self.session_opts
         return {
             "isabelle_options": opts
             or "defaults (parallel_proofs 1, threads = hardware)"
@@ -267,6 +266,21 @@ class PIDEDriver:  # pylint: disable=too-many-instance-attributes
             "tools": self.tools,
             "server_info": self.server_info,
         }
+
+
+def state_args(session: str, origin: str) -> Dict[str, Any]:
+    """``get_state`` arguments for counts only: no types/facts/infos/markup and
+    no command details, so the answer is small (a full state is megabytes on
+    one line)."""
+    return {
+        "session": session,
+        "origin": origin,
+        "include_types": False,
+        "include_facts": False,
+        "include_infos": False,
+        "include_full_markup": False,
+        "commands_limit": 0,
+    }
 
 
 def _sum_matching(counts: Dict[str, int], needles: Any) -> int:

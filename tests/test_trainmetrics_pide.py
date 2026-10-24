@@ -241,7 +241,47 @@ def test_the_pide_row_beside_ips(tmp_path):
             "timeout_rate": 0.0,
         }
     ]
-    text, n = analyze_pide.write_pide(root, census, root / "tables", ips)
+    env = {"ISABELLE_PARALLEL_PROOFS": "2"}
+    text, n = analyze_pide.write_pide(root, census, root / "tables", ips, env)
+    # review 9ad8799 S1: both rows' proof-checking settings are stated
+    assert "IPS `parallel_proofs=2`" in text and "PIDE MCP sessions" in text
     assert n == 1 and "## T1: the PIDE MCP row" in text
     assert "| 2 | IPS | 10 |" in text and "| 2 | PIDE MCP A |" in text
     assert (root / "tables" / "t1_pide_series.csv").exists()
+
+
+def test_the_pide_sessions_get_the_options():
+    """D12: start_session carries `options` (parallel_proofs=2, IPS's)."""
+    sys.path.insert(
+        0, str(Path(__file__).resolve().parents[1] / "evaluation" / "memory_scaling")
+    )
+    from memscale.drive_pide import (  # pylint: disable=import-outside-toplevel
+        PIDEDriver,
+    )
+
+    calls = []
+
+    class Rec:
+        async def call(self, tool, args, timeout_s=None):
+            calls.append((tool, args))
+            return {"session": args["session"]}
+
+    d = PIDEDriver(heap="HOL", topology="A", k=1, session_options=["parallel_proofs=2"])
+    d.procs = [Rec()]
+    asyncio.run(d.start_session(0))
+    assert calls == [
+        (
+            "start_session",
+            {
+                "logic": "HOL",
+                "session": "s0",
+                "no_build": True,
+                "options": ["parallel_proofs=2"],
+            },
+        )
+    ]
+    assert d.session_options()["isabelle_options"] == ["parallel_proofs=2"]
+    plain = PIDEDriver(heap="HOL", topology="A", k=1)
+    plain.procs = [Rec()]
+    asyncio.run(plain.start_session(0))
+    assert "options" not in calls[-1][1]  # memscale's sessions: unchanged
