@@ -69,6 +69,9 @@ def summarize(records: Sequence[ReplayRecord]) -> List[Dict[str, Any]]:
                         "statuses": b.statuses,
                         "error": b.error,
                         "error_kind": b.error_kind,
+                        # stage 3d: the commands' spans (T6b), not in the census id
+                        "spans": b.spans,
+                        "spans_error": b.spans_error,
                     }
                     for b in rr.blocks
                 ],
@@ -91,7 +94,21 @@ def totals(files: Sequence[Dict[str, Any]]) -> Dict[str, int]:
         "timed_out_blocks": sum(1 for b in blocks if b["timed_out"]),
         "partial_count_blocks": sum(1 for b in blocks if b.get("count_partial")),
         "error_blocks": sum(1 for b in blocks if b["error"]),
+        "spans_failed_blocks": len(spans_failures(files)),
     }
+
+
+def spans_failures(files: Sequence[Dict[str, Any]]) -> List[str]:
+    """``stem#index: why`` for every proved block whose spans do not
+    re-assemble it (stage 3d; plan_v1.6 S7: the census checks the server
+    corpus too). Blocks that did not prove are not judged (T6b uses proved
+    theorems only)."""
+    return [
+        f"{f['stem']}#{b['index']}: {b.get('spans_error')}"
+        for f in files
+        for b in f["blocks"]
+        if b.get("proved") and b.get("spans_error")
+    ]
 
 
 def proved_gate(tot: Dict[str, Any], need: float) -> Optional[str]:
@@ -166,7 +183,12 @@ async def run_census(
     records: List[ReplayRecord] = []
     for n, cf in enumerate(files, 1):
         rr = await replay_file_fresh(
-            client, cf, heap=field, budget_s=BUDGET_MAX_S, label="trainmetrics-census"
+            client,
+            cf,
+            heap=field,
+            budget_s=BUDGET_MAX_S,
+            label="trainmetrics-census",
+            keep_spans=True,  # stage 3d: the step split for T6b
         )
         records.append(rr)
         if unclosed is not None:
@@ -283,6 +305,13 @@ async def _main_async(  # pylint: disable=too-many-locals
             f"{msg}; inspect {Path(args.out) / 'census.json'} before running any cell"
         )
         return 3
+    bad = spans_failures(body["files"])
+    if bad:  # plan_v1.6 S7: fail loudly, the T6b step split would be wrong
+        print(
+            f"CENSUS SPANS FAILED for {len(bad)} proved blocks (first: {bad[0]}); "
+            f"inspect {Path(args.out) / 'census.json'} before running T6b"
+        )
+        return 4
     return 0
 
 

@@ -11,6 +11,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Optional, Protocol, Sequence, Tuple
 
 from .corpus import CorpusFile
+from .spans import check_spans, command_spans
 
 BUDGET_PER_COMMAND_S = 2.0
 BUDGET_MIN_S = 30.0
@@ -120,6 +121,9 @@ class BlockRecord:  # pylint: disable=too-many-instance-attributes
     # memory | prover_died from the response; session_gone for a 404 (review beac25c S1)
     error_kind: Optional[str] = None
     first_error: Optional[str] = None  # the first error message of the report (S5)
+    # keep_spans (the census, stage 3d): each command's kind and offsets in the block
+    spans: Optional[List[Dict[str, Any]]] = None
+    spans_error: Optional[str] = None
 
 
 @dataclass
@@ -199,8 +203,10 @@ async def verify_block(  # pylint: disable=too-many-arguments,too-many-locals
     census_commands: Optional[int],
     census_partial: bool = False,
     budget_s: Optional[float] = None,
+    keep_spans: bool = False,
 ) -> BlockRecord:
-    """One block under its budget; every outcome is recorded, never raised."""
+    """One block under its budget; every outcome is recorded, never raised.
+    ``keep_spans``: the commands' spans and their check (stage 3d)."""
     budget, source = _budget(census_commands, census_partial, budget_s)
     rec = BlockRecord(
         stem=stem,
@@ -236,9 +242,23 @@ async def verify_block(  # pylint: disable=too-many-arguments,too-many-locals
     rec.proved = is_proved(res)
     rec.error_kind = res.get("error_kind")
     rec.first_error = first_error(commands)
+    if keep_spans:
+        rec.spans = command_spans(text, commands)
+        rec.spans_error = check_spans(text, rec.spans)
     if res.get("error"):
         rec.error = str(res.get("error"))[:300]
     return rec
+
+
+def _census_at(
+    counts: Optional[List[Optional[int]]], partial: Optional[List[bool]], i: int
+) -> Dict[str, Any]:
+    """Block i's census command count and whether it is partial, as the
+    keyword arguments of :func:`verify_block`."""
+    return {
+        "census_commands": counts[i] if counts and i < len(counts) else None,
+        "census_partial": bool(partial[i]) if partial and i < len(partial) else False,
+    }
 
 
 async def replay_file(  # pylint: disable=too-many-arguments
@@ -249,6 +269,7 @@ async def replay_file(  # pylint: disable=too-many-arguments
     *,
     census_partial: Optional[List[bool]] = None,
     budget_s: Optional[float] = None,
+    keep_spans: bool = False,
 ) -> ReplayRecord:
     """Enter a fresh node for ``cf`` with its own imports, then verify every
     block in order. ``census_counts[i]`` is block i's census command count
@@ -280,12 +301,6 @@ async def replay_file(  # pylint: disable=too-many-arguments
         rr.t_end = time.time()
         return rr
     for i, text in enumerate(cf.blocks):
-        cc = census_counts[i] if census_counts and i < len(census_counts) else None
-        cp = (
-            bool(census_partial[i])
-            if census_partial and i < len(census_partial)
-            else False
-        )
         rr.blocks.append(
             await verify_block(
                 client,
@@ -294,9 +309,9 @@ async def replay_file(  # pylint: disable=too-many-arguments
                 stem=cf.stem,
                 index=i,
                 block_sha=cf.block_sha[i],
-                census_commands=cc,
-                census_partial=cp,
                 budget_s=budget_s,
+                keep_spans=keep_spans,
+                **_census_at(census_counts, census_partial, i),
             )
         )
     rr.t_end = time.time()
@@ -438,6 +453,7 @@ async def replay_file_fresh(  # pylint: disable=too-many-arguments,too-many-loca
     label: str = "trainmetrics",
     registry: Optional[Dict[str, str]] = None,
     on_change: Optional[Any] = None,
+    keep_spans: bool = False,
 ) -> ReplayRecord:
     """Replay ``cf`` on a session of its own (owner decision D6, review afd3de9
     B1): IPS fixes a session's theory context when it is acquired, so the
@@ -480,6 +496,7 @@ async def replay_file_fresh(  # pylint: disable=too-many-arguments,too-many-loca
             census_counts,
             census_partial=census_partial,
             budget_s=budget_s,
+            keep_spans=keep_spans,
         )
     finally:
         unclosed = await close_all(client, [sess])
