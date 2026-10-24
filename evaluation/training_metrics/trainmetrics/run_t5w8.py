@@ -28,6 +28,7 @@ from .contention import (
     tier_summary,
 )
 from .corpus import CorpusFile, assignment, corpus_sha
+from .harness import open_registry
 from .metrics_t5 import annotate, load_samples, summarize
 from .run_t1 import usable_stems
 from .seeds import FAMILIES, BudgetLadder, Seed, candidates, make_seeds
@@ -153,13 +154,7 @@ async def run_cell(  # pylint: disable=too-many-arguments,too-many-locals
     out_dir.mkdir(parents=True, exist_ok=True)
     with open(out_dir / "seeds.json", "w", encoding="utf-8") as fh:
         json.dump([s.as_dict() for v in seeds.values() for s in v], fh, indent=1)
-    registry: Dict[str, str] = {}
-    body["open_sessions"] = registry
-
-    def changed(_reg: Dict[str, str]) -> None:
-        if checkpoint is not None:
-            checkpoint(body)
-
+    registry, changed = open_registry(body, checkpoint)
     records: List[T5FileRecord] = []
     if sampler is not None:
         sampler.phase("run")

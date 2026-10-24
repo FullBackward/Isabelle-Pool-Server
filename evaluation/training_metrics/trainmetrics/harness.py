@@ -171,3 +171,32 @@ async def run_cli_cell(  # pylint: disable=too-many-arguments
     if body.get("summary"):
         print(json.dumps(body["summary"], indent=1), flush=True)
     return 0 if body["outcome"] == "ok" else 1
+
+
+def open_registry(
+    body: Dict[str, Any], checkpoint: Optional[Callable[[Dict[str, Any]], Any]]
+) -> Tuple[Dict[str, str], Callable[[Dict[str, str]], None]]:
+    """A cell's open sessions (session id -> lease), kept in the manifest
+    ``body``, and the callback a runner calls on every change: it checkpoints
+    the body, so a killed cell's leases are on disk."""
+    registry: Dict[str, str] = {}
+    body["open_sessions"] = registry
+
+    def changed(_reg: Dict[str, str]) -> None:
+        if checkpoint is not None:
+            checkpoint(body)
+
+    return registry, changed
+
+
+def cli_extra(
+    cfg: Dict[str, Any], args: argparse.Namespace, **more: Any
+) -> Dict[str, Any]:
+    """The manifest fields a cell CLI records: the census path, the config's
+    IPS env, whether it is a local smoke; plus ``more``."""
+    return {
+        "census_path": args.census,
+        "ips_env": cfg["ips"].get("env", {}),
+        "local_smoke": bool(args.local_smoke),
+        **more,
+    }

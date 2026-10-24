@@ -1,6 +1,7 @@
 """Tables, plots and the report snippet from the results tree (T1
 throughput, T2 latency; T5 bounded step, trainmetrics.analyze_t5; T4
-agreement, trainmetrics.analyze_t4; later stages add T3, T6).
+agreement, trainmetrics.analyze_t4; T3 branch cost, trainmetrics.analyze_t3;
+stage 6 adds T6).
 
     python -m trainmetrics.analyze [--results results] [--census results/census/census.json]
 """
@@ -12,6 +13,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from . import EXPERIMENT_DIR
+from .analyze_t3 import write_t3
 from .analyze_t4 import write_t4
 from .analyze_t5 import write_t5
 from .census import load_census, load_config
@@ -198,6 +200,17 @@ def write_t12(
     return snippet_t12(series, t2, census), len(rows), len(made)
 
 
+def write_later(
+    results: Path, census: Dict[str, Any], tables: Path
+) -> Tuple[List[str], str, int]:
+    """T5, T4 and T3: their snippet texts, the cell counts, T3's plots."""
+    t5_text, n_t5 = write_t5(results, census, tables)
+    t4_text, n_t4 = write_t4(results, tables)
+    t3_text, n_t3, t3_plots = write_t3(results, tables)
+    counts = f"{n_t5} T5 cells, {n_t4} T4 cells, {n_t3} T3 cells"
+    return [t5_text, t4_text, t3_text], counts, t3_plots
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     """CLI entry point."""
     ap = argparse.ArgumentParser(description=__doc__)
@@ -212,13 +225,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     tables = results / "tables"
     tables.mkdir(parents=True, exist_ok=True)
     text, n_t1, n_plots = write_t12(results, census, load_config(args.config), tables)
-    t5_text, n_t5 = write_t5(results, census, tables)
-    t4_text, n_t4 = write_t4(results, tables)
-    text += "".join("\n" + x for x in (t5_text, t4_text) if x)
+    later, counts, t3_plots = write_later(results, census, tables)
+    text += "".join("\n" + x for x in later if x)
     with open(results / "REPORT_SNIPPET.md", "w", encoding="utf-8") as fh:
         fh.write(text)
     print(
-        f"{n_t1} T1 cells, {n_t5} T5 cells, {n_t4} T4 cells -> {tables}, {n_plots} plots, "
+        f"{n_t1} T1 cells, {counts} -> {tables}, {n_plots + t3_plots} plots, "
         f"{results}/REPORT_SNIPPET.md"
     )
     print(text)

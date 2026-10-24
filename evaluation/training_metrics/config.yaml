@@ -72,6 +72,11 @@ t4:                                          # agreement (design §T4, plan stag
   build_timeout_s: 1200
   poll_s: 2                                  # builds in flight and memory tier, the whole cell
   local_smoke: {mutation_blocks: 6, workers: 2, build_concurrency: 1}   # the container's server runs at its cap 1
+t3:                                          # branch cost (design §T3, plan stage 5)
+  states: 200                                # (F, i) states, seeded, a third per position stratum; each on a
+                                             # session created for it, W = 1; the cell prints the census replay
+                                             # time it repeats (two prefix replays per state)
+  local_smoke: {states: 9}
 budget:                                      # design B3: min(max_s, max(min_s, per_command_s * n))
   per_command_s: 2
   min_s: 30

@@ -18,7 +18,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from .census import counts_by_stem, load_census, load_config, partial_by_stem
 from .corpus import CorpusFile, assignment, corpus_sha, load_corpus, load_paths
-from .harness import cell_arg_parser, run_with_server
+from .harness import cell_arg_parser, open_registry, run_with_server
 from .replay import ReplayRecord, replay_file_fresh
 
 
@@ -122,13 +122,7 @@ async def run_cell(  # pylint: disable=too-many-locals,too-many-arguments
             **spec.extra,
         }
     )
-    registry: Dict[str, str] = {}
-    body["open_sessions"] = registry
-
-    def changed(_reg: Dict[str, str]) -> None:
-        if checkpoint is not None:
-            checkpoint(body)
-
+    registry, changed = open_registry(body, checkpoint)
     records: List[ReplayRecord] = []
     if sampler is not None:
         sampler.phase("run")

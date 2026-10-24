@@ -31,13 +31,13 @@ def _b(stem, i, variant, in_proved, cold, cached=False, outcome="failed"):
     }
 
 
-def _tree(tmp_path):
+def _tree(tmp_path, rep=0):
     root = tmp_path / "results"
-    (root / "census").mkdir(parents=True)
+    (root / "census").mkdir(parents=True, exist_ok=True)
     (root / "census" / "census.json").write_text(
         json.dumps({"census_id": "c", "files": [], "totals": {}})
     )
-    d = root / "t4" / "rep0"
+    d = root / "t4" / f"rep{rep}"
     d.mkdir(parents=True)
     part_a = [
         {
@@ -65,6 +65,7 @@ def _tree(tmp_path):
         json.dumps(
             {
                 "experiment": "t4",
+                "rep": rep,
                 "outcome": "ok",
                 "picks": [["S", 1]],
                 "t4": {"build_concurrency": 4},
@@ -83,6 +84,8 @@ def test_the_t4_snippet_and_tables(tmp_path):
     assert (
         '`*** Bad bibtex_entry "McMillan-PhDThesis"' in text
     )  # the telling line, not the elapsed time
+    # review 05323b4 S1: the two kinds of safety finding, each named exactly
+    assert "proved in-session and rejected cold: none" in text
     assert "both unsound): S#1" in text and "for inspection): S#1" in text
     assert (
         "1 served from the server's cache, not timed" in text
@@ -90,6 +93,17 @@ def test_the_t4_snippet_and_tables(tmp_path):
     )
     assert (root / "tables" / "t4_agreement.csv").exists()
     assert (root / "tables" / "t4_mutations.csv").exists()
+
+
+def test_every_t4_repeat_gets_its_paragraph(tmp_path):
+    """Review 05323b4 S2: a second repeat is reported, not silently dropped."""
+    _tree(tmp_path, rep=0)
+    root = _tree(tmp_path, rep=1)
+    assert analyze.main(["--results", str(root)]) == 0
+    text = (root / "REPORT_SNIPPET.md").read_text()
+    assert "## T4 agreement, rep 0" in text and "## T4 agreement, rep 1" in text
+    agreement = (root / "tables" / "t4_agreement.csv").read_text().splitlines()
+    assert agreement[0].startswith("rep,") and len(agreement) == 1 + 2 * 2
 
 
 def test_cause_and_build_times():

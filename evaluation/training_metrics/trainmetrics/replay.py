@@ -6,9 +6,20 @@ recording every block. Used by the census and by every later experiment."""
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 from dataclasses import asdict, dataclass, field
-from typing import Any, Dict, List, Optional, Protocol, Sequence, Tuple
+from typing import (
+    Any,
+    AsyncIterator,
+    Callable,
+    Dict,
+    List,
+    Optional,
+    Protocol,
+    Sequence,
+    Tuple,
+)
 
 from .corpus import CorpusFile
 from .spans import check_spans, command_spans
@@ -382,6 +393,32 @@ async def close_all(
     ]
 
 
+@contextlib.asynccontextmanager
+async def open_session(
+    client: Any,
+    acq: Dict[str, Any],
+    registry: Dict[str, str],
+    on_change: Callable[[Dict[str, str]], Any],
+    unclosed: Optional[List[Dict[str, Any]]] = None,
+) -> AsyncIterator[SessionRef]:
+    """The acquired session ``acq`` for the body of the ``async with``: in
+    ``registry`` (``on_change`` called on every change) while it is open, and
+    closed when the body ends, however it ends; a session that does not close
+    stays in the registry and is appended to ``unclosed``."""
+    sess = SessionRef(str(acq["session_id"]), str(acq["lease_id"]))
+    registry[sess.session_id] = sess.lease_id
+    on_change(registry)
+    try:
+        yield sess
+    finally:
+        left = await close_all(client, [sess])
+        if unclosed is not None:
+            unclosed.extend(left)
+        if not left:
+            registry.pop(sess.session_id, None)
+        on_change(registry)
+
+
 ACQUIRE_TIMEOUT_S = 900.0
 ACQUIRE_RETRIES = 12  # 503 memory_pressure / pool_full: retried after Retry-After
 ACQUIRE_WAIT_MAX_S = 300.0  # and the summed wait is capped (review 9a4d610 S1)
@@ -407,9 +444,11 @@ def _retry_after(exc: BaseException) -> Optional[float]:
 
 
 async def _acquire_retrying(
-    client: Any, cf: CorpusFile, heap: str, label: str
+    client: Any, cf: CorpusFile, heap: str, label: str, *, create: bool = False
 ) -> Tuple[Dict[str, Any], int, float]:
-    """Acquire a session with the file's imports; a retryable refusal waits
+    """Acquire a session with the file's imports (``create``: ``POST
+    /sessions``, always a new process, never one from the pool — T3's fresh
+    alternative); a retryable refusal waits
     Retry-After and tries again, up to ACQUIRE_RETRIES and ACQUIRE_WAIT_MAX_S
     summed wait (Retry-After is the server's choice), so a busy server costs
     time (in acquire_s) instead of silently dropping the file. Each attempt is a
@@ -418,7 +457,9 @@ async def _acquire_retrying(
     retries, waited = 0, 0.0
     while True:
         task = asyncio.ensure_future(
-            client.acquire_session(
+            client.create_session(theories=list(cf.imports), field=heap, label=label)
+            if create
+            else client.acquire_session(
                 theories=list(cf.imports),
                 field=heap,
                 reuse_dirty=False,  # SessionRef invariant: a fresh session per file

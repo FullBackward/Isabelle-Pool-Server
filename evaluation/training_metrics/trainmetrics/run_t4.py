@@ -35,7 +35,7 @@ from . import mutate
 from .census import load_census, load_config
 from .contention import tier_poll, tier_summary
 from .corpus import CorpusFile, corpus_sha, load_corpus, load_paths
-from .harness import cell_arg_parser, run_cli_cell
+from .harness import cell_arg_parser, cli_extra, open_registry, run_cli_cell
 from .metrics_t4 import summarize_t4
 from .metrics_t5 import load_samples
 from .replay import RETRYABLE, SessionRef, _acquire_retrying, close_all, verify_in_file
@@ -395,13 +395,7 @@ async def run_cell(  # pylint: disable=too-many-arguments,too-many-locals
         }
     )
     out_dir.mkdir(parents=True, exist_ok=True)
-    registry: Dict[str, str] = {}
-    body["open_sessions"] = registry
-
-    def changed(_reg: Dict[str, str]) -> None:
-        if checkpoint is not None:
-            checkpoint(body)
-
+    registry, changed = open_registry(body, checkpoint)
     part_a = [part_a_row(cf, rows[cf.stem]) for cf in usable]
     if sampler is not None:
         sampler.phase("run")
@@ -477,11 +471,7 @@ async def amain(args: argparse.Namespace) -> int:
         seed=int(cfg["seed"]) + args.rep,
         out_dir=Path(args.out) / "t4" / f"rep{args.rep}",
         head={"experiment": "t4", "rep": args.rep},
-        extra={
-            "census_path": args.census,
-            "ips_env": cfg["ips"].get("env", {}),
-            "local_smoke": bool(args.local_smoke),
-        },
+        extra=cli_extra(cfg, args),
         url=args.url,
         external=bool(args.ips_external),
         label=f"t4 rep={args.rep}",

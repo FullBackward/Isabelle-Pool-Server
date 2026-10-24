@@ -20,7 +20,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence
 from . import run_t5w8
 from .census import load_census, load_config
 from .corpus import CorpusFile, corpus_sha, load_corpus, load_paths
-from .harness import cell_arg_parser, run_cli_cell
+from .harness import cell_arg_parser, cli_extra, open_registry, run_cli_cell
 from .metrics_t5 import annotate, load_samples, summarize
 from .seeds import BudgetLadder, make_seeds
 from .t5_core import T5FileRecord, run_file
@@ -69,13 +69,7 @@ async def run_cell(  # pylint: disable=too-many-arguments,too-many-locals
     out_dir.mkdir(parents=True, exist_ok=True)
     with open(out_dir / "seeds.json", "w", encoding="utf-8") as fh:
         json.dump([s.as_dict() for s in seeds], fh, indent=1)
-    registry: Dict[str, str] = {}
-    body["open_sessions"] = registry
-
-    def changed(_reg: Dict[str, str]) -> None:
-        if checkpoint is not None:
-            checkpoint(body)
-
+    registry, changed = open_registry(body, checkpoint)
     rows = {f["stem"]: f for f in census.get("files", [])}
     by_stem = {cf.stem: cf for cf in files}
     records: List[T5FileRecord] = []
@@ -163,12 +157,7 @@ async def amain(args: argparse.Namespace) -> int:
         seed=seed,
         out_dir=out_dir,
         head={"experiment": "t5", "workers": workers, "rep": args.rep},
-        extra={
-            "census_path": args.census,
-            "ips_env": cfg["ips"].get("env", {}),
-            "local_smoke": bool(args.local_smoke),
-            "t5_config": t5,
-        },
+        extra=cli_extra(cfg, args, t5_config=t5),
         url=args.url,
         external=bool(args.ips_external),
         label=f"t5 W={workers} rep={args.rep}",
