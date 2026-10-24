@@ -23,6 +23,7 @@ from .replay import (
     _acquire_retrying,
     close_all,
     verify_block,
+    verify_in_file,
 )
 from .seeds import BudgetLadder, Seed
 
@@ -232,16 +233,7 @@ async def run_position(  # pylint: disable=too-many-arguments,too-many-positiona
             b = ladder.next_budget(
                 seed.seed_id, seed.family, b, a.outcome == "timed_out"
             )
-    blk = await verify_block(
-        client,
-        sess,
-        cf.blocks[i],
-        stem=cf.stem,
-        index=i,
-        block_sha=cf.block_sha[i],
-        census_commands=row.get("n_commands"),
-        census_partial=bool(row.get("count_partial")),
-    )
+    blk = await verify_in_file(client, sess, cf, i, row)
     pos.block = asdict(blk)
     if blk.error_kind in DEAD:
         pos.stopped = blk.error_kind
@@ -315,16 +307,7 @@ async def run_file(  # pylint: disable=too-many-arguments,too-many-locals
                     break
                 continue
             row = rows[i] if i < len(rows) else {}
-            blk = await verify_block(
-                client,
-                sess,
-                cf.blocks[i],
-                stem=cf.stem,
-                index=i,
-                block_sha=cf.block_sha[i],
-                census_commands=row.get("n_commands"),
-                census_partial=bool(row.get("count_partial")),
-            )
+            blk = await verify_in_file(client, sess, cf, i, row)
             rec.prefix_blocks += 1
             rec.prefix_proved += int(blk.proved)
             rec.prefix_wall_s = round(rec.prefix_wall_s + blk.wall_s, 4)

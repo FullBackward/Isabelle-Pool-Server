@@ -23,8 +23,8 @@ from typing import Any, Callable, Dict, List, Optional, Sequence
 from .contention import (
     census_walls,
     executor_threads,
-    poll_tiers,
     state_table,
+    tier_poll,
     tier_summary,
 )
 from .corpus import CorpusFile, assignment, corpus_sha
@@ -161,16 +161,12 @@ async def run_cell(  # pylint: disable=too-many-arguments,too-many-locals
             checkpoint(body)
 
     records: List[T5FileRecord] = []
-    stop = asyncio.Event()
-    poller = asyncio.ensure_future(
-        poll_tiers(
-            client, out_dir / "tiers.jsonl", stop, float(w8.get("tier_poll_s", 5))
-        )
-    )
     if sampler is not None:
         sampler.phase("run")
     body["window_start"] = time.time()
-    try:
+    async with tier_poll(
+        client, out_dir / "tiers.jsonl", float(w8.get("tier_poll_s", 5))
+    ):
         await asyncio.gather(
             *(
                 _worker(
@@ -189,9 +185,6 @@ async def run_cell(  # pylint: disable=too-many-arguments,too-many-locals
                 for w in range(workers)
             )
         )
-    finally:
-        stop.set()
-        await asyncio.gather(poller, return_exceptions=True)
     body["window_end"] = time.time()
     if sampler is not None:
         sampler.phase("stop")

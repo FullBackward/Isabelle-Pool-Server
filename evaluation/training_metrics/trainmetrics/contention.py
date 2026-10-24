@@ -11,11 +11,12 @@ from __future__ import annotations
 
 import asyncio
 import bisect
+import contextlib
 import json
 import os
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Sequence, Tuple
+from typing import Any, AsyncIterator, Dict, List, Sequence, Tuple
 
 from .metrics_t12 import p50, p95
 
@@ -31,8 +32,9 @@ def executor_threads() -> int:
 async def poll_tiers(
     client: Any, path: Path, stop: asyncio.Event, interval_s: float = 5.0
 ) -> None:
-    """Append ``GET /api/v1/memory``'s tier and used / limit to ``path`` every
-    ``interval_s`` until ``stop`` is set (one row more after it)."""
+    """Append ``GET /api/v1/memory``'s tier, used / limit and bigstep builds in
+    flight to ``path`` every ``interval_s`` until ``stop`` is set (one row more
+    after it)."""
     while True:
         row: Dict[str, Any] = {"t": time.time()}
         try:
@@ -44,6 +46,9 @@ async def poll_tiers(
                     "used_mb": mem.get("used_mb"),
                     "limit_mb": mem.get("limit_mb"),
                     "pressure_pct": mem.get("pressure_pct"),
+                    # T4 (plan review S4): the server does not report its bigstep cap;
+                    # the most builds seen in flight shows the one in force
+                    "builds_bigstep": (m.get("builds_in_flight") or {}).get("bigstep"),
                 }
             )
         except Exception as exc:  # pylint: disable=broad-exception-caught
@@ -56,6 +61,19 @@ async def poll_tiers(
             await asyncio.wait_for(stop.wait(), timeout=interval_s)
         except asyncio.TimeoutError:
             pass
+
+
+@contextlib.asynccontextmanager
+async def tier_poll(client: Any, path: Path, interval_s: float) -> AsyncIterator[None]:
+    """:func:`poll_tiers` for the body of the ``async with``; stopped (with
+    one last row) when the body ends, however it ends."""
+    stop = asyncio.Event()
+    poller = asyncio.ensure_future(poll_tiers(client, path, stop, interval_s))
+    try:
+        yield
+    finally:
+        stop.set()
+        await asyncio.gather(poller, return_exceptions=True)
 
 
 def tier_summary(rows: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
@@ -74,6 +92,14 @@ def tier_summary(rows: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
         "used_max_mb": max(used) if used else None,
         "pressure_max_pct": max(pressure) if pressure else None,
         "errors": sum(1 for r in rows if r.get("error")),
+        "builds_bigstep_max": max(
+            (
+                int(r["builds_bigstep"])
+                for r in rows
+                if r.get("builds_bigstep") is not None
+            ),
+            default=None,
+        ),
     }
 
 

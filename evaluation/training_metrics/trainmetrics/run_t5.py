@@ -20,7 +20,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence
 from . import run_t5w8
 from .census import load_census, load_config
 from .corpus import CorpusFile, corpus_sha, load_corpus, load_paths
-from .harness import cell_arg_parser, run_with_server
+from .harness import cell_arg_parser, run_cli_cell
 from .metrics_t5 import annotate, load_samples, summarize
 from .seeds import BudgetLadder, make_seeds
 from .t5_core import T5FileRecord, run_file
@@ -155,48 +155,24 @@ async def amain(args: argparse.Namespace) -> int:
         return 0
     census = load_census(args.census)
     seed = int(cfg["seed"]) + args.rep
-    cell = run_t5w8.run_cell if args.contention else run_cell
-
-    async def work(client: Any, sampler: Any, body: Dict[str, Any], ckpt: Any) -> None:
-        body.update(
-            {
-                "census_path": args.census,
-                "ips_env": cfg["ips"].get("env", {}),
-                "local_smoke": bool(args.local_smoke),
-                "t5_config": t5,
-            }
-        )
-        await cell(
-            client,
-            t5,
-            files,
-            census,
-            heap=heap,
-            seed=seed,
-            out_dir=out_dir,
-            sampler=sampler,
-            body=body,
-            checkpoint=ckpt,
-        )
-
-    body = await run_with_server(
+    return await run_cli_cell(
         cfg,
+        run_t5w8.run_cell if args.contention else run_cell,
+        (t5, files, census),
         heap=heap,
+        seed=seed,
         out_dir=out_dir,
         head={"experiment": "t5", "workers": workers, "rep": args.rep},
-        work=work,
+        extra={
+            "census_path": args.census,
+            "ips_env": cfg["ips"].get("env", {}),
+            "local_smoke": bool(args.local_smoke),
+            "t5_config": t5,
+        },
         url=args.url,
         external=bool(args.ips_external),
+        label=f"t5 W={workers} rep={args.rep}",
     )
-    print(
-        f"t5 W={workers} rep={args.rep}: {body['outcome']}"
-        + (f" ({body.get('error')})" if body.get("error") else "")
-        + f" -> {out_dir}",
-        flush=True,
-    )
-    if body.get("summary"):
-        print(json.dumps(body["summary"], indent=1), flush=True)
-    return 0 if body["outcome"] == "ok" else 1
 
 
 def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:

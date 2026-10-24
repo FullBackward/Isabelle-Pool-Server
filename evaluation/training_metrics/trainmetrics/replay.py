@@ -261,6 +261,31 @@ def _census_at(
     }
 
 
+async def verify_in_file(  # pylint: disable=too-many-arguments
+    client: ChunkClient,
+    sess: SessionRef,
+    cf: CorpusFile,
+    i: int,
+    row: Dict[str, Any],
+    *,
+    text: Optional[str] = None,
+    block_sha: Optional[str] = None,
+) -> BlockRecord:
+    """Block ``i`` of ``cf`` (or ``text`` in its place) under the budget of
+    the block's census ``row`` (a mutant or seed keeps the original block's
+    budget, plan review S3)."""
+    return await verify_block(
+        client,
+        sess,
+        cf.blocks[i] if text is None else text,
+        stem=cf.stem,
+        index=i,
+        block_sha=cf.block_sha[i] if block_sha is None else block_sha,
+        census_commands=row.get("n_commands"),
+        census_partial=bool(row.get("count_partial")),
+    )
+
+
 async def replay_file(  # pylint: disable=too-many-arguments
     client: ChunkClient,
     sess: SessionRef,

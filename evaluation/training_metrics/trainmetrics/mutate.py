@@ -25,7 +25,7 @@ import re
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from .corpus import CorpusFile
-from .seeds import PROOF_START, THEOREM_RE, top_level_words
+from .seeds import split_statement, top_level_words
 
 VARIANTS = ("unchanged", "sorry", "truncated", "wrong_fact")
 NO_SUCH_FACT = "t4_no_such_fact"
@@ -66,16 +66,14 @@ def _is_binding(words: List[Tuple[int, str]], k: int) -> bool:
 
 def statement_and_proof(block: str) -> Optional[Tuple[str, str, int]]:
     """(statement, proof, the proof's offset in the raw ``block``) of a
-    theorem block with a proof (the split of :func:`seeds.split_statement`)."""
-    lead = len(block) - len(block.lstrip())
-    text = block.strip()
-    if not THEOREM_RE.match(text):
+    theorem block with a proof (:func:`seeds.split_statement` on the stripped
+    block, its offset mapped back)."""
+    split = split_statement(block)
+    if split is None:
         return None
-    for off, word in top_level_words(text)[1:]:
-        if word in PROOF_START or word.split("(", 1)[0] in ("by", "apply"):
-            stmt = text[:off].rstrip()
-            return (stmt, text[off:], lead + off) if stmt else None
-    return None
+    stmt, proof = split
+    lead = len(block) - len(block.lstrip())
+    return stmt, proof, lead + len(block.strip()) - len(proof)
 
 
 def with_sorry(block: str) -> Optional[str]:

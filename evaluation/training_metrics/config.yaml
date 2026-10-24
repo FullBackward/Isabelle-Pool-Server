@@ -63,6 +63,15 @@ t5:                                          # bounded step at W = 1 (design §T
     max_files: 3
     budgets: {5: 2, 30: 1}
     w8: {workers: 2, files_per_worker: 1, seed_fraction: 0.1, max_seeds_per_worker: 2, budget_s: 5, tier_poll_s: 2}
+t4:                                          # agreement (design §T4, plan stage 4b)
+  mutation_blocks: 200                       # part B: census-proved theorem blocks, seeded; x sorry / truncated /
+                                             # wrong fact (+ unchanged = part A's build), one mutation per build
+  workers: 4                                 # part B in-session: files at a time, a session each (D6)
+  build_concurrency: 4                       # cold builds at a time (D4); needs ISABELLE_MAX_CONCURRENT_BIGSTEP_BUILDS
+                                             # >= this (ips.env: 4); the cell records the most builds seen in flight
+  build_timeout_s: 1200
+  poll_s: 2                                  # builds in flight and memory tier, the whole cell
+  local_smoke: {mutation_blocks: 6, workers: 2, build_concurrency: 1}   # the container's server runs at its cap 1
 budget:                                      # design B3: min(max_s, max(min_s, per_command_s * n))
   per_command_s: 2
   min_s: 30

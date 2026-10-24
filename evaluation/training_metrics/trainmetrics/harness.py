@@ -12,7 +12,7 @@ import json
 import signal
 import time
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Dict, Optional
+from typing import Any, Awaitable, Callable, Dict, Optional, Tuple
 
 from . import EXPERIMENT_DIR
 from .replay import BUDGET_MAX_S
@@ -123,3 +123,51 @@ async def run_with_server(  # pylint: disable=too-many-arguments,too-many-locals
         body["finished_at"] = time.time()
         write_manifest(out_dir, body)
     return body
+
+
+async def run_cli_cell(  # pylint: disable=too-many-arguments
+    cfg: Dict[str, Any],
+    cell: Callable[..., Awaitable[Any]],
+    cell_args: Tuple[Any, ...],
+    *,
+    heap: str,
+    seed: int,
+    out_dir: Path,
+    head: Dict[str, Any],
+    extra: Dict[str, Any],
+    url: Optional[str],
+    external: bool,
+    label: str,
+) -> int:
+    """A cell's CLI body: ``cell(client, *cell_args, heap=, seed=, out_dir=,
+    sampler=, body=, checkpoint=)`` under :func:`run_with_server`, ``extra``
+    merged into the manifest first; prints the outcome and the summary and
+    returns the exit code (0 only for ok)."""
+
+    async def work(client: Any, sampler: Any, body: Dict[str, Any], ckpt: Any) -> None:
+        body.update(extra)
+        await cell(
+            client,
+            *cell_args,
+            heap=heap,
+            seed=seed,
+            out_dir=out_dir,
+            sampler=sampler,
+            body=body,
+            checkpoint=ckpt,
+        )
+
+    body = await run_with_server(
+        cfg,
+        heap=heap,
+        out_dir=out_dir,
+        head=head,
+        work=work,
+        url=url,
+        external=external,
+    )
+    error = f" ({body.get('error')})" if body.get("error") else ""
+    print(f"{label}: {body['outcome']}{error} -> {out_dir}", flush=True)
+    if body.get("summary"):
+        print(json.dumps(body["summary"], indent=1), flush=True)
+    return 0 if body["outcome"] == "ok" else 1
