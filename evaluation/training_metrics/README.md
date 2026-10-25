@@ -77,7 +77,11 @@ Ubuntu server; if the two differ, this README is right.
   T3 distances, T4 / T5 / T6 problems. Budget per block `min(600, max(30, 2 s × census commands))`; a seeded or
   mutated block keeps its original block's budget.
 - **A session per file (D6)**: IPS fixes a session's context at acquisition, so every file is acquired with its own
-  imports; uncovered imports are refused (409, stage S). Theory names are new on each session.
+  imports; uncovered imports are refused (409, stage S). A file enters under its own theory name (D13: 36 blocks name
+  their own theory, `Abstract_Metric_Spaces.mtopology_capped_metric`); a second node of a file on the same session
+  (T3's new-node alternative) gets a suffixed name, so no name is entered twice on a session.
+- **Blocks** (`evaluation/scripts/theory_splitter.py`): cut only at a line outside comments, strings and cartouches;
+  a comment-only block joins a neighbour; each block is the file's exact text (T4 splices mutants into the file).
 - **Same work per W**: the T1 assignment is one seeded sequence of corpus permutations; a smaller run's files are a
   prefix of a larger run's; `seed + rep` per repeat.
 - **Verified = proved** (`success ∧ ¬proof_open ∧ ¬used_sorry ∧ ¬timed_out`); every rate and p95 has a timeout
@@ -104,6 +108,7 @@ Ubuntu server; if the two differ, this README is right.
 | D8–D10 | T6: both styles; one fixed candidate mix per group of 8 (T6a); W ∈ {1, 8, 32} × 2 repeats |
 | D11 | T2 latency only as a by-product of T1 |
 | D12 | the PIDE MCP sessions run `parallel_proofs=2` as IPS's (both interactive level 3: they check alike) |
+| D13 | IPS enters each file under its real theory name (self-qualified facts and constants resolve); PIDE MCP keeps its scratch names |
 
 ## 5. The local container (development only)
 

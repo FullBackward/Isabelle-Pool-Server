@@ -47,7 +47,10 @@ def snippet_pide(
         "session, started before the window — compare the verify-only columns. Proof checking: "
         f"PIDE MCP sessions {opts}; IPS `parallel_proofs={env.get('ISABELLE_PARALLEL_PROOFS', '?')}` "
         "(ISABELLE_PARALLEL_PROOFS); both are interactive PIDE sessions, where any value above 0 is "
-        "Isabelle's interactive level 3, so the rows check proofs alike. Latencies step by the 0.1 s "
+        "Isabelle's interactive level 3, so the rows check proofs alike. IPS enters each file under its "
+        "own theory name (D13); PIDE MCP names it after its scratch file, so the corpus' blocks that name "
+        "their own theory (36 in 17 files, about 1 %) and the blocks that use them fail there, which "
+        "lowers PIDE's verified chunks by that share. Latencies step by the 0.1 s "
         "poll in both rows (a block settles at the first or the second reading), so a p50 of 0.12 "
         "against 0.21 s is one poll, not a twofold gap: chunks/min is the comparison.",
         "",

@@ -93,9 +93,18 @@ class SessionRef:
     names: List[str] = field(default_factory=list)
 
     def new_name(self, stem: str) -> str:
-        """``<stem>__w<worker>_r<counter>``: never reused on this session, so
-        ``enter_theory`` always creates a fresh node (plan review B1)."""
-        name = f"{stem}__w{self.worker}_r{len(self.names)}"
+        """A theory name never entered on this session, so ``enter_theory``
+        always creates a fresh node (plan review B1): the file's own name the
+        first time (owner decision D13, 2026-10-25: a file that names its own
+        theory, ``Abstract_Metric_Spaces.mtopology_capped_metric``, must replay
+        as written; every file has a fresh session, D6), else
+        ``<stem>__w<worker>_r<counter>`` (a second node of the same file, T3's
+        new-node alternative)."""
+        name = (
+            stem
+            if stem not in self.names
+            else f"{stem}__w{self.worker}_r{len(self.names)}"
+        )
         if name in self.names:  # defensive: the counter makes this impossible
             raise RuntimeError(f"theory name {name} reused on {self.session_id}")
         self.names.append(name)

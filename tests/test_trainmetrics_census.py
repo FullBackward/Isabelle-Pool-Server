@@ -167,7 +167,9 @@ def test_replay_uses_a_new_name_per_replay_and_records_blocks(corpus_dir):
         return r1, r2
 
     r1, r2 = asyncio.run(go())
-    assert r1.theory_name == "A__w3_r0" and r2.theory_name == "A__w3_r1"
+    # D13: the file's own name first (self-qualified facts resolve), then a
+    # suffixed one: never a name twice on a session (plan review B1)
+    assert r1.theory_name == "A" and r2.theory_name == "A__w3_r1"
     assert r2.nodes_on_session == 2 and sess.nodes == 2
     b = r1.blocks
     assert [x.proved for x in b] == [True, False, True]
