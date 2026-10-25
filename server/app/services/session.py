@@ -29,12 +29,11 @@ from .internal_models import (
 )
 from .theory_chunks import preview_text
 from .theory_parsing import parse_theory_header
-from .session_bigstep import BigStepMixin
 
 logger = get_logger(__name__)
 
 
-class _Isabelle_Session(BigStepMixin):
+class _Isabelle_Session:
 
     def __init__(
         self,

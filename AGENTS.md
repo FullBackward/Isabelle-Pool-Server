@@ -168,7 +168,6 @@ repo_root/
 │       ├── services/
 │       │   ├── session_manager.py + session_manager_helpers.py   # LRU pool, leases, cleanup_once(), gateway recovery
 │       │   ├── session.py          # per-session state & small-step ops
-│       │   ├── session_bigstep.py  # in-session whole-theory verification
 │       │   ├── build_verify.py     # isabelle build big-step verifier
 │       │   ├── threaded_backend.py # serialises Py4J calls per session on one worker thread
 │       │   ├── memory_monitor.py   # cgroup memory admission
@@ -207,7 +206,7 @@ The former top-level `mcp_lsp_server/` / `mcp_stepwise_server/` shim packages we
 - **Memory gate**: `MemoryMonitor` reads cgroup memory (subtracting reclaimable `inactive_file` page cache); under pressure the manager evicts idle LRU sessions before admitting new ones, returning HTTP 503 if nothing can be evicted. Eviction waits `ISABELLE_MEMORY_EVICTION_SETTLE_S` and retries admission `ISABELLE_MEMORY_ADMISSION_RETRIES` times before 503ing.
 - **Wall budgets (Bug 15)**: the request `timeout` on `POST .../commands`, `verify_chunk`, `diagnostic` is a JVM wall budget — an expired command is **rolled back** and reported `success=false` with a timeout error; it never keeps running. Read-only queries (goals/facts/state) are overlay queries with their own budgets (`ISABELLE_REPL_*_TIMEOUT`) and never wait on a running command. The Python-side future timeout is request timeout + `ISABELLE_TIMEOUT_BACKEND_GRACE`.
 - **Sledgehammer**: a PIDE overlay on the current goal (`isabelle_pool_server_sledgehammer` Query_Operation); an `asyncio.Semaphore` caps in-flight sledgehammers to `ISABELLE_MAX_CONCURRENT_SLEDGEHAMMER` to avoid OOM-killing the gateway (Bug 6).
-- **Big-step verification**: `BuildVerifier` writes a temporary `ROOT` and runs `isabelle build`; results are cached by SHA256. Endpoint `POST /api/v1/sessions/bigstep` (lease-free). `services/session_bigstep.py` is the in-session variant.
+- **Big-step verification**: `BuildVerifier` writes a temporary `ROOT` and runs `isabelle build`; results are cached by SHA256. Endpoint `POST /api/v1/sessions/bigstep` (lease-free).
 - **Heap pool** (`services/heap_pool.py`, routes `heaps.py`): verified per-project heaps built with `isabelle build -b` (launcher from `ISABELLE_HOME`, else `/opt/isabelle`), task-group tenancy, destructive endpoints admin-token gated (Bug 13). Its `STATE_DIR` / `ALLOWED_ROOTS` defaults are container paths — native installs override them (README B7).
 - **Checkpoints**: issued ids only; an unknown/invalidated id fails all-or-nothing (Bug 22).
 
