@@ -1,8 +1,10 @@
 """The census (design B2): one replay of the corpus at W = 1 with the maximum
 budget. The server's per-command reports give each block's command count;
 ``census.json`` holds them and every later table is keyed on its id. Each
-finished file goes to ``files.jsonl`` at once; a rerun continues after them
-(``census_journal``; ``--fresh`` starts again).
+finished file goes to ``files.jsonl`` at once; a rerun continues after them,
+and after a new commit that changes nothing a replay runs it keeps the files
+whose blocks did not change (``census_journal``, D16; ``--fresh`` starts
+again).
 
     python -m trainmetrics.census [--config config.yaml] [--files A,B] [--out results/census] [--fresh]
 """
@@ -25,11 +27,12 @@ from .census_journal import (
     block_progress,
     journal_key,
     kept_in_order,
-    load_journal,
+    resume_point,
     start_journal,
 )
 from .corpus import CorpusFile, corpus_sha, load_corpus, load_paths, sha256_text
 from .replay import BUDGET_MAX_S, ReplayRecord, replay_file_fresh
+from .spans import check_spans
 
 CENSUS_VERSION = 1
 
@@ -199,10 +202,13 @@ async def run_census(
     acquired with the file's own imports (D6, review afd3de9 B1) — the same
     condition as every T1 worker; sessions that stay open are listed. A file
     in ``done`` (an earlier run's record) is not run again; each new record is
-    appended to ``journal``."""
+    appended to ``journal``; its spans meet the current check (D16)."""
     records: List[ReplayRecord] = []
     for n, cf in enumerate(files, 1):
         if done and cf.stem in done:
+            for b in done[cf.stem].blocks:
+                if b.index < len(cf.blocks):
+                    b.spans_error = check_spans(cf.blocks[b.index], b.spans)
             records.append(done[cf.stem])
             continue
         rr = await replay_file_fresh(
@@ -279,7 +285,10 @@ async def _main_async(  # pylint: disable=too-many-locals
         return 2
     journal = Path(args.out) / JOURNAL
     key = journal_key(files, cfg, field, BUDGET_MAX_S, CENSUS_VERSION)
-    done, why = ({}, "--fresh") if args.fresh else load_journal(journal, key)
+    # D16: after a new commit, the files it cannot change are kept
+    done, why, note = resume_point(journal, key, files, bool(args.fresh))
+    if note:
+        print(f"census: {note}", flush=True)
     print(
         (
             f"census: starting at the first file ({why})"
@@ -326,6 +335,7 @@ async def _main_async(  # pylint: disable=too-many-locals
             "field": field,
             "wall_s": round(time.time() - t0, 1),  # this run's (resumed files apart)
             "resumed_files": sum(1 for cf in files if cf.stem in done),
+            "resume_note": note,  # D16: files kept from an earlier commit
             "budget_s": BUDGET_MAX_S,
             "session_per_file": True,
             "corpus_manifest": (

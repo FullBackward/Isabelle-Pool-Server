@@ -84,8 +84,10 @@ again in each new shell.
 4. Make sure that `results/census/census.json` exists.
 
 NOTE: If the census stops (you stop it, or the connection stops), start the same command again. The census
-continues after the last file that it completed. It starts again from the first file if the corpus, the code, or
-`ips.env` changed. To start again from the first file, add `--fresh` after `scripts/01_census.sh`.
+continues after the last file that it completed. It starts again from the first file if the corpus or `ips.env`
+changed. If only the code changed, and the change does not touch the server or the replay, the census keeps each
+file whose blocks did not change and runs only the other files. The first lines of the log tell which. To start
+again from the first file, add `--fresh` after `scripts/01_census.sh`.
 
 CAUTION: If the census shows "proved" below the limit (exit code 3), the census measured the wrong thing. Do not
 continue. Send the output to the builder.

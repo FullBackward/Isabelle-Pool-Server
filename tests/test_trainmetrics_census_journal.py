@@ -116,3 +116,99 @@ def test_slow_and_timed_out_blocks_print_a_line(tmp_path, capsys):
     assert (
         "[census 2/2] B block 1/1: proved after 0s (lemma b1" in capsys.readouterr().out
     )
+
+
+def _finished_run(tmp_path, monkeypatch):
+    """A finished census of A and B under KEY, B's journal record as if B had
+    been split differently, and ``replay_change`` finding nothing."""
+    files = _files(tmp_path)
+    journal = tmp_path / "out" / census_journal.JOURNAL
+    census_journal.start_journal(journal, KEY, [])
+    asyncio.run(census.run_census(FakeClient(), files, field="HOL", journal=journal))
+    head, a, b = journal.read_text().splitlines()
+    rec = json.loads(b)
+    rec["blocks"][0]["block_sha"] = "split-before-the-fix"
+    journal.write_text("\n".join([head, a, json.dumps(rec)]) + "\n")
+    monkeypatch.setattr(census_journal, "replay_change", lambda old, new: None)
+    return files, journal
+
+
+def test_a_new_commit_keeps_the_files_whose_blocks_did_not_change(
+    tmp_path, monkeypatch
+):
+    """D16: a splitter fix reruns only the files it splits differently."""
+    files, journal = _finished_run(tmp_path, monkeypatch)
+    key = {**KEY, "commit": "y"}
+    assert census_journal.load_journal(journal, key) == (
+        {},
+        "the inputs changed: commit",
+    )
+    kept, note = census_journal.load_unchanged(journal, key, files)
+    assert list(kept) == ["A"]
+    assert note == (
+        "commit x -> y changes nothing a replay runs; "
+        "keeping the 1 files whose blocks did not change"
+    )
+    census_journal.start_journal(
+        journal, key, census_journal.kept_in_order(files, kept)
+    )
+    prev = journal.with_name(census_journal.JOURNAL + ".prev")
+    assert len(prev.read_text().splitlines()) == 3  # the old run is kept aside
+    assert json.loads(journal.read_text().splitlines()[0]) == {"key": key}
+    kept["A"].blocks[0].spans_error = "stale"
+    cl = FakeClient()
+    again = asyncio.run(
+        census.run_census(cl, files, field="HOL", done=kept, journal=journal)
+    )
+    assert [c[1] for c in cl.calls if c[0] == "enter"] == ["B"]
+    a0 = again[0].blocks[0]
+    assert a0.spans_error == census.check_spans(files[0].blocks[0], a0.spans)
+
+
+def test_no_file_is_kept_when_a_replay_could_change(tmp_path, monkeypatch):
+    files, journal = _finished_run(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        census_journal, "replay_change", lambda old, new: "server/app/x.py changed"
+    )
+    assert census_journal.load_unchanged(journal, {**KEY, "commit": "y"}, files) == (
+        {},
+        "no file kept from commit x: server/app/x.py changed",
+    )
+    # more than the commit changed: nothing to keep, nothing to say
+    other = {**KEY, "commit": "y", "corpus_sha": "d"}
+    assert census_journal.load_unchanged(journal, other, files) == ({}, None)
+    assert census_journal.load_unchanged(tmp_path / "none", KEY, files) == ({}, None)
+
+
+def test_replay_change_reads_the_definitions_not_their_layout():
+    a = 'X_RE = 1\n\n\ndef f(t):\n    """doc"""\n    return t  # note\n\ndef g():\n    pass\n'
+    b = 'X_RE = 1\ndef f(t):\n    """doc"""\n    return (t)\n\ndef g():\n    return 2\n'
+    assert census_journal._defs(a, ("X_RE", "f")) == census_journal._defs(
+        b, ("X_RE", "f")
+    )
+    assert census_journal._defs(a, ("g",)) != census_journal._defs(b, ("g",))
+    head = census_journal.git_commit()
+    if head is None:  # no git (the container's /app)
+        return
+    assert census_journal.replay_change(head, head) is None
+    assert census_journal.replay_change("0" * 40, head).startswith("git cannot compare")
+    assert census_journal.replay_change(None, head) == "no commit to compare"
+
+
+def test_resume_point(tmp_path, monkeypatch):
+    files, journal = _finished_run(tmp_path, monkeypatch)
+    assert census_journal.resume_point(journal, KEY, files, True) == (
+        {},
+        "--fresh",
+        None,
+    )
+    done, why, note = census_journal.resume_point(journal, KEY, files, False)
+    assert sorted(done) == ["A", "B"] and why is None and note is None
+    done, why, note = census_journal.resume_point(
+        journal, {**KEY, "commit": "y"}, files, False
+    )
+    assert list(done) == ["A"] and why is None and note.startswith("commit x -> y")
+    done, why, note = census_journal.resume_point(
+        journal, {**KEY, "corpus_sha": "d"}, files, False
+    )
+    assert done == {} and why == "the inputs changed: corpus_sha" and note is None

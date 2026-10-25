@@ -86,6 +86,23 @@ def test_text_between_commands_or_a_bad_kind_fails():
     assert spans.check_spans(text, None) == "no ranges in the report"
 
 
+def test_a_private_or_qualified_command_starts_with_its_modifier():
+    """D16, the census of 2026-10-25: Isabelle's span of `private lemma` starts
+    at `private` (10 blocks failed the check)."""
+    text = "private lemma x: True by simp"
+    ok = [_cmd("lemma", 1, 1, (1, 1), (1, 22)), _cmd("by", 1, 1, (1, 23), (1, 30))]
+    assert spans.check_spans(text, spans.command_spans(text, ok)) is None
+    q = "qualified  definition y where y = 1"
+    assert (
+        spans.check_spans(q, [{"kind": "definition", "start": 0, "end": len(q)}])
+        is None
+    )
+    wrong = [_cmd("theorem", 1, 1, (1, 1), (1, 22)), _cmd("by", 1, 1, (1, 23), (1, 30))]
+    assert "does not start with" in spans.check_spans(
+        text, spans.command_spans(text, wrong)
+    )
+
+
 def test_verify_block_keeps_spans_only_when_asked_and_the_census_flags_failures():
     class C:
         async def verify_chunk(self, sid, chunk, timeout=None, *, lease_id=None):

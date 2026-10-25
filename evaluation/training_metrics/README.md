@@ -51,8 +51,10 @@ Ubuntu server; if the two differ, this README is right.
   re-assemble it (the census is valid for T1–T5; only T6b's step split needs the spans).
 - The census writes each finished file to `results/census/files.jsonl` at once. After a stop (Ctrl-C, a lost
   connection) the same command continues after the last finished file, if the corpus, the commit, `ips.env`, the
-  field and the budget are unchanged; otherwise, or with `--fresh`, it starts again (the old journal becomes
-  `files.jsonl.prev`). A block that times out or runs 120 s or longer prints a line (`[census n/93] <file> block
+  field and the budget are unchanged. If only the commit changed and the commits between change nothing a replay
+  runs (`census_journal.REPLAY_PATHS` / `REPLAY_DEFS`: the server, the client, the replay, the theory header
+  parsing), it keeps every file whose blocks did not change and runs the others (D16). Otherwise, or with
+  `--fresh`, it starts again (the old journal becomes `files.jsonl.prev`). A block that times out or runs 120 s or longer prints a line (`[census n/93] <file> block
   i/k: …`).
 - `02_smoke.sh` deletes `results/smoke/` first, so a stale cell can never pass a smoke of new code.
 - Step 5: the slowest worker of each T6 matrix × `--contention` (3; once T1 has run, T1's slowdown at W = 32 is the
@@ -87,6 +89,8 @@ Ubuntu server; if the two differ, this README is right.
   (T3's new-node alternative) gets a suffixed name, so no name is entered twice on a session.
 - **Blocks** (`evaluation/scripts/theory_splitter.py`): cut only at a line outside comments, strings and cartouches;
   a comment-only block joins a neighbour; each block is the file's exact text (T4 splices mutants into the file).
+  A cut is made outside every `proof` … `qed` (D16: `by` ends a goal, not a `proof`; `instance proof` and
+  `proof qed auto` on one line count), and before a `private` / `qualified` command too.
 - **ML commands (D14)**: every cell server runs with `ISABELLE_ALLOW_ML_COMMANDS=true` (`ips.env`); the default
   guard refuses a chunk with `attribute_setup`, `setup`, `method_setup`, a translation or `ML_file` (422), and the
   blocks after it fail. An IPS theory is `Draft.<name>` with no folder, so a relative load path is looked up in the
@@ -124,6 +128,7 @@ Ubuntu server; if the two differ, this README is right.
 | D13 | IPS enters each file under its real theory name (self-qualified facts and constants resolve); PIDE MCP keeps its scratch names |
 | D14 | the cell servers accept ML commands (`ISABELLE_ALLOW_ML_COMMANDS=true`: the corpus is Isabelle's own source, 11 blocks in 8 files have ML); corpus preparation anchors relative load paths (`ML_file ‹measurable.ML›` → `~~/src/HOL/Analysis/measurable.ML`) |
 | D15 | IPS keeps a session's import order (it sorted them: the later import wins a short name, so Cartesian_Space read `transpose` as `Transposition.transpose`; docs/ISSUES.md Bug 26); corpus preparation also anchors relative `\<^file>` / `@{file}` paths (2 text blocks) |
+| D16 | the splitter cuts outside every `proof` … `qed` and before `private` / `qualified` commands (4 blocks of 3 files ended inside a proof, 10 blocks of 5 files held a `private` lemma; 11 files split anew); the span check accepts the modifier (Isabelle counts it as part of the command); a census after a new commit reruns only the files whose blocks changed |
 
 ## 5. The local container (development only)
 

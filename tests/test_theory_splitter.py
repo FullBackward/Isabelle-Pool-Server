@@ -104,3 +104,78 @@ def test_trailing_whitespace_is_kept_so_blocks_are_the_exact_text():
     blocks = split_top_level_blocks(body)
     assert blocks == ['lemma i: "u = u"   \n  by simp', 'lemma j: "t = t"\n  by simp']
     _in_order(body, blocks)
+
+
+def test_a_text_inside_an_instance_proof_stays_in_the_block():
+    """D16, the census of 2026-10-25: Function_Metric's `instance proof` was not
+    counted as a proof, so a `text` inside it cut the proof in three."""
+    body = (
+        "instance proof\n"
+        '  fix x :: nat show "x = x"\n'
+        "  proof\n"
+        "    show ?thesis by simp\n"
+        "  qed\n"
+        "next\n"
+        "text \\<open>The second goal.\\<close>\n"
+        '  show "True" by simp\n'
+        "qed\n\n"
+        "end"
+    )
+    blocks = split_top_level_blocks(body)
+    assert len(blocks) == 2 and blocks[0].endswith("qed") and blocks[1] == "end"
+
+
+def test_by_inside_a_proof_does_not_close_it():
+    """D16: Function_Topology and Urysohn: a `by` line closed the open `proof`,
+    and a `text` further down cut it."""
+    body = (
+        'lemma k: "P"\n'
+        "proof -\n"
+        '  have "Q"\n'
+        "    by metis\n"
+        "  text \\<open>A remark.\\<close>\n"
+        "  show ?thesis\n"
+        "    by simp\n"
+        "qed\n\n"
+        'lemma l: "R" by simp'
+    )
+    blocks = split_top_level_blocks(body)
+    assert [b.split(":")[0] for b in blocks] == ["lemma k", "lemma l"]
+    assert blocks[0].endswith("qed")
+
+
+def test_proof_and_qed_on_one_line_close_the_block():
+    """D16: `proof qed auto` (Measure_Space) kept the next lemmas in its block."""
+    body = (
+        'lemma m: "S"\n  proof qed auto\n\n'
+        'lemma n: "T"\n  by simp\n\n'
+        'lemma o: "U"\nproof\n  show U sorry\noops\n\n'
+        'lemma p: "V" by simp'
+    )
+    blocks = split_top_level_blocks(body)
+    assert [b.split(":")[0] for b in blocks] == [
+        "lemma m",
+        "lemma n",
+        "lemma o",
+        "lemma p",
+    ]
+
+
+def test_a_private_lemma_starts_a_block():
+    """D16: `private lemma` (10 blocks of 5 files) joined the block before it."""
+    body = (
+        "context\nbegin\n\n"
+        'private lemma q: "W" by simp\n\n'
+        'qualified definition r where "r = 1"\n\n'
+        'lemma s: "W" by (rule q)\n\n'
+        "end"
+    )
+    blocks = split_top_level_blocks(body)
+    assert [b.split(":")[0].split(" where")[0] for b in blocks] == [
+        "context\nbegin",
+        "private lemma q",
+        "qualified definition r",
+        "lemma s",
+        "end",
+    ]
+    _in_order(body, blocks)

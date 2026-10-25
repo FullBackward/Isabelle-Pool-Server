@@ -24,6 +24,7 @@ COMMAND_STARTERS = tuple(
             "bundle", "unbundle", "include", "including", "notepad", "named_theorems",
             # theory / declarations
             "lemma", "theorem", "corollary", "proposition", "schematic_goal",
+            "private", "qualified",
             "definition", "abbreviation", "lemmas", "fun", "function", "primrec",
             "inductive", "inductive_set", "coinductive", "datatype", "codatatype",
             "record", "typedef", "class", "instantiation", "instance",
@@ -60,8 +61,12 @@ TOP_LEVEL_KEYWORDS = (
     "text", "text_raw", "ML", "ML_file", "SML_export", "setup",
     "method_setup", "termination", "end",
 )
-PROOF_OPENERS = ("proof", "proof -", "proof (")
-PROOF_CLOSERS = ("qed", "by", "done", "oops", "sorry")
+# a top-level command may carry a modifier: `private lemma`, `qualified definition`
+MODIFIER_RE = re.compile(r"^(?:private|qualified)\s+")
+# `proof` opens a block that only `qed` closes (`by`, `done`, `sorry` end a goal,
+# not a block); `oops` drops the whole statement. Counted anywhere on a line,
+# outside comments, strings and cartouches: `instance proof` opens one too
+PROOF_WORD_RE = re.compile(r"(?<![\w'.<\\])(proof|qed|oops)(?![\w'.>])")
 
 
 def extract_theory_name(text: str) -> Optional[str]:
@@ -125,7 +130,11 @@ def _escaped_quote(text: str, idx: int) -> bool:
     return (backslashes % 2) == 1
 
 
-def advance_lex_state(state: LexState, text: str, start: int = 0) -> LexState:
+def advance_lex_state(
+    state: LexState, text: str, start: int = 0, outer: Optional[list[str]] = None
+) -> LexState:
+    """``state`` after ``text``; ``outer`` (if given) gets the characters that
+    are outside comments, strings and cartouches (a space for each one)."""
     i = start
     n = len(text)
     while i < n:
@@ -170,20 +179,22 @@ def advance_lex_state(state: LexState, text: str, start: int = 0) -> LexState:
         if text.startswith("(*", i):
             state.comment_depth += 1
             i += 2
-            continue
-        if text.startswith(r"\<open>", i):
+        elif text.startswith(r"\<open>", i):
             state.cartouche_depth += 1
             i += len(r"\<open>")
-            continue
-        if text[i] == "\u2039":
+        elif text[i] == "\u2039":
             state.unicode_cartouche_depth += 1
             i += 1
-            continue
-        if text[i] == '"':
+        elif text[i] == '"':
             state.in_string = True
             i += 1
+        else:
+            if outer is not None:
+                outer.append(text[i])
+            i += 1
             continue
-        i += 1
+        if outer is not None:
+            outer.append(" ")
     return state
 
 
@@ -258,10 +269,13 @@ def _comment_only(lines: list[str]) -> bool:
 
 
 def split_top_level_blocks(body_text: str) -> list[str]:
-    """The body cut before each top-level command. A cut is only made, and
-    ``proof`` / ``qed`` only counted, on a line that starts outside any
-    comment, string or cartouche (``LexState``, as ``split_commands``): a block
-    comment with blank lines and keywords inside stays in one block. A block of
+    """The body cut before each top-level command (also one with a ``private``
+    or ``qualified`` modifier) outside every ``proof`` ... ``qed``. A cut is
+    only made on a line that starts outside any comment, string or cartouche
+    (``LexState``, as ``split_commands``), and ``proof`` / ``qed`` / ``oops``
+    are only counted outside them: a block comment with blank lines and
+    keywords inside stays in one block, and so does a proof with a ``text`` in
+    it (``by`` no longer closes a ``proof``; ``instance proof`` opens one). A block of
     comments only joins the next block (the last one joins the previous), so
     no block is empty of commands. Lines keep their trailing whitespace: every
     block is the body's exact text, in order (T4's ``mutate.splice`` finds
@@ -281,18 +295,22 @@ def split_top_level_blocks(body_text: str) -> list[str]:
             current
             and proof_depth == 0
             and at_top
-            and _starts_with_keyword(stripped, TOP_LEVEL_KEYWORDS)
+            and _starts_with_keyword(MODIFIER_RE.sub("", stripped), TOP_LEVEL_KEYWORDS)
             and not _comment_only(current)
         ):
             blocks.append(current)
             current = []
         current.append(line)
-        if at_top and _starts_with_keyword(stripped, PROOF_OPENERS):
-            proof_depth += 1
-        elif at_top and _starts_with_keyword(stripped, PROOF_CLOSERS):
-            proof_depth = max(0, proof_depth - 1)
-        advance_lex_state(state, line)
+        outer: list[str] = []
+        advance_lex_state(state, line, outer=outer)
         advance_lex_state(state, "\n")
+        for word in PROOF_WORD_RE.findall("".join(outer)):
+            if word == "proof":
+                proof_depth += 1
+            elif word == "qed":
+                proof_depth = max(0, proof_depth - 1)
+            else:  # oops
+                proof_depth = 0
     if blocks and _comment_only(current):
         blocks[-1].extend(current)
     else:

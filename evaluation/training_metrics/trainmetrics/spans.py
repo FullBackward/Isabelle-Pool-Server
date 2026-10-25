@@ -7,16 +7,21 @@ end exclusive. The block's first line in the node is the first command's
 ``node_line`` minus its chunk-relative ``line`` plus one (review plan_v1.6 S7).
 
 :func:`check_spans` is the census's own assertion (S7): the spans must be in
-order and in bounds, each must start with its command keyword, and the text
-between them may hold only whitespace and comments (nested ``(* *)`` and
-formal comments; review c6aa372 S1) — a column-unit mismatch
-(e.g. characters outside the Basic Multilingual Plane, counted twice in
-UTF-16) fails it."""
+order and in bounds, each must start with its command keyword (after a
+``private`` / ``qualified`` modifier, which Isabelle counts as part of the
+command, D16), and the text between them may hold only whitespace and
+comments (nested ``(* *)`` and formal comments; review c6aa372 S1) — a
+column-unit mismatch (e.g. characters outside the Basic Multilingual Plane,
+counted twice in UTF-16) fails it."""
 
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, List, Optional
 
+# the census of 2026-10-25: `private lemma` is one command whose span starts at
+# `private` (10 blocks of 5 HOL-Analysis files)
+MODIFIER_RE = re.compile(r"(?:private|qualified)\s+")
 FORMAL = ("\\<comment>", "\\<^cancel>", "\\<^marker>")
 CARTOUCHE = (("\\<open>", "\\<close>"), ("\u2039", "\u203a"))  # \<open>..\<close>, ‹..›
 
@@ -108,7 +113,8 @@ def check_spans(text: str, spans: Optional[List[Dict[str, Any]]]) -> Optional[st
         a, b = int(s["start"]), int(s["end"])
         if not 0 <= a <= b <= len(text) or a < pos:
             return f"command {n} ({s['kind']}) out of order or bounds: {a}..{b}"
-        if s["kind"] and not text[a:b].startswith(s["kind"]):
+        mod = MODIFIER_RE.match(text, a, b)
+        if s["kind"] and not text[mod.end() if mod else a : b].startswith(s["kind"]):
             return f"command {n} does not start with {s['kind']!r}: {text[a:a + 20]!r}"
         gap = strip_comments(text[pos:a])
         if gap.strip():
