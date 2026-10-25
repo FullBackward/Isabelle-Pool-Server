@@ -1,8 +1,10 @@
 """The census (design B2): one replay of the corpus at W = 1 with the maximum
 budget. The server's per-command reports give each block's command count;
-``census.json`` holds them and every later table is keyed on its id.
+``census.json`` holds them and every later table is keyed on its id. Each
+finished file goes to ``files.jsonl`` at once; a rerun continues after them
+(``census_journal``; ``--fresh`` starts again).
 
-    python -m trainmetrics.census [--config config.yaml] [--files A,B] [--out results/census]
+    python -m trainmetrics.census [--config config.yaml] [--files A,B] [--out results/census] [--fresh]
 """
 
 from __future__ import annotations
@@ -17,6 +19,15 @@ from typing import Any, Dict, List, Optional, Sequence
 import yaml
 
 from . import EXPERIMENT_DIR, REPO_ROOT
+from .census_journal import (
+    JOURNAL,
+    append_journal,
+    block_progress,
+    journal_key,
+    kept_in_order,
+    load_journal,
+    start_journal,
+)
 from .corpus import CorpusFile, corpus_sha, load_corpus, load_paths, sha256_text
 from .replay import BUDGET_MAX_S, ReplayRecord, replay_file_fresh
 
@@ -181,12 +192,19 @@ async def run_census(
     *,
     field: str,
     unclosed: Optional[List[Dict[str, Any]]] = None,
+    done: Optional[Dict[str, ReplayRecord]] = None,
+    journal: Optional[Path] = None,
 ) -> List[ReplayRecord]:
     """Replay every file once at the maximum budget, each on a fresh session
     acquired with the file's own imports (D6, review afd3de9 B1) — the same
-    condition as every T1 worker; sessions that stay open are listed."""
+    condition as every T1 worker; sessions that stay open are listed. A file
+    in ``done`` (an earlier run's record) is not run again; each new record is
+    appended to ``journal``."""
     records: List[ReplayRecord] = []
     for n, cf in enumerate(files, 1):
+        if done and cf.stem in done:
+            records.append(done[cf.stem])
+            continue
         rr = await replay_file_fresh(
             client,
             cf,
@@ -194,8 +212,11 @@ async def run_census(
             budget_s=BUDGET_MAX_S,
             label="trainmetrics-census",
             keep_spans=True,  # stage 3d: the step split for T6b
+            on_block=block_progress(n, len(files), cf),
         )
         records.append(rr)
+        if journal is not None:
+            append_journal(journal, rr)
         if unclosed is not None:
             unclosed.extend(rr.unclosed)
         proved = sum(1 for b in rr.blocks if b.proved)
@@ -256,6 +277,18 @@ async def _main_async(  # pylint: disable=too-many-locals
     if not files:
         print("no corpus files")
         return 2
+    journal = Path(args.out) / JOURNAL
+    key = journal_key(files, cfg, field, BUDGET_MAX_S, CENSUS_VERSION)
+    done, why = ({}, "--fresh") if args.fresh else load_journal(journal, key)
+    print(
+        (
+            f"census: starting at the first file ({why})"
+            if why
+            else f"census: continuing, {len(done)} of {len(files)} files done earlier"
+        ),
+        flush=True,
+    )
+    start_journal(journal, key, kept_in_order(files, done))
     driver = make_driver(cfg, field, args.url, bool(args.ips_external))
     t0 = time.time()
     try:
@@ -275,6 +308,8 @@ async def _main_async(  # pylint: disable=too-many-locals
                 files,
                 field=field,
                 unclosed=unclosed,
+                done=done,
+                journal=journal,
             )
         driver_info = driver.describe()
     finally:
@@ -289,7 +324,8 @@ async def _main_async(  # pylint: disable=too-many-locals
             "subset": only,
             "local_smoke": bool(args.local_smoke),
             "field": field,
-            "wall_s": round(time.time() - t0, 1),
+            "wall_s": round(time.time() - t0, 1),  # this run's (resumed files apart)
+            "resumed_files": sum(1 for cf in files if cf.stem in done),
             "budget_s": BUDGET_MAX_S,
             "session_per_file": True,
             "corpus_manifest": (
@@ -341,6 +377,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         help="the config's local_smoke files on its field (HOL), for the container",
     )
     ap.add_argument("--out", default=str(EXPERIMENT_DIR / "results" / "census"))
+    ap.add_argument(
+        "--fresh",
+        action="store_true",
+        help="ignore the files of an earlier, interrupted run (files.jsonl)",
+    )
     return asyncio.run(_main_async(ap.parse_args(argv)))
 
 

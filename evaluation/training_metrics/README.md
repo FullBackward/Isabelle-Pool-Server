@@ -49,6 +49,11 @@ Ubuntu server; if the two differ, this README is right.
 - The census (3) must run **after** stage 3d (it records command spans; T6b needs them). `01_census.sh` exits 3 when
   it proves less than `census_min_proved_fraction` (0.9: stop and inspect), and 4 when a proved block's spans do not
   re-assemble it (the census is valid for T1–T5; only T6b's step split needs the spans).
+- The census writes each finished file to `results/census/files.jsonl` at once. After a stop (Ctrl-C, a lost
+  connection) the same command continues after the last finished file, if the corpus, the commit, `ips.env`, the
+  field and the budget are unchanged; otherwise, or with `--fresh`, it starts again (the old journal becomes
+  `files.jsonl.prev`). A block that times out or runs 120 s or longer prints a line (`[census n/93] <file> block
+  i/k: …`).
 - `02_smoke.sh` deletes `results/smoke/` first, so a stale cell can never pass a smoke of new code.
 - Step 5: the slowest worker of each T6 matrix × `--contention` (3; once T1 has run, T1's slowdown at W = 32 is the
   better value) + the server start, never below 7200 s. Re-run it after a finished T6a W = 1 cell for real timeout
@@ -129,7 +134,7 @@ folder around live runs on the shared container.
 ```
 results/
 ├── corpus/processed/, corpus/MANIFEST.json      # 00a
-├── census/census.json, replays.jsonl            # 01
+├── census/census.json, replays.jsonl, files.jsonl   # 01 (files.jsonl: the journal a rerun continues from)
 ├── smoke/                                       # 02 (deleted and rewritten by every smoke)
 ├── t1/w<W>/rep<r>/  pide/w<W>/rep<r>/           # 10: manifest.json, replays.jsonl, samples.jsonl
 ├── t5/w1/rep0/  t5/w8/rep0/                     # 11
@@ -148,7 +153,7 @@ under `training-metrics-<date>/` (as the memory-scaling data). The tables and pl
 
 ## 7. Layout
 
-`trainmetrics/` — `corpus.py`, `prepare_corpus.py`, `census.py`, `spans.py`, `replay.py` (verify, budgets,
+`trainmetrics/` — `corpus.py`, `prepare_corpus.py`, `census.py`, `census_journal.py`, `spans.py`, `replay.py` (verify, budgets,
 sessions); `harness.py` (server / tool driver, sampler, manifest, CLI), `run_matrix.py`, `procctl.py`, `serve.py`;
 `run_t1.py`, `metrics_t12.py`, `drive_pide_chunks.py`, `analyze_pide.py` (T1, T2, the PIDE row); `seeds.py`,
 `t5_core.py`, `run_t5.py`, `run_t5w8.py`, `contention.py`, `metrics_t5.py`, `analyze_t5.py` (T5); `mutate.py`,

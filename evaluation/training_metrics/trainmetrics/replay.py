@@ -319,12 +319,14 @@ async def replay_file(  # pylint: disable=too-many-arguments
     census_partial: Optional[List[bool]] = None,
     budget_s: Optional[float] = None,
     keep_spans: bool = False,
+    on_block: Optional[Callable[[BlockRecord], None]] = None,
 ) -> ReplayRecord:
     """Enter a fresh node for ``cf`` with its own imports, then verify every
     block in order. ``census_counts[i]`` is block i's census command count
     (None outside the census), ``census_partial[i]`` whether that count is
     partial (the block timed out in the census). ``budget_s`` overrides the
-    rule (the census itself runs at the maximum)."""
+    rule (the census itself runs at the maximum); ``on_block`` sees each block
+    when it is done (the census's progress lines)."""
     name = sess.new_name(cf.stem)
     rr = ReplayRecord(
         stem=cf.stem,
@@ -363,6 +365,8 @@ async def replay_file(  # pylint: disable=too-many-arguments
                 **_census_at(census_counts, census_partial, i),
             )
         )
+        if on_block is not None:
+            on_block(rr.blocks[-1])
     rr.t_end = time.time()
     return rr
 
@@ -533,6 +537,7 @@ async def replay_file_fresh(  # pylint: disable=too-many-arguments,too-many-loca
     registry: Optional[Dict[str, str]] = None,
     on_change: Optional[Any] = None,
     keep_spans: bool = False,
+    on_block: Optional[Callable[[BlockRecord], None]] = None,
 ) -> ReplayRecord:
     """Replay ``cf`` on a session of its own (owner decision D6, review afd3de9
     B1): IPS fixes a session's theory context when it is acquired, so the
@@ -576,6 +581,7 @@ async def replay_file_fresh(  # pylint: disable=too-many-arguments,too-many-loca
             census_partial=census_partial,
             budget_s=budget_s,
             keep_spans=keep_spans,
+            on_block=on_block,
         )
     finally:
         unclosed = await close_all(client, [sess])

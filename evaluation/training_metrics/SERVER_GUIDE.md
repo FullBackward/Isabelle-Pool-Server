@@ -67,14 +67,25 @@ again in each new shell.
    ```
 2. Make sure that the last line shows `corpus: 94 of 94 theories` and `missing none`.
 
-## 6. Run the census (about 20 minutes)
+## 6. Run the census (about 20 minutes or more)
 
-1. Run the census:
+1. Start the census in the background. It writes its log:
    ```bash
-   scripts/01_census.sh
+   nohup scripts/01_census.sh >> results/census.log 2>&1 &
    ```
-2. Wait until the census is complete. It replays each corpus file one time.
-3. Make sure that the script ends without an error. The file `results/census/census.json` must exist.
+2. To see the progress, show the end of the log:
+   ```bash
+   tail -n 20 results/census.log
+   ```
+   The census shows a line for each file. It also shows a line for each block that times out or runs for 120
+   seconds or more. A large file (for example `Change_Of_Vars`) can take a long time.
+3. Wait until the census is complete. It replays each corpus file one time. The last line of the log shows the
+   totals.
+4. Make sure that `results/census/census.json` exists.
+
+NOTE: If the census stops (you stop it, or the connection stops), start the same command again. The census
+continues after the last file that it completed. It starts again from the first file if the corpus, the code, or
+`ips.env` changed. To start again from the first file, add `--fresh` after `scripts/01_census.sh`.
 
 CAUTION: If the census shows "proved" below the limit (exit code 3), the census measured the wrong thing. Do not
 continue. Send the output to the builder.
