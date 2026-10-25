@@ -38,6 +38,9 @@ ips:
     ISABELLE_MAX_CONCURRENT_BIGSTEP_BUILDS: "4"   # D4 (T4); the server reports the value it runs with
     ISABELLE_MEMORY_BUILD_ESTIMATE_MB: "4096"
     ISABELLE_ENABLE_MEMORY_MANAGEMENT: "true"
+    # D14: the corpus is Isabelle's own source and has ML commands (attribute_setup, setup, method_setup,
+    # translations, ML_file: 11 blocks in 8 files); the default guard refuses them with 422
+    ISABELLE_ALLOW_ML_COMMANDS: "true"
     # admission estimates near the measured per-session cost (report Table 2: 0.9 / 1.1 / 1.3 GB), so W
     # concurrent per-file acquisitions are not refused on reservations alone (review 34414a6 S1)
     ISABELLE_MEMORY_SESSION_ESTIMATES: "HOL=1024,HOL-Library=1280,HOL-Analysis=1536"

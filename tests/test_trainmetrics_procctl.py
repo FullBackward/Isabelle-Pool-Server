@@ -18,7 +18,7 @@ sys.path.insert(
     0, str(Path(__file__).resolve().parents[1] / "evaluation" / "training_metrics")
 )
 
-from trainmetrics import prepare_corpus, procctl  # noqa: E402
+from trainmetrics import census, prepare_corpus, procctl  # noqa: E402
 
 LINUX = os.path.exists("/proc/self/stat")
 
@@ -52,6 +52,62 @@ def test_prepare_corpus_rewrites_imports_and_records_a_manifest(tmp_path):
     assert len(m["corpus_sha256"]) == 64 and m["isabelle_id"] == "x"
     on_disk = json.loads((out / "MANIFEST.json").read_text())
     assert on_disk["corpus_sha256"] == m["corpus_sha256"]
+
+
+def test_load_paths_are_anchored_at_the_source_directory(tmp_path):
+    home = tmp_path / "isabelle"
+    src = home / "src" / "HOL" / "Analysis"
+    text = (
+        "ML_file \\<open>measurable.ML\\<close>\n"
+        'ML_file_no_debug "tools/x.ML"\n'
+        "SML_file ‹y.ML›\n"
+        "ML_file \\<open>~~/src/HOL/z.ML\\<close>\n"
+        "ML_file \\<open>/abs/w.ML\\<close>\n"
+        "lemmas my_ML_file = refl\n"
+    )
+    out, paths = prepare_corpus.anchor_load_paths(text, src, home)
+    assert paths == [
+        "~~/src/HOL/Analysis/measurable.ML",
+        "~~/src/HOL/Analysis/tools/x.ML",
+        "~~/src/HOL/Analysis/y.ML",
+    ]
+    assert out.splitlines() == [
+        "ML_file \\<open>~~/src/HOL/Analysis/measurable.ML\\<close>",
+        "ML_file_no_debug \\<open>~~/src/HOL/Analysis/tools/x.ML\\<close>",
+        "SML_file \\<open>~~/src/HOL/Analysis/y.ML\\<close>",
+        "ML_file \\<open>~~/src/HOL/z.ML\\<close>",
+        "ML_file \\<open>/abs/w.ML\\<close>",
+        "lemmas my_ML_file = refl",
+    ]
+    # a source outside $ISABELLE_HOME (or no home): the absolute path
+    elsewhere = tmp_path / "other"
+    _, abs_paths = prepare_corpus.anchor_load_paths(text, elsewhere, home)
+    assert abs_paths[0] == (elsewhere / "measurable.ML").resolve().as_posix()
+    assert prepare_corpus.anchor_load_paths(text, src, None)[1] == [
+        (src / "measurable.ML").resolve().as_posix(),
+        (src / "tools/x.ML").resolve().as_posix(),
+        (src / "y.ML").resolve().as_posix(),
+    ]
+
+
+def test_prepare_records_the_anchored_load_paths(tmp_path):
+    home = tmp_path / "isabelle"
+    src = home / "src" / "HOL" / "Analysis"
+    src.mkdir(parents=True)
+    (src / "M.thy").write_text(
+        "theory M imports Main begin\nML_file \\<open>m.ML\\<close>\nend\n"
+    )
+    (src / "N.thy").write_text("theory N imports Main begin end\n")
+    out = tmp_path / "corpus"
+    m = prepare_corpus.prepare(src, ["M", "N"], out, {}, home)
+    assert m["anchored_load_paths"] == {"M": ["~~/src/HOL/Analysis/m.ML"]}
+    assert "~~/src/HOL/Analysis/m.ML" in (out / "processed" / "M.thy").read_text()
+
+
+def test_the_experiment_server_accepts_ml_commands():
+    # D14: the corpus has ML commands; the default guard would refuse them (422)
+    cfg = census.load_config(str(prepare_corpus.EXPERIMENT_DIR / "config.yaml"))
+    assert cfg["ips"]["env"]["ISABELLE_ALLOW_ML_COMMANDS"] == "true"
 
 
 def test_the_stems_file_lists_the_94_theories():

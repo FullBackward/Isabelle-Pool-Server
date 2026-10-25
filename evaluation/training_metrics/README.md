@@ -82,6 +82,11 @@ Ubuntu server; if the two differ, this README is right.
   (T3's new-node alternative) gets a suffixed name, so no name is entered twice on a session.
 - **Blocks** (`evaluation/scripts/theory_splitter.py`): cut only at a line outside comments, strings and cartouches;
   a comment-only block joins a neighbour; each block is the file's exact text (T4 splices mutants into the file).
+- **ML commands (D14)**: every cell server runs with `ISABELLE_ALLOW_ML_COMMANDS=true` (`ips.env`); the default
+  guard refuses a chunk with `attribute_setup`, `setup`, `method_setup`, a translation or `ML_file` (422), and the
+  blocks after it fail. An IPS theory is `Draft.<name>` with no folder, so a relative load path is looked up in the
+  server's working directory; `00a_prepare_corpus.sh` writes it from `$ISABELLE_HOME` (`~~/…`, MANIFEST
+  `anchored_load_paths`).
 - **Same work per W**: the T1 assignment is one seeded sequence of corpus permutations; a smaller run's files are a
   prefix of a larger run's; `seed + rep` per repeat.
 - **Verified = proved** (`success ∧ ¬proof_open ∧ ¬used_sorry ∧ ¬timed_out`); every rate and p95 has a timeout
@@ -109,6 +114,7 @@ Ubuntu server; if the two differ, this README is right.
 | D11 | T2 latency only as a by-product of T1 |
 | D12 | the PIDE MCP sessions run `parallel_proofs=2` as IPS's (both interactive level 3: they check alike) |
 | D13 | IPS enters each file under its real theory name (self-qualified facts and constants resolve); PIDE MCP keeps its scratch names |
+| D14 | the cell servers accept ML commands (`ISABELLE_ALLOW_ML_COMMANDS=true`: the corpus is Isabelle's own source, 11 blocks in 8 files have ML); corpus preparation anchors relative load paths (`ML_file ‹measurable.ML›` → `~~/src/HOL/Analysis/measurable.ML`) |
 
 ## 5. The local container (development only)
 
