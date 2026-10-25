@@ -231,33 +231,69 @@ def _starts_with_keyword(line: str, keywords: tuple[str, ...]) -> bool:
     return any(re.match(rf"^{re.escape(keyword)}(\b|\s|\(|$)", stripped) for keyword in keywords)
 
 
+def _strip_comments(text: str) -> str:
+    """``text`` without its (nested) ``(* ... *)`` comments."""
+    out: list[str] = []
+    depth = 0
+    i = 0
+    while i < len(text):
+        if text.startswith("(*", i):
+            depth += 1
+            i += 2
+            continue
+        if depth and text.startswith("*)", i):
+            depth -= 1
+            i += 2
+            continue
+        if not depth:
+            out.append(text[i])
+        i += 1
+    return "".join(out)
+
+
+def _comment_only(lines: list[str]) -> bool:
+    """The lines hold nothing but comments and blank space."""
+    return not _strip_comments("\n".join(lines)).strip()
+
+
 def split_top_level_blocks(body_text: str) -> list[str]:
+    """The body cut before each top-level command. A cut is only made, and
+    ``proof`` / ``qed`` only counted, on a line that starts outside any
+    comment, string or cartouche (``LexState``, as ``split_commands``): a block
+    comment with blank lines and keywords inside stays in one block. A block of
+    comments only joins the next block (the last one joins the previous), so
+    no block is empty of commands. Lines keep their trailing whitespace: every
+    block is the body's exact text, in order (T4's ``mutate.splice`` finds
+    each block in the file)."""
     text = body_text.replace("\r\n", "\n").replace("\r", "\n").strip()
     if not text:
         return []
-    blocks: list[str] = []
+    # each block as its lines, so a merged block stays the file's exact text
+    blocks: list[list[str]] = []
     current: list[str] = []
     proof_depth = 0
-    for raw_line in text.split("\n"):
-        line = raw_line.rstrip()
+    state = LexState()
+    for line in text.split("\n"):  # kept as is: each block is the body's exact text
         stripped = line.strip()
-        starts_new_block = (
-            bool(current)
+        at_top = state.clear() and stripped != ""
+        if (
+            current
             and proof_depth == 0
-            and stripped != ""
+            and at_top
             and _starts_with_keyword(stripped, TOP_LEVEL_KEYWORDS)
-        )
-        if starts_new_block:
-            block = "\n".join(current).strip()
-            if block:
-                blocks.append(block)
+            and not _comment_only(current)
+        ):
+            blocks.append(current)
             current = []
         current.append(line)
-        if _starts_with_keyword(stripped, PROOF_OPENERS):
+        if at_top and _starts_with_keyword(stripped, PROOF_OPENERS):
             proof_depth += 1
-        elif _starts_with_keyword(stripped, PROOF_CLOSERS):
+        elif at_top and _starts_with_keyword(stripped, PROOF_CLOSERS):
             proof_depth = max(0, proof_depth - 1)
-    block = "\n".join(current).strip()
-    if block:
-        blocks.append(block)
-    return blocks
+        advance_lex_state(state, line)
+        advance_lex_state(state, "\n")
+    if blocks and _comment_only(current):
+        blocks[-1].extend(current)
+    else:
+        blocks.append(current)
+    return [b for b in ("\n".join(lines).strip() for lines in blocks) if b]
