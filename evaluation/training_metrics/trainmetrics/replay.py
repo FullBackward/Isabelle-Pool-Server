@@ -132,6 +132,7 @@ class BlockRecord:  # pylint: disable=too-many-instance-attributes
     # memory | prover_died from the response; session_gone for a 404 (review beac25c S1)
     error_kind: Optional[str] = None
     first_error: Optional[str] = None  # the first error message of the report (S5)
+    first_failed_line: Optional[int] = None  # chunk line of the first failed command
     # keep_spans (the census, stage 3d): each command's kind and offsets in the block
     spans: Optional[List[Dict[str, Any]]] = None
     spans_error: Optional[str] = None
@@ -253,6 +254,9 @@ async def verify_block(  # pylint: disable=too-many-arguments,too-many-locals
     rec.proved = is_proved(res)
     rec.error_kind = res.get("error_kind")
     rec.first_error = first_error(commands)
+    rec.first_failed_line = next(
+        (c.get("line") for c in commands if c.get("status") == "failed"), None
+    )
     if keep_spans:
         rec.spans = command_spans(text, commands)
         rec.spans_error = check_spans(text, rec.spans)

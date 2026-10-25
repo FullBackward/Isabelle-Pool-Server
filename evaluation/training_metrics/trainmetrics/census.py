@@ -69,6 +69,11 @@ def summarize(records: Sequence[ReplayRecord]) -> List[Dict[str, Any]]:
                         "statuses": b.statuses,
                         "error": b.error,
                         "error_kind": b.error_kind,
+                        # why a block is not proved: its first error message and
+                        # the block line of its first failed command (2026-10-25);
+                        # not in the census id
+                        "first_error": b.first_error,
+                        "first_failed_line": b.first_failed_line,
                         # stage 3d: the commands' spans (T6b), not in the census id
                         "spans": b.spans,
                         "spans_error": b.spans_error,

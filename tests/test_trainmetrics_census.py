@@ -307,3 +307,46 @@ def test_the_census_gate():
     msg = census.proved_gate({"blocks": 100, "proved_blocks": 13}, 0.9)
     assert msg is not None and "13 of 100" in msg
     assert census.proved_gate({"blocks": 0, "proved_blocks": 0}, 0.0) is None
+
+
+def test_the_census_keeps_why_a_block_failed(corpus_dir, tmp_path):
+    """A block that fails keeps its first error message and the line of its
+    first failed command (the server census of 2026-10-25 had only statuses);
+    the census id does not depend on them."""
+
+    class Failing(FakeClient):
+        async def verify_chunk(self, sid, chunk, timeout=None, *, lease_id=None):
+            res = await super().verify_chunk(sid, chunk, timeout, lease_id=lease_id)
+            if chunk.split()[1].startswith("b"):  # the second block of each file
+                res["success"] = False
+                res["commands"] = [
+                    {"status": "ok", "line": 1},
+                    {
+                        "status": "failed",
+                        "line": 2,
+                        "messages": [
+                            {"sev": "error", "text": "Failed to finish proof"}
+                        ],
+                    },
+                ]
+            return res
+
+    files = corpus.load_corpus(str(corpus_dir))
+    records = asyncio.run(census.run_census(Failing(), files, field="HOL-Analysis"))
+    body = census.write_census(tmp_path / "out", files, records, {"url": "x"})
+    rows = [b for f in body["files"] for b in f["blocks"] if not b["proved"]]
+    assert rows and all(
+        b["first_error"] == "Failed to finish proof" and b["first_failed_line"] == 2
+        for b in rows
+    )
+    stripped = [
+        {
+            **f,
+            "blocks": [
+                {k: v for k, v in b.items() if not k.startswith("first_")}
+                for b in f["blocks"]
+            ],
+        }
+        for f in body["files"]
+    ]
+    assert census.census_id(stripped) == body["census_id"]
