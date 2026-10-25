@@ -40,6 +40,9 @@ class FakeMCP:
         self.texts, self.fresh, self.n = {}, set(), 0
 
     async def call(self, tool, args, timeout_s=None):
+        # a real call takes time: without it a block's wall_s (4 decimals) can
+        # round to 0 on a fast machine and the rate reads 0
+        await asyncio.sleep(0.001)
         if tool == "create_scratch":
             self.n += 1
             return {"path": f"/tmp/Scratch_{self.n}.thy"}
