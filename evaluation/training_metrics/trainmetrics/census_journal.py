@@ -6,8 +6,9 @@ one replay record per finished file, written when the file is done. A rerun
 with the same key (census version, corpus, code commit, ``ips.env``, field,
 budget) continues after them. A key that differs only in the commit keeps each
 file whose blocks did not change, when the commits between change nothing a
-replay runs (D16, :func:`load_unchanged`); any other key starts again. A file
-whose acquire or header failed carries no blocks and is run again.
+replay runs (D16, :func:`load_unchanged`; ``--keep-unchanged`` keeps them
+whatever the commits change, D17); any other key starts again. A file whose
+acquire or header failed carries no blocks and is run again.
 """
 
 from __future__ import annotations
@@ -163,13 +164,18 @@ def load_journal(
 
 
 def load_unchanged(
-    path: Path, key: Dict[str, Any], files: Sequence[CorpusFile]
+    path: Path,
+    key: Dict[str, Any],
+    files: Sequence[CorpusFile],
+    override: bool = False,
 ) -> Tuple[Dict[str, ReplayRecord], Optional[str]]:
     """D16 (owner, 2026-10-25: a splitter fix must not replay the whole
     corpus): an earlier run whose key differs only in the commit keeps each
     finished file whose blocks are unchanged, when :func:`replay_change` finds
-    nothing between the commits. (stem -> record, the line that says so);
-    ``({}, None)`` when the key differs in more than the commit."""
+    nothing between the commits, or whatever it finds with ``override`` (D17,
+    owner: a change the owner knows a replay does not run, such as removed
+    dead code). (stem -> record, the line that says so); ``({}, None)`` when
+    the key differs in more than the commit."""
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
         head = _head_key(lines)
@@ -179,7 +185,7 @@ def load_unchanged(
         return {}, None
     old, new = head.get("commit"), key.get("commit")
     why = replay_change(old, new)
-    if why:
+    if why and not override:
         return {}, f"no file kept from commit {str(old)[:7]}: {why}"
     shas = {cf.stem: cf.block_sha for cf in files}
     try:
@@ -190,23 +196,34 @@ def load_unchanged(
         }
     except (ValueError, TypeError) as exc:
         return {}, f"no file kept: unreadable journal ({type(exc).__name__})"
+    commits = f"commit {str(old)[:7]} -> {str(new)[:7]}"
     return done, (
-        f"commit {str(old)[:7]} -> {str(new)[:7]} changes nothing a replay runs; "
-        f"keeping the {len(done)} files whose blocks did not change"
+        (
+            f"--keep-unchanged: {commits} ({why}) is taken to change nothing "
+            "a replay runs"
+            if why
+            else f"{commits} changes nothing a replay runs"
+        )
+        + f"; keeping the {len(done)} files whose blocks did not change"
     )
 
 
 def resume_point(
-    path: Path, key: Dict[str, Any], files: Sequence[CorpusFile], fresh: bool
+    path: Path,
+    key: Dict[str, Any],
+    files: Sequence[CorpusFile],
+    fresh: bool,
+    keep_unchanged: bool = False,
 ) -> Tuple[Dict[str, ReplayRecord], Optional[str], Optional[str]]:
     """(the finished files a census keeps, why it starts at the first file
-    instead, the D16 line about files kept from an earlier commit)."""
+    instead, the D16 line about files kept from an earlier commit).
+    ``keep_unchanged`` is ``--keep-unchanged`` (D17); ``--fresh`` wins."""
     if fresh:
         return {}, "--fresh", None
     done, why = load_journal(path, key)
     if not why:
         return done, None, None
-    kept, note = load_unchanged(path, key, files)
+    kept, note = load_unchanged(path, key, files, keep_unchanged)
     return (kept, None, note) if kept else ({}, why, note)
 
 

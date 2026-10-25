@@ -53,7 +53,9 @@ Ubuntu server; if the two differ, this README is right.
   connection) the same command continues after the last finished file, if the corpus, the commit, `ips.env`, the
   field and the budget are unchanged. If only the commit changed and the commits between change nothing a replay
   runs (`census_journal.REPLAY_PATHS` / `REPLAY_DEFS`: the server, the client, the replay, the theory header
-  parsing), it keeps every file whose blocks did not change and runs the others (D16). Otherwise, or with
+  parsing), it keeps every file whose blocks did not change and runs the others (D16). `--keep-unchanged` keeps
+  them even when a commit changes such code, for a change the owner knows a replay does not run (D17; restore
+  `files.jsonl.prev` first if a census already started again). Otherwise, or with
   `--fresh`, it starts again (the old journal becomes `files.jsonl.prev`). A block that times out or runs 120 s or longer prints a line (`[census n/93] <file> block
   i/k: …`).
 - `02_smoke.sh` deletes `results/smoke/` first, so a stale cell can never pass a smoke of new code.
@@ -129,6 +131,7 @@ Ubuntu server; if the two differ, this README is right.
 | D14 | the cell servers accept ML commands (`ISABELLE_ALLOW_ML_COMMANDS=true`: the corpus is Isabelle's own source, 11 blocks in 8 files have ML); corpus preparation anchors relative load paths (`ML_file ‹measurable.ML›` → `~~/src/HOL/Analysis/measurable.ML`) |
 | D15 | IPS keeps a session's import order (it sorted them: the later import wins a short name, so Cartesian_Space read `transpose` as `Transposition.transpose`; docs/ISSUES.md Bug 26); corpus preparation also anchors relative `\<^file>` / `@{file}` paths (2 text blocks) |
 | D16 | the splitter cuts outside every `proof` … `qed` and before `private` / `qualified` commands (4 blocks of 3 files ended inside a proof, 10 blocks of 5 files held a `private` lemma; 11 files split anew); the span check accepts the modifier (Isabelle counts it as part of the command); a census after a new commit reruns only the files whose blocks changed |
+| D17 | `census --keep-unchanged`: the owner keeps the unchanged files across a commit that the D16 check refuses (14daab8 removed dead server code, and the server census started again); the log line names the change it overrode |
 
 ## 5. The local container (development only)
 

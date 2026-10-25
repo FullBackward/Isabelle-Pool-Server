@@ -3,10 +3,11 @@ budget. The server's per-command reports give each block's command count;
 ``census.json`` holds them and every later table is keyed on its id. Each
 finished file goes to ``files.jsonl`` at once; a rerun continues after them,
 and after a new commit that changes nothing a replay runs it keeps the files
-whose blocks did not change (``census_journal``, D16; ``--fresh`` starts
-again).
+whose blocks did not change (``census_journal``, D16; ``--keep-unchanged``
+keeps them whatever the commit changes, D17; ``--fresh`` starts again).
 
-    python -m trainmetrics.census [--config config.yaml] [--files A,B] [--out results/census] [--fresh]
+    python -m trainmetrics.census [--config config.yaml] [--files A,B] [--out results/census]
+        [--fresh | --keep-unchanged]
 """
 
 from __future__ import annotations
@@ -286,7 +287,9 @@ async def _main_async(  # pylint: disable=too-many-locals
     journal = Path(args.out) / JOURNAL
     key = journal_key(files, cfg, field, BUDGET_MAX_S, CENSUS_VERSION)
     # D16: after a new commit, the files it cannot change are kept
-    done, why, note = resume_point(journal, key, files, bool(args.fresh))
+    done, why, note = resume_point(
+        journal, key, files, bool(args.fresh), bool(args.keep_unchanged)
+    )
     if note:
         print(f"census: {note}", flush=True)
     print(
@@ -391,6 +394,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "--fresh",
         action="store_true",
         help="ignore the files of an earlier, interrupted run (files.jsonl)",
+    )
+    ap.add_argument(
+        "--keep-unchanged",
+        action="store_true",
+        help=(
+            "after a new commit, keep the files whose blocks did not change even "
+            "when the commit changes code a replay runs (the owner checked it, D17)"
+        ),
     )
     return asyncio.run(_main_async(ap.parse_args(argv)))
 

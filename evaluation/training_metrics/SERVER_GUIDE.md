@@ -89,6 +89,11 @@ changed. If only the code changed, and the change does not touch the server or t
 file whose blocks did not change and runs only the other files. The first lines of the log tell which. To start
 again from the first file, add `--fresh` after `scripts/01_census.sh`.
 
+NOTE: If the log says `no file kept from commit …` but the change cannot change a replay (for example, it only
+removes code that nothing calls), stop the census. Move `results/census/files.jsonl.prev` back to
+`results/census/files.jsonl`. Then start the census again with `--keep-unchanged` after `scripts/01_census.sh`.
+Do the move before you start the census again: the next start replaces `files.jsonl.prev`.
+
 CAUTION: If the census shows "proved" below the limit (exit code 3), the census measured the wrong thing. Do not
 continue. Send the output to the builder.
 

@@ -212,3 +212,30 @@ def test_resume_point(tmp_path, monkeypatch):
         journal, {**KEY, "corpus_sha": "d"}, files, False
     )
     assert done == {} and why == "the inputs changed: corpus_sha" and note is None
+
+
+def test_keep_unchanged_keeps_the_files_across_a_replay_change(tmp_path, monkeypatch):
+    """D17: the server run of 2026-10-25 restarted because a dead-code removal
+    touched server/; ``--keep-unchanged`` keeps the files and names the change."""
+    files, journal = _finished_run(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        census_journal, "replay_change", lambda old, new: "server/app/x.py changed"
+    )
+    key = {**KEY, "commit": "y"}
+    kept, note = census_journal.load_unchanged(journal, key, files, override=True)
+    assert list(kept) == ["A"]
+    assert note == (
+        "--keep-unchanged: commit x -> y (server/app/x.py changed) is taken to "
+        "change nothing a replay runs; keeping the 1 files whose blocks did not change"
+    )
+    done, why, note = census_journal.resume_point(journal, key, files, False, True)
+    assert list(done) == ["A"] and why is None and note.startswith("--keep-unchanged")
+    # it overrides the code check only: --fresh, or another changed input, starts again
+    assert census_journal.resume_point(journal, key, files, True, True) == (
+        {},
+        "--fresh",
+        None,
+    )
+    assert census_journal.resume_point(
+        journal, {**key, "corpus_sha": "d"}, files, False, True
+    ) == ({}, "the inputs changed: commit, corpus_sha", None)
