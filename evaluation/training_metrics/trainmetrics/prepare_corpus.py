@@ -37,9 +37,11 @@ from evaluation.scripts.process import (  # isort: skip  # pylint: disable=wrong
 
 STEMS_FILE = EXPERIMENT_DIR / "corpus_stems.txt"
 
-# a load command and its path argument (cartouche, symbol cartouche or string)
+# a load command or a file antiquotation (D15) and its path argument (cartouche,
+# symbol cartouche or string)
 LOAD_RE = re.compile(
-    r"(?<![A-Za-z0-9_'])(?P<cmd>S?ML_file(?:_debug|_no_debug)?)(?P<sp>\s*)"
+    r"(?<![A-Za-z0-9_'])(?P<cmd>S?ML_file(?:_debug|_no_debug)?|\\<\^file>|@\{file)"
+    r"(?P<sp>\s*)"
     r"(?:\\<open>(?P<a>[^\\]*?)\\<close>|‹(?P<b>[^›]*)›|\"(?P<c>[^\"]*)\")"
 )
 
@@ -72,8 +74,9 @@ def _isabelle(args: List[str]) -> Optional[str]:
 def anchor_load_paths(
     text: str, src: Path, home: Optional[Path]
 ) -> Tuple[str, List[str]]:
-    """``text`` with each load command's relative path made ``~~/…`` (or
-    absolute when ``src`` is not under ``home``); the new paths."""
+    """``text`` with the relative path of each load command and each file
+    antiquotation (``\\<^file>``, ``@{file}``) made ``~~/…`` (or absolute when
+    ``src`` is not under ``home``); the new paths."""
     anchored: List[str] = []
 
     def repl(m: "re.Match[str]") -> str:

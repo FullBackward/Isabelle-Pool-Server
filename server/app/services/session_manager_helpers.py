@@ -138,7 +138,10 @@ class SessionManagerHelpersMixin:
             value = str(theory).strip()
             if value:
                 cleaned.append(value)
-        return sorted(set(cleaned))
+        # keep the caller's order (duplicates dropped): the wrapper theory imports
+        # them in this order, and the LATER import wins a shared short name
+        # (Cartesian_Space: sorted, `transpose` was Transposition's, D15)
+        return list(dict.fromkeys(cleaned))
 
     def build_dependency_key(self, theories: Optional[List[str]], field: Optional[str], extra: Optional[str] = None) -> str:
         normalized_field = self._normalize_field(field)

@@ -96,7 +96,8 @@ def extract_imports(text: str) -> list[str]:
         token = token.strip().strip('"')
         if token and token not in {"imports", "begin", "theory", "keywords"}:
             out.append(token)
-    return sorted(set(out)) or ["Main"]
+    # header order kept (duplicates dropped): the later import wins a shared short name
+    return list(dict.fromkeys(out)) or ["Main"]
 
 
 @dataclass

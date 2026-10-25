@@ -41,6 +41,7 @@ in `DESIGN_CHOICES.md`, not here.
 - [Bug 23: Theory-Name Injection Through `enter_theory` and the Theory-Name Fields — RESOLVED](#bug-23-theory-name-injection-through-enter_theory-and-the-theory-name-fields--resolved)
 - [Bug 24: Thirteen LSP MCP Tools Shipped With an Empty Description — RESOLVED](#bug-24-thirteen-lsp-mcp-tools-shipped-with-an-empty-description--resolved)
 - [Bug 25: `enter_theory` Accepted Imports Outside the Session's Context — RESOLVED](#bug-25-enter_theory-accepted-imports-outside-the-sessions-context--resolved)
+- [Bug 26: A Session Sorted Its Imports, So a Short Name Could Mean Another Constant — RESOLVED](#bug-26-a-session-sorted-its-imports-so-a-short-name-could-mean-another-constant--resolved)
 - [Open Findings Tracker](#open-findings-tracker)
 - [Summary of Changes](#summary-of-changes) (Bugs 1–6)
 - [Agent Work Log (dated)](#agent-work-log-dated)
@@ -1000,6 +1001,37 @@ cases over six sessions (`Main`, `Complex_Main`, `HOL.Main`, `HOL.Real`, `HOL.Tr
 
 ---
 
+### Bug 26: A Session Sorted Its Imports, So a Short Name Could Mean Another Constant — RESOLVED
+
+**Severity:** High (correct theories fail; found by the training-metrics census on the server, 2026-10-25)
+**Status:** ✅ Resolved 2026-10-25 (owner decision D15, training-metrics).
+
+**Symptom:** the census replay of `HOL-Analysis.Cartesian_Space` proved 116 of 144 blocks. The
+first failures read `Type unification failed: Clash of types "_ ⇒ _" and "(_, _) vec"` with the
+operand `Transposition.transpose`: `transpose` meant the swap function of
+`HOL-Combinatorics.Transposition`, not the matrix transpose of `Finite_Cartesian_Product`. The
+later blocks failed on facts of the failed ones.
+
+**Cause:** `SessionManagerHelpersMixin._normalize_theories` returned `sorted(set(theories))`,
+and the wrapper theory imports the session's theories in that order. The wrapper is the
+node's only visible parent (Bug 25), and in Isabelle the later import wins a short name that
+two parents declare. Cartesian_Space imports Transposition first; sorted, it came last.
+`routes/sessions.py` sorted the heap-session theories the same way. 44 of the 94
+HOL-Analysis theories have imports that sorting reorders.
+
+**Fix:** both places drop duplicates and keep the caller's order. The dependency key and the
+wrapper name follow the order, so the same imports in another order get another session.
+`isabelle build` (big-step) is not affected: it checks the text's own header, and its sorted
+list is only a cache key. The training-metrics corpus splitter (`theory_splitter.extract_imports`)
+keeps the header order too.
+
+**Verified:** `tests/test_import_order.py` (5). Live on the container's HOL heap
+(claude-work/2026-10-25-import-order): theories `A` and `B` both declare `foo`; with imports
+`[B, A]` the old server read `foo` as `B.foo`, the fixed one as `A.foo` (with `[A, B]` both read
+`B.foo`); a plain `isabelle build` of the same theories agrees with the fixed server.
+
+---
+
 ### [To-do]Issue 1: How Isabelle do parallel
 When have parallel "have x" statements, can we do this in step. And how do we retrive information when one line is stucked in loop. That is, we need error retrieval for a proof chunk, the server should not just return a timeout error, it should tell, when we build the MCP server, the agent what part of that proof chunk just went wrong.
 
@@ -1144,4 +1176,4 @@ disk; the entries are kept as the historical record. Summary of work completed:
 | 2026-10-20 | **A document reset discarded the session as "prover died"** (memory-scaling smoke) | `load_document` on the reset path (`header_changed` decline of the incremental sync, or a theory-name change) restarts the session's ML process; the memory hook then compared the stale `ml_pid` and discarded a healthy session with `error_kind=prover_died`. Fix: `_reset_bookkeeping` → `forget_prover()` (pid, start time, probe time cleared; the death check falls back to the session phase and the next probe records the new pid). `backend.raw.reset()` is called in exactly one place (this path); rollback and checkpoint restore are edits on the same prover, so nothing else needs it. Also found: an edit in the whitespace right after `begin` counts as a header edit (`header_changed`) — the LSP MCP's sync falls back to a reset for it; one paragraph later the same edit takes the incremental path. | `server/app/services/session.py`, `session_memory.py`; `tests/test_memory_reset_pid.py`; `evaluation/memory_scaling/memscale/workload.py` (P5 placement) |
 | 2026-10-21 | **Merge `impl-de-sorry` (fill_sorries stages 1a-3) into `Impl-memory-robustness` (builder/reviewer loop)** | `4a64f5c`: true `--no-ff` merge of `207ec06` (7 commits kept) onto `1b66ca5`. Two additive conflicts: `session_memory.py` (`forget_prover` from `ee20c6f` next to `note_sledgehammer_rss`/`clear_sledgehammer_rss`; both kept) and this work log's tail (rows re-ordered by date, one *Last updated*). `server/repl` byte-identical to `impl-de-sorry`. Checked interplay: a reset session's new poly is absent from the ATP sampler's exclude list until its next probe but is skipped by comm (`poly` in `ATP_EXCLUDED_COMMS`) — nothing to change. Verified: in-container suite 613 passed; host 634 passed + 7 Windows-only failures (incl. a `>` vs `>=` `max_total_s` boundary in `_run_fill`, owner item); `isabelle scala_build`; container recreated with `init: true` (tini pid 1) and a live smoke on the merged tree (fresh HOL session, `/sledgehammer` on a false goal -> `success=false`, fill job 1/2 sorries patched and re-verified, `sledgehammer_mb` attributed, header-change reset keeps the session, 0 zombies), reproduced by the reviewer. Docs: CLAUDE.md (fill routes/services/client methods, `ISABELLE_FILL_*` and `ISABELLE_MCP_LSP_FILL_*` knobs, tier-aware slot cap), `.env.example`. | plan, reviews, notes, live script: internal working notes |
 
-*Last updated: 2026-10-21.*
+*Last updated: 2026-10-25.*

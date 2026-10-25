@@ -169,3 +169,26 @@ def test_cgroup_kill_refuses_the_runners_own_cgroup_and_its_ancestors(
     assert not procctl.cgroup_kill(str(tmp_path / "slice") + "/")  # an ancestor
     assert procctl.cgroup_kill(str(tmp_path / "other.scope"))  # a sibling scope
     assert (tmp_path / "slice" / "cgroup.kill").read_text() == ""
+
+
+def test_file_antiquotation_paths_are_anchored(tmp_path):
+    # D15: a text block's \<^file> is checked against the node's directory (/app)
+    home = tmp_path / "isabelle"
+    src = home / "src" / "HOL" / "Analysis"
+    text = (
+        "text \\<open>see \\<^file>\\<open>Bounded_Linear_Function.thy\\<close>.\\<close>\n"
+        'text \\<open>see @{file "Finite_Product_Measure.thy"}\\<close>\n'
+        "text \\<open>\\<^file>\\<open>~~/src/HOL/Library/Finite_Map.thy\\<close>\\<close>\n"
+    )
+    out, paths = prepare_corpus.anchor_load_paths(text, src, home)
+    assert paths == [
+        "~~/src/HOL/Analysis/Bounded_Linear_Function.thy",
+        "~~/src/HOL/Analysis/Finite_Product_Measure.thy",
+    ]
+    assert out.splitlines() == [
+        "text \\<open>see \\<^file>\\<open>~~/src/HOL/Analysis/Bounded_Linear_Function.thy"
+        "\\<close>.\\<close>",
+        "text \\<open>see @{file \\<open>~~/src/HOL/Analysis/Finite_Product_Measure.thy"
+        "\\<close>}\\<close>",
+        "text \\<open>\\<^file>\\<open>~~/src/HOL/Library/Finite_Map.thy\\<close>\\<close>",
+    ]

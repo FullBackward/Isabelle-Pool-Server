@@ -64,7 +64,8 @@ def _session_inputs(request, heap_pool):
         heap_theories, field, session_dirs, dependency_extra = _resolve_heap_for_session(
             heap_pool, task_group, request.heap_session, request.project
         )
-        theories = sorted(set((theories or []) + heap_theories))
+        # order kept: the later import wins a shared short name (D15)
+        theories = list(dict.fromkeys((theories or []) + heap_theories))
     return theories, field, task_group, session_dirs, dependency_extra
 
 
