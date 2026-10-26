@@ -101,7 +101,10 @@ class Scratch:  # pylint: disable=too-many-instance-attributes
         )
         self.path = str(sc["path"])
         stem = os.path.splitext(os.path.basename(self.path))[0]
-        self.text = f"theory {stem}\n  imports {' '.join(imports)}\nbegin\n"
+        # quoted: Isabelle reads a session-qualified name (`HOL-Analysis.Convex`,
+        # with its `-`) only inside quotes (the server smoke of 2026-10-25)
+        names = " ".join('"' + name.strip('"') + '"' for name in imports)
+        self.text = f"theory {stem}\n  imports {names}\nbegin\n"
         self.now = {}
 
     async def append(

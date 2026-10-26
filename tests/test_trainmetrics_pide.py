@@ -288,3 +288,15 @@ def test_the_pide_sessions_get_the_options():
     plain.procs = [Rec()]
     asyncio.run(plain.start_session(0))
     assert "options" not in calls[-1][1]  # memscale's sessions: unchanged
+
+
+def test_the_scratch_header_quotes_every_import():
+    """The server smoke of 2026-10-25: `imports HOL-Analysis.X` does not parse,
+    so no HOL-Analysis file entered; a quoted name does (`"Main"` too)."""
+    pide = FakePIDE()
+    asyncio.run(pide.start_session(0))
+    scratch = drive_pide_chunks.Scratch(pide, 0, 0.0)
+    asyncio.run(scratch.new_file(["HOL-Analysis.Integral_Test", "Main"]))
+    assert scratch.text == (
+        'theory Scratch_1\n  imports "HOL-Analysis.Integral_Test" "Main"\nbegin\n'
+    )
