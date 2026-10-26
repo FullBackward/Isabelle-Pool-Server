@@ -209,6 +209,7 @@ refuses to start while another runner holds it.
 - Each corpus file gets its own IPS session with its own imports.
 - The census gives each block its time budget. A block that is slower than its budget is a timeout. The tables
   show the timeouts beside each rate.
-- The PIDE MCP row uses the same files, the same heap and the same proof settings as IPS.
+- The PIDE MCP row uses the same files, the same heap and the same proof settings as IPS. Each file also gets
+  its own PIDE session, as in IPS.
 - The sampler reads the memory and the CPU of the processes one time per second.
 - No language model is in the loop. The rates are the server's part of a training loop.

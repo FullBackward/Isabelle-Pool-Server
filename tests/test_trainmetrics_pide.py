@@ -1,8 +1,8 @@
 """Training metrics stage 8a: T1's PIDE MCP row — get_state counts, a cell on
 a fake PIDE MCP (a scratch per file, one edit per block, settled at the
 first idle reading after the count grew, T1-format records), a failed block,
-a block that never settles ending its file, the matrix plan, and the row
-beside IPS in the analysis."""
+a block that never settles ending its file, the matrix plan, the row
+beside IPS in the analysis, and a session per file (D18)."""
 
 from __future__ import annotations
 
@@ -67,12 +67,21 @@ class FakeMCP:
 
 
 class FakePIDE:
-    def __init__(self):
+    def __init__(self, fail_start=()):
         self.mcp = FakeMCP()
         self.session_ids = {}
+        self.fail_start, self.log = set(fail_start), []
 
-    async def start_session(self, i):
-        self.session_ids[i] = f"s{i}"
+    async def start_session(self, i, name=None):
+        await asyncio.sleep(0.001)  # a start takes time (acquire_s > 0)
+        name = name or f"s{i}"
+        self.log.append(("start", name))
+        if name in self.fail_start:
+            raise RuntimeError(f"cannot start {name}")
+        self.session_ids[i] = name
+
+    async def stop_session(self, i):
+        self.log.append(("stop", self.session_ids.pop(i)))
 
     def _mcp(self, i):
         return self.mcp
@@ -146,11 +155,7 @@ def test_counts_from_get_state():
 def test_a_pide_cell_writes_t1_records(tmp_path):
     files, census = _setup(tmp_path)
     body = _cell(tmp_path, files, census)
-    assert (
-        body["outcome"] == "ok"
-        and body["poll_s"] == 0.0
-        and sorted(body["session_start_s"]) == [0, 1]
-    )
+    assert body["outcome"] == "ok" and body["poll_s"] == 0.0
     rr = _replays(tmp_path)
     assert sorted(r["stem"] for r in rr) == ["Ta", "Tb"] and all(
         r["theory_name"] for r in rr
@@ -300,3 +305,56 @@ def test_the_scratch_header_quotes_every_import():
     assert scratch.text == (
         'theory Scratch_1\n  imports "HOL-Analysis.Integral_Test" "Main"\nbegin\n'
     )
+
+
+def test_each_file_runs_on_a_session_of_its_own(tmp_path):
+    """D18 (owner, 2026-10-26: the rows pay the same setup): as IPS, a fresh
+    session per file, started inside the window (its time is the file's
+    acquire_s) and stopped after the file."""
+    files, census = _setup(tmp_path, names=("Ta", "Tb", "Tc", "Td"))
+    pide = FakePIDE()
+    body = asyncio.run(
+        drive_pide_chunks.run_cell(
+            pide,
+            {"poll_s": 0.0},
+            files,
+            census,
+            2,
+            2,
+            heap="HOL",
+            seed=3,
+            out_dir=tmp_path / "c",
+        )
+    )
+    rr = _replays(tmp_path)
+    assert body["outcome"] == "ok" and body["unclosed_sessions"] == []
+    assert len({r["session_id"] for r in rr}) == 4 and pide.session_ids == {}
+    assert all(r["nodes_on_session"] == 1 and r["acquire_s"] > 0 for r in rr)
+    assert all(r["t_start"] >= body["window_start"] for r in rr)
+    for w in (0, 1):  # each worker: start, stop, start, stop
+        mine = [(a, n) for a, n in pide.log if n.startswith(f"s{w}_")]
+        assert [a for a, _ in mine] == ["start", "stop", "start", "stop"]
+        assert [n for _, n in mine] == [f"s{w}_f1"] * 2 + [f"s{w}_f2"] * 2
+
+
+def test_a_session_that_does_not_start_skips_only_its_file(tmp_path):
+    files, census = _setup(tmp_path, names=("Ta", "Tb"))
+    pide = FakePIDE(fail_start={"s0_f1"})
+    body = asyncio.run(
+        drive_pide_chunks.run_cell(
+            pide,
+            {"poll_s": 0.0},
+            files,
+            census,
+            1,
+            2,
+            heap="HOL",
+            seed=3,
+            out_dir=tmp_path / "c",
+        )
+    )
+    first, second = _replays(tmp_path)
+    assert first["acquire_error"] == "RuntimeError: cannot start s0_f1"
+    assert first["blocks"] == [] and len(second["blocks"]) == 4
+    assert body["acquire_errors"] == 1 and body["outcome"] == "ok"
+    assert ("stop", "s0_f1") not in pide.log and pide.session_ids == {}

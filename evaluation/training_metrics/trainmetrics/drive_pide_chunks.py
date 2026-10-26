@@ -1,10 +1,12 @@
 """The PIDE MCP row of T1 (design D3, plan B2, stage 8a): the same assignment
 and census as T1, replayed block by block on PIDE MCP (Kappelmann's
-``isabelle pide_mcp``, topology A: one process, a session per worker), as
+``isabelle pide_mcp``, topology A: one process, a session per file), as
 edit-and-settle — a throughput row for the comparison, not a verdict call.
 
-A worker starts its session (before the window, reported apart), then per
-assigned file creates a scratch theory, writes the header, and appends one
+Per assigned file a worker starts a fresh session inside the window (its time
+is the file's ``acquire_s``) and stops it after the file, as IPS acquires a
+session per file (D6; D18, owner 2026-10-26: the rows pay the same setup). On
+it, the worker creates a scratch theory, writes the header, and appends one
 block per ``edit`` (mode replace, the whole text: PIDE checks only the new
 block). After each edit it polls ``get_state`` every ``poll_s`` (0.1 s)
 until the command count has grown and nothing is running or unprocessed:
@@ -78,11 +80,16 @@ class Scratch:  # pylint: disable=too-many-instance-attributes
     def __init__(self, pide: Any, worker: int, poll_s: float) -> None:
         self.pide, self.worker, self.poll_s = pide, worker, poll_s
         self.mcp = pide._mcp(worker)  # pylint: disable=protected-access
-        self.sid = pide.session_ids[worker]
         self.path = ""
         self.text = ""
         self.files = 0
+        self.starts = 0  # sessions started (one per file, D18): their names
         self.now: Dict[str, int] = {}  # the counts after the last append
+
+    @property
+    def sid(self) -> str:
+        """The worker's current session (a fresh one per file, D18)."""
+        return str(self.pide.session_ids[self.worker])
 
     def _args(self) -> Dict[str, Any]:
         return state_args(self.sid, self.path)
@@ -228,7 +235,7 @@ async def replay(
         theory_name="",
         session_id=scratch.sid,
         worker=scratch.worker,
-        nodes_on_session=scratch.files + 1,
+        nodes_on_session=1,  # a session per file (D18)
         t_start=time.time(),
     )
     await _open(scratch, cf, rr)
@@ -237,6 +244,45 @@ async def replay(
         if rr.blocks[-1].error or rr.blocks[-1].timed_out:
             break
     rr.t_end = time.time()
+    return rr
+
+
+async def replay_fresh(
+    scratch: Scratch, cf: CorpusFile, rows: List[Dict[str, Any]]
+) -> ReplayRecord:
+    """``cf`` on a session of its own (D18): started (``acquire_s``),
+    replayed, stopped; a session that does not start is the file's
+    ``acquire_error``, one that does not stop is in ``unclosed``."""
+    pide, w = scratch.pide, scratch.worker
+    t0, started = time.monotonic(), time.time()
+    scratch.starts += 1
+    try:
+        await pide.start_session(w, name=f"s{w}_f{scratch.starts}")
+    except Exception as exc:  # pylint: disable=broad-exception-caught
+        return ReplayRecord(
+            stem=cf.stem,
+            theory_name="",
+            session_id="",
+            worker=w,
+            nodes_on_session=0,
+            acquire_s=round(time.monotonic() - t0, 4),
+            acquire_error=f"{type(exc).__name__}: {exc}"[:300],
+            t_start=started,
+            t_end=time.time(),
+        )
+    acquire_s = round(time.monotonic() - t0, 4)
+    sid = scratch.sid
+    unclosed: List[Dict[str, Any]] = []
+    try:
+        rr = await replay(scratch, cf, rows)
+    finally:
+        try:
+            await pide.stop_session(w)
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            unclosed = [
+                {"session_id": sid, "error": f"{type(exc).__name__}: {exc}"[:200]}
+            ]
+    rr.acquire_s, rr.t_start, rr.unclosed = acquire_s, started, unclosed
     return rr
 
 
@@ -278,18 +324,14 @@ async def run_cell(  # pylint: disable=too-many-arguments,too-many-positional-ar
         }
     )
     open_registry(body, checkpoint)  # nothing is leased: kept for the manifest's shape
-    starts: Dict[int, float] = {}
-    for w in range(workers):  # before the window, as T1's original S2 clock
-        t0 = time.monotonic()
-        await pide.start_session(w)
-        starts[w] = round(time.monotonic() - t0, 3)
-    body["session_start_s"] = starts
     records: List[ReplayRecord] = []
 
     async def worker(w: int) -> None:
         scratch = Scratch(pide, w, float(pcfg.get("poll_s", 0.1)))
-        for stem in plan[w]:
-            records.append(await replay(scratch, by_stem[stem], rows.get(stem) or []))
+        for stem in plan[w]:  # D18: each on a session started in the window
+            records.append(
+                await replay_fresh(scratch, by_stem[stem], rows.get(stem) or [])
+            )
 
     if sampler is not None:
         sampler.phase("run")
@@ -305,7 +347,8 @@ async def run_cell(  # pylint: disable=too-many-arguments,too-many-positional-ar
     body["replays"] = len(records)
     body["enter_errors"] = sum(1 for r in records if r.enter_error)
     body["timed_out_blocks"] = sum(1 for r in records for b in r.blocks if b.timed_out)
-    body["unclosed_sessions"] = []
+    body["acquire_errors"] = sum(1 for r in records if r.acquire_error)
+    body["unclosed_sessions"] = [u for r in records for u in r.unclosed]
     body["outcome"] = "ok" if any(r.blocks for r in records) else "empty"
     return body
 

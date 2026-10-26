@@ -96,16 +96,18 @@ class PIDEDriver:  # pylint: disable=too-many-instance-attributes
             if required not in self.tools:
                 raise RuntimeError(f"PIDE MCP has no tool {required!r}: {self.tools}")
 
-    async def start_session(self, i: int) -> None:
+    async def start_session(self, i: int, name: Optional[str] = None) -> None:
         """``start_session(logic=heap, no_build)`` on process A or B_i; under
         B a process is spawned on demand when i is past the k given at setup
         (E3 adds sessions until the refusal, so k is open-ended there — the
-        server run of 2026-10-21 died on IndexError at the fifth session)."""
+        server run of 2026-10-21 died on IndexError at the fifth session).
+        ``name`` (default ``s<i>``): the training-metrics PIDE row starts a
+        session per file for worker i (its D18)."""
         if self.topology == "B" and i >= len(self.procs):
             self.procs.append(await self._spawn(f"{self.heap}-B{i}"))
         args: Dict[str, Any] = {
             "logic": self.heap,
-            "session": f"s{i}",
+            "session": name or f"s{i}",
             "no_build": self.no_build,
         }
         if self.session_opts:
@@ -113,7 +115,15 @@ class PIDEDriver:  # pylint: disable=too-many-instance-attributes
         res = await self._mcp(i).call(
             "start_session", args, timeout_s=self.start_timeout_s
         )
-        self.session_ids[i] = str(res.get("session") or f"s{i}")
+        self.session_ids[i] = str(res.get("session") or name or f"s{i}")
+
+    async def stop_session(self, i: int) -> None:
+        """``stop_session`` for session i (none open: nothing to do)."""
+        sid = self.session_ids.pop(i, None)
+        if sid is not None:
+            await self._mcp(i).call(
+                "stop_session", {"sessions": [sid]}, timeout_s=120.0
+            )
 
     async def load(self, i: int, text: str) -> Dict[str, Any]:
         """A scratch theory per session, its whole text written with one edit."""

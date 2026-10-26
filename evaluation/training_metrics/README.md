@@ -109,7 +109,8 @@ Ubuntu server; if the two differ, this README is right.
 - **Integrity**: T3, T6a and T6b check the node source at points where no restore's pending work can be absorbed (a
   source read waits for a stable snapshot); T5 hashes the source before a seed and after the attempt.
 - **Resolution**: `verify_chunk` re-reads the node every 0.1 s (`session.output_delay`); every latency steps by it;
-  the PIDE MCP row polls at the same 0.1 s.
+  the PIDE MCP row polls at the same 0.1 s. After a chunk that succeeds, `verify_chunk` also asks whether a proof is
+  still open (one more 0.1 s poll); the PIDE row does not (D18).
 - **Resources**: the memscale sampler (PSS, CPU per process, host) once per second around every cell; the memory
   tier polled during T4 / T5 / T6.
 
@@ -132,6 +133,7 @@ Ubuntu server; if the two differ, this README is right.
 | D15 | IPS keeps a session's import order (it sorted them: the later import wins a short name, so Cartesian_Space read `transpose` as `Transposition.transpose`; docs/ISSUES.md Bug 26); corpus preparation also anchors relative `\<^file>` / `@{file}` paths (2 text blocks) |
 | D16 | the splitter cuts outside every `proof` … `qed` and before `private` / `qualified` commands (4 blocks of 3 files ended inside a proof, 10 blocks of 5 files held a `private` lemma; 11 files split anew); the span check accepts the modifier (Isabelle counts it as part of the command); a census after a new commit reruns only the files whose blocks changed |
 | D17 | `census --keep-unchanged`: the owner keeps the unchanged files across a commit that the D16 check refuses (14daab8 removed dead server code, and the server census started again); the log line names the change it overrode |
+| D18 | the PIDE MCP row runs each file on a fresh session, started inside the window and stopped after the file, as IPS acquires one per file (D6): both rows pay the same setup; the per-call difference stays and is stated (IPS's `verify_chunk` undoes a failed chunk and asks whether a proof is still open, about one 0.1 s poll a call) |
 
 ## 5. The local container (development only)
 
