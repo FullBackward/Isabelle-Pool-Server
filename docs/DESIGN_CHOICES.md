@@ -609,6 +609,56 @@ That the release is *necessary* is shown by the unit test on budget-driven relie
 run (the live threshold is a lever); the gateway JVMs' own memory is in the cgroup figure but
 attributed to no session (open item).
 
+## 3. How the server works (report v2, Appendix E; moved here 2026-10-27)
+
+The technical report keeps the client's view (its Section 4) and points here for the mechanism.
+
+**Tiers.** A Scala backend, packaged as an Isabelle component, creates headless sessions through
+`Headless.Session`, the API behind `isabelle server`, hosted in its own process; one backend object per
+session owns a draft theory node and the edit and rollback bookkeeping. All backends live in one gateway
+JVM, reached from Python over a bridge whose calls are serialised per session, since neither the bridge
+nor the backend is thread-safe. A FastAPI server owns the pool and the HTTP API, keeps its event loop free
+of prover waits by running backend calls on worker threads, and exposes metrics and probes. The Python
+client and the two MCP servers sit above it. One reflective call remains, to the private constructor of
+`Server.Context`, so that the backend can invoke the server's own command handlers; packaging the backend
+as an Isabelle tool (a roadmap item) removes it.
+
+**The owned document.** Each session's document is a string the backend appends to. Every insert is
+recorded in a parent-linked chain of status snapshots, so rollback removes the last insert, a checkpoint
+is a snapshot, and restore replays the difference. The theory header is parsed from the accumulated text
+and overwritten by a wrapper import so that the session's imports supply the visible context.
+Whole-document replacement, used by the file MCP server, is diffed into sequential edits. Because PIDE
+spans for a string node carry no file positions, diagnostics are located by the owning command's range.
+
+**Verification.** The one-command call inserts a command, waits under a budget for its status, and
+removes it on expiry. The chunk call inserts the block as one edit, waits for every command to settle or
+the budget to expire, classifies each command, and removes the block if any command failed or the budget
+expired. The whole-file check writes the theory to a temporary session directory, runs `isabelle build`
+with a content-addressed cache, and returns the result.
+
+**State queries.** Goals, in-proof status, local and global facts, rendered state and Sledgehammer are
+query operations registered in Isabelle/ML and invoked from Scala as temporary overlays on the document's
+last command (Wenzel 2014, PIDE); the backend polls the command's results for a finished marker under a
+budget and then removes the overlay. Only the diagnostic endpoint inserts a transient command. PIDE MCP is
+a headless PIDE front-end in the same sense (Wenzel 2019); the two differ in what the document is, not in
+how PIDE is driven.
+
+**Pool, leases, admission.** Sessions are keyed by sorted imports, base heap and heap fingerprint. A lease
+is a token presented on every call; expired and abandoned leases are reaped on a timer, as are idle
+sessions. Admission reads the server's own cgroup memory accounting, since the JVM cannot see the prover
+processes' memory, estimates the next session's size by heap, and evicts least-recently-used idle sessions
+before refusing; a refusal carries the facts (used, limit, available, what is leased) so the client can
+decide what to do. A prover death is detected on the next call, reported as such, and the session
+discarded; a gateway crash restarts the gateway. Project heaps are built with `isabelle build -b` and
+recorded with a manifest of source fingerprints; a mismatch returns a stale-heap error.
+
+**Where to look.** Session start in `server/repl/src/main/scala/repl/session_manager.scala`; document
+edits in `repl_session.scala` and `edit_utils.scala`; overlay queries in `document_utils.scala` and
+`src/ml/REPL.ML`; the per-command report in `document_utils.scala`; the HTTP layer in `server/app`; the
+pool and memory monitor in `server/app/services`; the guards in `server/app/core`; the MCP servers in
+`mcp_servers/stepwise` and `mcp_servers/lsp`; the experiments in `evaluation/memory_scaling` and
+`evaluation/training_metrics`.
+
 ## Cross-cutting lesson
 
 Nearly every choice above was refined by an incident rather than foresight: exit-through-queue
