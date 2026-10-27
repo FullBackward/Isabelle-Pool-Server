@@ -1311,8 +1311,8 @@ facts behind every admission decision.
 
 Table~\ref{tab:inventory} is the full side-by-side inventory of IPS and
 PIDE MCP, the two headless PIDE connectors of Table~\ref{tab:families},
-at IPS commit \code{6e4dd6f} and PIDE MCP \code{main} as of 2026-10-21
-\todo{PIDE MCP commit}. The rows were derived from the interaction stack
+at IPS commit \code{6e4dd6f} and PIDE MCP commit \code{dd46315}
+(2026-10-21). The rows were derived from the interaction stack
 (who owns the document, how checking is triggered and reported, how state
 is read, how time is bounded), from each project's stated goals, and from
 what an adopter asks before deploying. A concern is a row only if at least
@@ -1382,7 +1382,8 @@ its defaults (pressure threshold 85\,\%, warning 70\,\%, session
 estimates 2048 / 3072 / 4096\,MB for the three heaps), pool size 40,
 no pre-warmed sessions, \code{parallel\_proofs=2}, \code{threads=4}; a
 fresh server in its own systemd scope for every cell. PIDE MCP
-\code{isabelle pide\_mcp} (server 0.1.0), no \code{-o} options. Both
+\code{isabelle pide\_mcp} (server 0.1.0, commit \code{dd46315}), no
+\code{-o} options. Both
 tools ran as one unprivileged user with nothing else on the host.
 
 \paragraph{Workloads.} One fixed theory per heap, loaded whole into every

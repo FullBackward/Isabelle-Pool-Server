@@ -8,7 +8,7 @@ which are not in this repository; `figures/*.png` here are the plots the source 
 (`host_delta_settled_mb.png`, `pss_peak_mb.png` from the memory-scaling runs; `training_throughput.png`,
 `training_branch_cost.png` from the training-metrics runs).
 
-One red `\todo{}` marker is left: the PIDE MCP commit in Appendix B. The cache hit rate is stated as not
+No red `\todo{}` markers are left. The cache hit rate is stated as not
 measured. The worked example uses the Isabelle-Humanize runs; Appendix A uses the real client API. No new
 bibliography keys were introduced.
 
