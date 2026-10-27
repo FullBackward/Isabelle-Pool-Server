@@ -75,6 +75,10 @@ end
     ('theory T imports Main begin\nML ‹1›\nend', "ML"),
     # keyword right after a string literal / at end of text
     ('lemma "x = x" by simp ML', "ML"),
+    # an axiom postulated inside a candidate proof is "proved" everywhere
+    # (report review 2026-10-27)
+    ('axiomatization where ax: "False"\nlemma x: "P" by (simp add: ax)',
+     "axiomatization"),
 ])
 def test_find_code_execution_detects_commands(text, kw):
     assert find_code_execution(text) == kw

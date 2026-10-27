@@ -48,12 +48,16 @@ _ALLOWED_EXPLICIT: Final = frozenset(
     }
 )
 
-# Denylist: code-execution / filesystem / setup keywords. Rejected if they occur
-# ANYWHERE as a standalone token. Word boundaries use Isar identifier chars
-# (letters, digits, underscore, prime) so "ML" inside "print_ML_antiquotations"
-# does NOT match (it is preceded by '_').
+# Denylist: code-execution / filesystem / setup keywords, and `axiomatization`
+# (report review 2026-10-27: a chunk that postulates an axiom and uses it is
+# "proved" in-session and accepted by a cold build alike; a candidate proof has
+# no business adding axioms). Rejected if they occur ANYWHERE as a standalone
+# token. Word boundaries use Isar identifier chars (letters, digits,
+# underscore, prime) so "ML" inside "print_ML_antiquotations" does NOT match
+# (it is preceded by '_').
 _DANGEROUS_RE: Final = re.compile(
     r"(?<![A-Za-z0-9_'])(?:"
+    r"axiomatization|"
     r"ML|ML_val|ML_command|ML_prf|ML_file(?:_debug|_no_debug)?|ML_export|"
     r"SML_file(?:_debug|_no_debug)?|SML_export|SML_import|"
     r"setup|local_setup|declaration|syntax_declaration|"

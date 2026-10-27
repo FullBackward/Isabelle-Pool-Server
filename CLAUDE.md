@@ -486,7 +486,7 @@ repo_root/
 │       │   ├── config.py          # Environment-based config
 │       │   ├── logging.py         # Structured logging setup
 │       │   ├── metrics.py         # Prometheus counters/gauges
-│       │   ├── input_guards.py    # ML-execution denylist, safe names, heap roots
+│       │   ├── input_guards.py    # ML-execution + axiomatization denylist, safe names, heap roots
 │       │   └── diagnostic_guard.py # /diagnostic command allowlist
 │       ├── errors.py              # Custom exception classes
 │       └── dependencies.py        # FastAPI dependency injection
