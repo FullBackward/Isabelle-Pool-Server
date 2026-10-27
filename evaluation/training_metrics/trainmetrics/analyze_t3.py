@@ -162,18 +162,18 @@ def plot_t3(cells: Sequence[Dict[str, Any]], out: Path) -> Optional[str]:
         return None
     fig, ax = plt.subplots(figsize=(8, 4))
     series: Sequence[Tuple[str, Getter, str]] = (
-        ("(f) new session + replay", fresh_s, "s"),
-        ("(e) new node + replay", warm_s, "o"),
-        ("rollback", lambda s: derived(s)["rollback_s"], "x"),
-        ("restore checkpoint returns", lambda s: derived(s)["restore_s"], "^"),
+        ("replay the prefix in a new session", fresh_s, "s"),
+        ("replay the prefix in a new node, same session", warm_s, "o"),
+        ("roll back the last submission", lambda s: derived(s)["rollback_s"], "x"),
+        ("restore a checkpoint (returns)", lambda s: derived(s)["restore_s"], "^"),
     )
     for label, get, marker in series:
         pts = [(s["prefix_commands"], v) for s in states for v in [get(s)] if v]
         if pts:
             xs, ys = zip(*pts)
             ax.scatter(xs, ys, marker=marker, s=14, label=label)
-    ax.set_xlabel("commands up to the state (census)")
-    ax.set_ylabel("seconds")
+    ax.set_xlabel("commands before the state")
+    ax.set_ylabel("seconds (log scale)")
     ax.set_yscale("log")
     ax.grid(True, alpha=0.3)
     ax.legend(fontsize="small", loc="center left", bbox_to_anchor=(1.01, 0.5))

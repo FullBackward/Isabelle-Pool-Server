@@ -317,7 +317,10 @@ def plots(rows: List[Dict[str, Any]], out: Path) -> List[str]:
         print("plots skipped: matplotlib is not installed (pip install -e '.[eval]')")
         return []
     made: List[str] = []
-    heaps = sorted({str(r["heap"]) for r in rows})
+    # the report's order and names (review of report v2, 2026-10-27)
+    order = {"HOL": 0, "HOL-Library": 1, "HOL-Analysis": 2}
+    heaps = sorted({str(r["heap"]) for r in rows}, key=lambda h: (order.get(h, 9), h))
+    names = {"ips/pool": "IPS", "pide-a/A": "PIDE MCP A", "pide-b/B": "PIDE MCP B"}
     for metric, title in (
         ("pss_settled_mb", "tool PSS after the loads"),
         (
@@ -347,11 +350,11 @@ def plots(rows: List[Dict[str, Any]], out: Path) -> List[str]:
                         [p[0] for p in pts],
                         [p[1] / 1024 for p in pts],
                         marker="o",
-                        label=label,
+                        label=names.get(label, label),
                     )
             ax.set_title(f"{heap}: {title}")
             ax.set_xlabel("sessions k")
-            ax.set_ylabel("GB")
+            ax.set_ylabel("memory (GB)")
             ax.grid(True, alpha=0.3)
             ax.legend()
         fig.tight_layout()

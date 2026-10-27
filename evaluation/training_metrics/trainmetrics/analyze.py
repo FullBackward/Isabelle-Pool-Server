@@ -29,11 +29,82 @@ from .metrics_t12 import (
 )
 
 
+def _repeat_points(ax: Any, rows: List[Dict[str, Any]]) -> None:
+    """Every repeat's two rates as small points, so the spread shows."""
+    for key, color in (("chunks_per_min", "C0"), ("chunks_per_min_incl_setup", "C1")):
+        pts = [(int(r["workers"]), r[key]) for r in rows if r.get(key) is not None]
+        if pts:
+            ax.scatter(
+                [x for x, _ in pts], [y for _, y in pts], s=10, color=color, alpha=0.5
+            )
+
+
+def _plot_t1(
+    series: List[Dict[str, Any]], rows: Optional[List[Dict[str, Any]]], out: Path
+) -> Optional[str]:
+    """Throughput vs W: the ideal line, the two rates, every repeat as a point,
+    host CPU on the right axis."""
+    import matplotlib.pyplot as plt  # pylint: disable=import-outside-toplevel
+
+    if not series:
+        return None
+    fig, ax = plt.subplots(figsize=(6, 4))
+    ws = [s["workers"] for s in series]
+    base = next((s["chunks_per_min"] for s in series if s["workers"] == 1), None)
+    if base:
+        ax.plot(
+            ws,
+            [w * base for w in ws],
+            color="grey",
+            ls=":",
+            label="ideal: W x the W = 1 rate",
+        )
+    ax.plot(ws, [s["chunks_per_min"] for s in series], marker="o", label="verify only")
+    ax.plot(
+        ws,
+        [s["chunks_per_min_incl_setup"] for s in series],
+        marker="s",
+        label="with session starts",
+    )
+    _repeat_points(ax, rows or [])
+    ax.set_xscale("log", base=2)
+    ax.set_xticks(ws)
+    ax.set_xticklabels([str(w) for w in ws])
+    ax.set_xlabel("workers W")
+    ax.set_ylabel("verified chunks / min")
+    ax.grid(True, alpha=0.3)
+    handles, labels = ax.get_legend_handles_labels()
+    util = [s.get("host_cpu_util") for s in series]
+    if any(u is not None for u in util):
+        ax2 = ax.twinx()
+        ax2.plot(
+            ws,
+            [100 * (u or 0) for u in util],
+            color="grey",
+            ls="--",
+            label="host CPU busy (right)",
+        )
+        ax2.set_ylabel("host CPU busy %")
+        ax2.set_ylim(0, 100)
+        more = ax2.get_legend_handles_labels()
+        handles, labels = handles + more[0], labels + more[1]
+    ax.legend(handles, labels, loc="upper left")
+    fig.tight_layout()
+    path = out / "t1_throughput.png"
+    fig.savefig(path, dpi=120)
+    plt.close(fig)
+    return str(path)
+
+
 def plots(
-    series: List[Dict[str, Any]], t2: List[Dict[str, Any]], out: Path
+    series: List[Dict[str, Any]],
+    t2: List[Dict[str, Any]],
+    out: Path,
+    rows: Optional[List[Dict[str, Any]]] = None,
 ) -> List[str]:
-    """Throughput vs W (with host CPU) and T2 latency per class; skipped
-    without matplotlib (as in memscale)."""
+    """Throughput vs W (the ideal line W x the W = 1 rate, every repeat as a
+    point, host CPU) and T2 latency per class; skipped without matplotlib (as
+    in memscale)."""
     try:
         import matplotlib  # pylint: disable=import-outside-toplevel
 
@@ -44,45 +115,9 @@ def plots(
         return []
     made: List[str] = []
     out.mkdir(parents=True, exist_ok=True)
-    if series:
-        fig, ax = plt.subplots(figsize=(6, 4))
-        ws = [s["workers"] for s in series]
-        ax.plot(
-            ws, [s["chunks_per_min"] for s in series], marker="o", label="verify only"
-        )
-        ax.plot(
-            ws,
-            [s["chunks_per_min_incl_setup"] for s in series],
-            marker="s",
-            label="including acquire + enter",
-        )
-        ax.set_xscale("log", base=2)
-        ax.set_xticks(ws)
-        ax.set_xticklabels([str(w) for w in ws])
-        ax.set_xlabel("workers W")
-        ax.set_ylabel("verified chunks / min")
-        ax.grid(True, alpha=0.3)
-        handles, labels = ax.get_legend_handles_labels()
-        util = [s.get("host_cpu_util") for s in series]
-        if any(u is not None for u in util):
-            ax2 = ax.twinx()
-            ax2.plot(
-                ws,
-                [100 * (u or 0) for u in util],
-                color="grey",
-                ls="--",
-                label="host CPU busy (right)",
-            )
-            ax2.set_ylabel("host CPU busy %")
-            ax2.set_ylim(0, 100)
-            more = ax2.get_legend_handles_labels()
-            handles, labels = handles + more[0], labels + more[1]
-        ax.legend(handles, labels, loc="upper left")
-        fig.tight_layout()
-        path = out / "t1_throughput.png"
-        fig.savefig(path, dpi=120)
-        plt.close(fig)
-        made.append(str(path))
+    t1 = _plot_t1(series, rows, out)
+    if t1:
+        made.append(t1)
     if t2:
         fig, ax = plt.subplots(figsize=(6, 4))
         for w in sorted({r["workers"] for r in t2}):
@@ -206,7 +241,7 @@ def write_t12(
     write_csv(tables / "t1_cells.csv", rows)
     write_csv(tables / "t1_series.csv", series)
     write_csv(tables / "t2_latency.csv", t2)
-    made = plots(series, t2, results / "plots")
+    made = plots(series, t2, results / "plots", rows)
     text = snippet_t12(series, t2, census) if cells else ""  # no T1 cell: no T1 tables
     ips_env = next((c.get("ips_env") for c in cells if c.get("ips_env")), None)
     pide_text, n_pide = write_pide(results, census, tables, series, ips_env)
