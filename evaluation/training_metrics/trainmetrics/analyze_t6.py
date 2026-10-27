@@ -243,7 +243,9 @@ def snippet_t6(
 
 
 def plot_t6(style: str, ser: List[Dict[str, Any]], out: Path) -> Optional[str]:
-    """Both rates against W; skipped without matplotlib."""
+    """The end-to-end rate and the per-rollout time on the W = 1 files against
+    W (no loop rate across W: it mixes files, D19); skipped without
+    matplotlib."""
     try:
         import matplotlib  # pylint: disable=import-outside-toplevel
 
@@ -255,15 +257,34 @@ def plot_t6(style: str, ser: List[Dict[str, Any]], out: Path) -> Optional[str]:
         return None
     fig, ax = plt.subplots(figsize=(6, 4))
     ws = [s["workers"] for s in ser]
-    ax.plot(ws, [s["loop_rollouts_per_h"] for s in ser], marker="o", label="loop rate")
-    ax.plot(ws, [s["rollouts_per_h"] for s in ser], marker="s", label="end to end")
+    ax.plot(
+        ws,
+        [s["rollouts_per_h"] for s in ser],
+        marker="s",
+        label="rollouts / h, end to end",
+    )
     ax.set_xscale("log", base=2)
     ax.set_xticks(ws)
     ax.set_xticklabels([str(w) for w in ws])
     ax.set_xlabel("workers W")
     ax.set_ylabel("rollouts / h")
+    ax.set_ylim(bottom=0)
     ax.grid(True, alpha=0.3)
-    ax.legend()
+    ax2 = ax.twinx()
+    ax2.plot(
+        ws,
+        [s["matched_per_rollout_s"] for s in ser],
+        color="grey",
+        ls="--",
+        marker="o",
+        label="s per rollout, W = 1 files (right)",
+    )
+    ax2.set_ylabel("seconds per rollout (W = 1 files)")
+    per = [s["matched_per_rollout_s"] for s in ser if s["matched_per_rollout_s"]]
+    ax2.set_ylim(0, 1.5 * max(per) if per else None)  # the line off the frame
+    h1, l1 = ax.get_legend_handles_labels()
+    h2, l2 = ax2.get_legend_handles_labels()
+    ax.legend(h1 + h2, l1 + l2, loc="upper left")
     fig.tight_layout()
     out.mkdir(parents=True, exist_ok=True)
     path = out / f"{style}_rollouts.png"

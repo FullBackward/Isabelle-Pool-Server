@@ -70,7 +70,12 @@ intended one-process shape, or 2.7--3.7\,GB when each agent runs its own
 PIDE MCP process. Under a 48\,GB limit, IPS admits 27 HOL-Analysis
 sessions and refuses the next with a reason; one PIDE MCP process per
 agent reaches 13, and the kernel then kills four of them. A released IPS
-session is handed to the next client in 2\,ms. IPS is free software:
+session is handed to the next client in 2\,ms. On the 93 theories of
+HOL-Analysis, restoring a checkpoint takes 4\,ms where replaying to the
+same proof state takes 8 to 93\,s, the in-session verdict agreed with a
+cold build on all 890 checks, 597 of them on broken proofs, every looping
+step returned at its budget, and 32 workers verified 3\,181 chunks per
+minute. IPS is free software:
 \url{https://github.com/FullBackward/Isabelle-Pool-Server}.
 \end{abstract}
 
@@ -128,10 +133,13 @@ on them (Section~\ref{sec:readers}). Our contributions are:
     transactional chunk verification, checkpoints and rollback, a cold
     build as arbiter, memory-gated admission, and a Python client plus two
     MCP servers (Section~\ref{sec:arch}).
-  \item \textbf{Measurements for the operator.} Memory per session,
-    acquire latency, behaviour under a memory limit and crash containment
-    on a 128\,GB host, for IPS and, under identical conditions, for PIDE
-    MCP (Sections~\ref{sec:serving} and~\ref{sec:comparison}).
+  \item \textbf{Measurements for both readers.} Throughput, latency,
+    branch cost, verdict agreement and bounded steps on the HOL-Analysis
+    library for the training reader; memory per session, acquire latency,
+    behaviour under a memory limit and crash containment for the operator;
+    all on one 128\,GB host, with PIDE MCP measured under the same
+    conditions (Sections~\ref{sec:training}, \ref{sec:serving}
+    and~\ref{sec:comparison}).
   \item \textbf{A comparison with PIDE MCP.} The design choices that
     separate the two headless PIDE connectors, what each can do that the
     other cannot, and a feature inventory (Section~\ref{sec:comparison},
@@ -139,8 +147,7 @@ on them (Section~\ref{sec:readers}). Our contributions are:
   \item \textbf{An open implementation.} The service, the experiment
     harness and the raw results are public (Appendix~\ref{app:bench}).
 \end{enumerate}
-The training reader's metrics are stated but not yet measured
-(Section~\ref{sec:training}). Section~\ref{sec:position} places IPS among
+Section~\ref{sec:position} places IPS among
 Isabelle connectors; Section~\ref{sec:limitations} lists its limits.
 
 % ======================================================================
@@ -170,8 +177,8 @@ comparison.
 
 Table~\ref{tab:metrics} turns each reader's questions into the metrics
 that Sections~\ref{sec:training} and~\ref{sec:serving} report, with the
-procedure for each in Appendix~\ref{app:bench}. This version measures the
-operator's metrics; the training reader's are pending. Agent success on
+procedure for each in Appendix~\ref{app:bench}. This version measures
+every metric except the cache hit rate. Agent success on
 a benchmark measures the agent and its prompt rather than the service, so
 it appears only as a worked example in Section~\ref{sec:position}.
 
@@ -182,11 +189,11 @@ it appears only as a worked example in Section~\ref{sec:position}.
 Question & Metric & Measured as & Status \\
 \midrule
 \multicolumn{4}{@{}l}{\emph{Training reader} (Section~\ref{sec:training})} \\
-How many verified rollouts per hour? & throughput & \code{verify\_chunk} calls per minute against worker count & pending \\
-How long does one verify call take? & latency & p50 and p95 of \code{verify\_chunk}, by chunk size & pending \\
-Can I branch and backtrack cheaply? & branch cost & checkpoint and restore time against a fresh session & pending \\
-Does ``proved'' in-session mean proved cold? & agreement & in-session verdict against cold build on the same chunks & pending \\
-Can one bad step stall a worker? & bounded step & calls exceeding budget; time for the worker to recover & pending \\
+How many verified rollouts per hour? & throughput & \code{verify\_chunk} calls per minute and scripted rollouts per hour, against worker count & measured \\
+How long does one verify call take? & latency & p50 and p95 of \code{verify\_chunk}, by chunk size & measured \\
+Can I branch and backtrack cheaply? & branch cost & restore time against replaying to the same proof state & measured \\
+Does ``proved'' in-session mean proved cold? & agreement & in-session verdict against a cold build, on the corpus and on broken proofs & measured \\
+Can one bad step stall a worker? & bounded step & looping steps returned at their budget; recovery; effect on other workers & measured \\
 \midrule
 \multicolumn{4}{@{}l}{\emph{Operator} (Section~\ref{sec:serving})} \\
 How many sessions fit in a host? & capacity & memory per session at steady state, by heap; sessions per 100\,GB & measured \\
@@ -320,8 +327,8 @@ Appendix~\ref{app:deploy} how it is configured.
 \label{sec:training}
 
 This section is for the training reader. It states what a training loop
-needs from a verification service, how IPS provides it, and which of the
-resulting metrics we have measured.
+needs from a verification service, how IPS provides it, and what we
+measured.
 
 \subsection{Requirements}
 
@@ -357,7 +364,8 @@ fresh build rejected.
 
 \subsection{Design}
 
-The loop acquires one session per worker and keeps it for the run. Each
+The loop acquires a session per worker with the imports of its problems
+and keeps it while the imports stay the same. Each
 candidate is submitted as a chunk. The per-command report names the step
 that failed, and a failed chunk leaves the session unchanged, so the next
 candidate goes to the same state without cleanup. To branch, the loop
@@ -375,56 +383,280 @@ together. Figure~\ref{fig:rollout} shows the loop as a client sees it.
 
 \begin{figure}[!htb]
 \centering
-\todo{rollout-loop figure: acquire, checkpoint, verify\_chunk, restore or
-continue, release; one box per call, with the budget on the verify call}
-\caption{A rollout as a sequence of IPS calls. The loop branches by
-  checkpoint and restore, never by starting a session.}
+\begin{tikzpicture}[
+  x=1cm, y=1cm, font=\small,
+  box/.style={draw, rounded corners=2pt, align=center, minimum height=10mm,
+    minimum width=24mm, inner sep=3pt, fill=blue!5},
+  ends/.style={box, fill=gray!8},
+  arr/.style={-{Latex[length=2.4mm]}, thick},
+  lbl/.style={font=\footnotesize}
+]
+\node[ends] (acq) at (0,0)     {acquire\\(imports)};
+\node[box]  (cp)  at (3.1,0)   {checkpoint};
+\node[box]  (ver) at (6.2,0)   {\code{verify\_chunk}\\under a budget};
+\node[box]  (fl)  at (9.3,0)   {read the flags:\\proved?};
+\node[ends] (rel) at (12.4,0)  {release};
+\node[box]  (res) at (7.75,-2) {restore};
+\draw[arr] (acq) -- (cp);
+\draw[arr] (cp) -- (ver);
+\draw[arr] (ver) -- (fl);
+\draw[arr] (fl) -- node[above, lbl] {done} (rel);
+\draw[arr] (fl.south) |- node[pos=0.3, right, lbl] {next candidate} (res.east);
+\draw[arr] (res.west) -| (ver.south);
+\draw[arr] (fl.north) to[out=150, in=30] node[above, lbl] {kept: next step} (cp.north);
+\end{tikzpicture}
+\caption{A rollout as a sequence of IPS calls. At a proof state the loop
+  takes a checkpoint and submits a candidate under a budget. A chunk that
+  fails or times out is undone by the server; one that is kept but does
+  not prove is undone by a restore before the next candidate; a kept step
+  becomes the next state. The loop never starts a session to branch.}
 \label{fig:rollout}
 \end{figure}
 
 \subsection{Results}
+\label{sec:training-measured}
 
-We have not yet measured the training reader's five metrics. What this
-version establishes for that reader is the envelope of
-Section~\ref{sec:serving}: a worker's session costs 0.9--1.3\,GB, a cold
-session takes 2 to 6 seconds, and a released session is handed back in
-2\,ms. The runs below will use the hardware, Isabelle build and IPS
-commit recorded in Appendix~\ref{app:bench}.
+All numbers come from one series of runs on the host of
+Section~\ref{sec:serving-measured} (32 cores, 128\,GB, Isabelle2026-RC2).
+The workload is the HOL-Analysis library: 93 theories, 11\,984 top-level
+blocks, 166\,438 commands. One replay of the library at one worker, the
+\emph{census}, proved every block; its times are the reference for every
+slowdown below. Each theory runs on a session acquired with its own
+imports, as in a curriculum whose problems differ in imports. No model
+runs: the candidates are scripted, so the rates are the server's share of
+a training loop. Appendix~\ref{app:bench-training} gives the method and
+the raw results.
 
-\paragraph{Throughput.} \todo{verify\_chunk calls per minute at 1, 2, 4, 8
-and 16 workers on the training corpus; plot of throughput against workers;
-one sentence on where it stops scaling and why (memory, Sledgehammer
-semaphore, or CPU).}
+\paragraph{Throughput.} One worker verified 132 chunks (1\,607 commands)
+per minute. Thirty-two workers verified 3\,181 chunks per minute, 24 times
+as many, while the median call slowed only from 0.41 to 0.52\,s and no
+call timed out (Figure~\ref{fig:throughput}). Counting each theory's
+session acquisition as well, the rate at 32 workers is 899 chunks per
+minute. A cold HOL-Analysis start takes 6\,s on an idle host; it took
+8\,s at 8 workers, 34\,s at 16 and 157\,s at 32 (medians), with no
+request refused, because the host is then CPU-bound: the provers used
+17.7 cores on average and the gateway JVM 4.6, and a start, which is one
+ML thread loading a 1.3\,GB heap, waits behind the parallel proof checking
+of the other sessions. Acquisition is therefore 10--14\,\% of a worker's
+time up to 8 workers, 30\,\% at 16 and 64\,\% at 32. Memory was not the
+limit: 29\,GB at the peak. A loop whose problems share imports keeps its
+sessions and pays none of this (a warm hit takes 2\,ms); one whose
+problems differ in imports should expect the lower curve, or start its
+sessions before the clock.
 
-\paragraph{Latency.} \todo{p50 and p95 of verify\_chunk for single-command
-chunks, short Isar blocks (under 10 commands) and long blocks; a table with
-three rows.}
+\begin{figure}[!htb]
+\centering
+\includegraphics[width=0.8\textwidth]{figures/training_throughput.png}
+\caption{Verified chunks per minute against the number of workers, with
+  and without each theory's session acquisition, and the host's CPU
+  utilisation (dashed, right axis). Three repeats per point, 8 theories
+  per worker.}
+\label{fig:throughput}
+\end{figure}
 
-\paragraph{Branch cost.} \todo{checkpoint time, restore time, and the
-cost of the alternative (release and acquire a fresh session) on the same
-proof states; one table.}
+Table~\ref{tab:rollouts} gives the same measurement for two scripted
+rollout loops (Figure~\ref{fig:rollout}): a \emph{whole-proof} loop that
+submits eight candidate proofs per theorem, five of which can prove, and
+restores the checkpoint after each; and a \emph{step-level} loop that at
+every proof command tries two alternatives before the corpus step, with
+a checkpoint and restore around each. At one worker the whole-proof loop
+runs 6\,436 rollouts per hour and the step-level loop 2\,343 verified
+steps per hour; 32 workers run 5.4 and 8.6 times as many. The time a
+worker spends on one rollout does not change with the number of workers
+(the two ``per rollout'' columns): a worker's loop runs as fast at 32 as
+alone, and the rate stops short of 32 times for the reason above, the
+session starts. Checkpoint and restore took 3 and 4\,ms in every cell,
+and no check of the document's source after a restore failed.
 
-\paragraph{Agreement.} \todo{on N completed proofs, how many the
-in-session verdict called proved that the cold build rejected, and the
-reverse; list the causes found (e.g.\ facts visible in-session but not in
-the cold import set).}
+\begin{table}[!htb]
+\centering\small
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{@{}r rrr rrr r@{}}
+\toprule
+ & \multicolumn{3}{c}{Whole-proof rollouts} & \multicolumn{3}{c}{Step-level paths} & \\
+\cmidrule(lr){2-4} \cmidrule(lr){5-7}
+W & per hour & proved/h & s per rollout & per hour & steps/h & s per path & Setup share \\
+\midrule
+1  & 6\,436  & 954   & 0.60 & 596   & 2\,343  & 3.67 & 0.22 / 0.36 \\
+8  & 20\,778 & 2\,839 & 0.60 & 1\,613 & 15\,243 & 3.65 & 0.30 / 0.36 \\
+32 & 34\,518 & 4\,798 & 0.61 & 2\,071 & 20\,042 & 3.67 & 0.68 / 0.62 \\
+\bottomrule
+\end{tabular}
+\caption{Scripted rollout loops at W workers, two repeats each. Rates
+  are end to end: session acquisition, entering the theory and replaying
+  up to each problem included. ``s per rollout'' is a worker's loop time
+  per rollout on the theories every cell shares, the like-for-like
+  comparison across W. Setup share is the fraction of a worker's time in
+  acquisition, entering and replaying to the problems (whole-proof /
+  step-level). No rollout ended in a memory, prover-death or session
+  error; the candidates' timeout share was 0.5--2\,\%.}
+\label{tab:rollouts}
+\end{table}
 
-\paragraph{Bounded step.} \todo{fraction of calls that hit their budget
-on a corpus seeded with non-terminating tactics; time from timeout to the
-next successful call on the same session.}
+\paragraph{Latency.} Table~\ref{tab:latency} gives the time of one
+\code{verify\_chunk} call by chunk size. A single command costs 0.31\,s,
+the call's fixed cost: the server re-reads the document every 0.1\,s
+until the chunk has settled, then asks the prover whether a proof is
+still open. The cost per command falls to 23\,ms in chunks of ten or
+more commands, because the prover checks a chunk's proofs in parallel.
+Eight workers add nothing to the median and 0.2--0.3\,s to the p95.
+
+\begin{table}[!htb]
+\centering\small
+\begin{tabular}{@{}l r rr rr r@{}}
+\toprule
+ & & \multicolumn{2}{c}{W = 1} & \multicolumn{2}{c}{W = 8} & \\
+\cmidrule(lr){3-4} \cmidrule(lr){5-6}
+Chunk size & calls (W = 1) & p50 & p95 & p50 & p95 & ms per command \\
+\midrule
+1 command   & 290   & 0.31\,s & 0.63\,s & 0.31\,s & 0.82\,s & 308 \\
+2--9 commands & 2\,006 & 0.41\,s & 0.93\,s & 0.41\,s & 1.03\,s & 144 \\
+10+ commands & 974   & 0.52\,s & 1.28\,s & 0.62\,s & 1.61\,s & 23 \\
+\bottomrule
+\end{tabular}
+\caption{\code{verify\_chunk} latency by chunk size, from the throughput
+  cells at 1 and 8 workers (three repeats each; no call timed out). The
+  last column is the p50 per command at W\,=\,1.}
+\label{tab:latency}
+\end{table}
+
+\paragraph{Branch cost.} We took 200 proof states across 68 theories,
+a third each early, in the middle and late in their files, and at each
+measured the three ways of going back to the state after trying the next
+block: restoring a checkpoint, rolling back the last submission, and the
+alternative a REPL offers, replaying the theory up to the state in a new
+theory node or a new session (Figure~\ref{fig:branch},
+Table~\ref{tab:branch}). A restore returns in 4\,ms. It returns before
+the prover has settled, so we charge it the extra time of the verify
+that follows it over the same verify settled: the branch cost is 4\,ms at
+the median and 20\,ms on average, and at most 63\,ms for the late states.
+Replaying to the same state takes 8\,s at the median for the early
+states, 43\,s in the middle and 91\,s late in a file, 13.9, 49.6 and
+93.2\,s with a fresh session, so a restore is at least 350 times cheaper
+than a replay early in a file and 1\,450 times late in it. The verify
+after a restore gave the same report as the first verify in all 1\,000
+repeats, and the source matched after all 600 restores and 400 rollbacks.
+
+\begin{figure}[!htb]
+\centering
+\includegraphics[width=0.9\textwidth]{figures/training_branch_cost.png}
+\caption{Going back to a proof state, against the number of commands
+  before it: the restore's return time, a rollback, and replaying the
+  prefix in a new theory node on the same session or in a new session
+  (200 states, log scale).}
+\label{fig:branch}
+\end{figure}
+
+\begin{table}[!htb]
+\centering\small
+\begin{tabular}{@{}l rr@{}}
+\toprule
+Operation & p50 & p95 \\
+\midrule
+Save a checkpoint & 3\,ms & 4\,ms \\
+Restore a checkpoint (returns) & 4\,ms & 5\,ms \\
+Branch cost: restore plus its deferred settle & 4\,ms & 200\,ms \\
+Roll back the last submission (settled) & 110\,ms & 216\,ms \\
+Replay the prefix, new node on the same session & 30\,s & 165\,s \\
+Replay the prefix, new session & 35\,s & 169\,s \\
+\bottomrule
+\end{tabular}
+\caption{The cost of going back to a proof state, over 200 states. The
+  replay rows pool the three positions; Figure~\ref{fig:branch} shows
+  them against the prefix length.}
+\label{tab:branch}
+\end{table}
+
+\paragraph{Agreement.} The in-session verdict agreed with a cold
+\code{isabelle build} on every check we made (Table~\ref{tab:agreement}).
+On the 93 theories as written, both accepted all 93. On 200 theorem blocks
+sampled across the library, each spliced into its theory in four forms, the
+unchanged block was accepted by both in all 200 cases, and the three broken
+forms, the proof replaced by \code{sorry}, its last closing step removed,
+and a fact name replaced by an undefined one, were rejected by both in all
+597 applicable cases. No mutant was proved in-session and rejected cold,
+the finding this metric targets, and none was accepted by both. The 693
+cold builds took 13.6\,s at the median and 24\,s at p95, four at a time.
+On this sample the in-session verdict can be read as a reward without a
+cold check; the cold build stays the arbiter where a verdict is final.
+
+\begin{table}[!htb]
+\centering\small
+\begin{tabular}{@{}l r rrrr@{}}
+\toprule
+Proof as submitted & n & both accept & in-session only & cold only & both reject \\
+\midrule
+Theory as written (93 theories) & 93 & 93 & 0 & 0 & 0 \\
+Block unchanged & 200 & 200 & 0 & 0 & 0 \\
+Proof replaced by \code{sorry} & 200 & 0 & 0 & 0 & 200 \\
+Last closing step removed & 200 & 0 & 0 & 0 & 200 \\
+A fact name undefined & 197 & 0 & 0 & 0 & 197 \\
+\bottomrule
+\end{tabular}
+\caption{In-session verdict (success, no open proof, no \code{sorry})
+  against a cold build of the same text. ``In-session only'' is the unsafe
+  disagreement. Three blocks have no fact name to replace.}
+\label{tab:agreement}
+\end{table}
+
+\paragraph{Bounded step.} We placed 100 looping steps before proved
+theorems of 9 theories, 50 of each kind: a rewriting loop
+(\code{apply (subst add.commute)+} on an additive goal) and a
+\code{metis} call with up to 56 facts on a false goal; each was submitted
+under a budget of 5\,s, and the ones that looped again under 30 and
+120\,s (Table~\ref{tab:bounded}). Every looping step returned at its
+budget with the stuck command named, the server undid it within 0.6\,s at
+p95 in every row but one (4.2\,s), the document's source was unchanged
+after every attempt, and the next corpus block proved at the census's
+speed (0.41\,s median, as in the census). Twelve rewriting seeds failed at
+once rather than looping, because the rewrite did not apply to their goal;
+they are counted apart. At 8 workers, with 15 looping steps of 120\,s
+spread over the workers so that up to seven loops ran at once, the other
+workers' blocks ran at the census's speed (median ratio 1.00 over 1\,130
+blocks matched against the 8-worker throughput cell) and waited 4--5\,ms
+for the server. A long rewriting loop does leave
+memory in the prover: 1.2\,GB at the median after a 30\,s loop and 7\,GB
+after 120\,s, which the undo does not reclaim; the \code{metis} loops left
+130\,MB or less.
+
+\begin{table}[!htb]
+\centering\small
+\begin{tabular}{@{}l r r r rr r@{}}
+\toprule
+Looping step & Budget & Attempts & Returned at budget & \multicolumn{2}{c}{Undo p50 / p95} & Memory left, p50 \\
+\midrule
+\code{metis}, up to 56 facts & 5\,s & 50 & 50 & 0.07\,s & 0.45\,s & 4\,MB \\
+ & 30\,s & 10 & 10 & 0.30\,s & 0.60\,s & 127\,MB \\
+ & 120\,s & 3 & 3 & 0.28\,s & 0.35\,s & 1\,MB \\
+\code{subst} rewrite loop & 5\,s & 38 & 38 & 0.05\,s & 0.52\,s & 4\,MB \\
+ & 30\,s & 8 & 8 & 0.54\,s & 4.21\,s & 1\,181\,MB \\
+ & 120\,s & 1 & 1 & 0.35\,s & 0.35\,s & 7\,116\,MB \\
+\bottomrule
+\end{tabular}
+\caption{Looping steps under a budget, one worker. Undo is the wall
+  time past the budget until the call returned with the step undone.
+  Memory left is the prover's resident set after the attempt minus before
+  it. Twelve of the 50 rewrite seeds did not loop and are left out.}
+\label{tab:bounded}
+\end{table}
 
 \subsection{Caveats}
 
 Imports are fixed when a session is acquired, so a curriculum that mixes
-import sets needs a session per set or one session on a superset. The
-one-command mode is sequential; a loop that wants Isabelle's parallel
-checking should submit chunks. A budget expiry undoes the submission
-silently from the document's point of view: the timeout is in the
-response, and a loop that ignores it submits its next step to an older
-state than it expects. The in-session verdict is the fast one and the
-cold build the final one; a reward computed in-session should be
-spot-checked against the cold build at the rate the agreement metric will
-report.
+import sets needs a session per set or one session on a superset; at 32
+workers starting a session per theory, the starts take two thirds of a
+worker's time, so a loop should group its problems by imports and keep
+the sessions. A looping rewrite leaves memory in the prover that the undo
+does not reclaim; a loop that sees repeated timeouts on a session should
+release it and acquire a fresh one, which the memory gate will admit on the
+reclaimed memory. The one-command mode is sequential; a loop that wants
+Isabelle's parallel checking should submit chunks. A budget expiry undoes
+the submission silently from the document's point of view: the timeout is
+in the response, and a loop that ignores it submits its next step to an
+older state than it expects. The in-session verdict agreed with the cold
+build on every check here; the cold build remains the arbiter where a
+verdict is final, and a reward computed in-session should still be
+spot-checked against it on a new corpus.
 
 % ======================================================================
 \section{Multi-agent serving}
@@ -730,6 +962,23 @@ bound on the time to a usable verdict. The concurrent re-check of all k
 theories at k\,=\,32 took a p95 of 3--17\,s under IPS and 10--24\,s
 under PIDE MCP A.
 
+\paragraph{Throughput.} On the training workload of
+Section~\ref{sec:training-measured}, with the same theories, census and
+heap, and each theory on a fresh session started inside the timed window
+for both tools, PIDE MCP's edit-and-settle loop (append a block, poll
+\code{get\_state} every 0.1\,s until it settles) and IPS's
+\code{verify\_chunk} were level at one worker: 135 against 132 chunks per
+minute, 116 against 113 with the session starts counted. At eight workers
+IPS verified 926 chunks per minute against 813, and 497 against 381 with
+the starts. The two calls do not do the same work. \code{verify\_chunk}
+undoes a chunk that fails and, after one that succeeds, asks the prover
+whether a proof is still open, about one 0.1\,s poll per call, and
+returns a verdict; the PIDE MCP loop returns command counts that the
+client reads as one. PIDE MCP cannot cancel a block that does not settle,
+so such a block ends its theory (one per cell here), and because it names
+each theory after its scratch file, the 1\,\% of blocks that refer to
+their own theory fail under it.
+
 \paragraph{Under a memory limit.} With \code{MemoryMax=48G} on
 HOL-Analysis, IPS admitted 27 sessions and refused the 28th with a reason,
 losing nothing. PIDE MCP B admitted 13: the scope reached its limit, and
@@ -791,9 +1040,10 @@ PIDE MCP's extension); MCP over stdio.
 
 \subsection{Summary}
 
-On the questions we measured, memory per session, conduct under a limit
-and isolation, IPS does what it was built for, and PIDE MCP in its
-intended shape is within 0.2--0.4\,GB per session of it. The three-fold
+On the questions we measured, memory per session, throughput, conduct
+under a limit and isolation, IPS does what it was built for, and PIDE
+MCP in its intended shape is within 0.2--0.4\,GB per session of it and
+level with it on throughput at one worker, 14\,\% behind at eight. The three-fold
 gap appears only when each agent runs its own PIDE MCP process, the
 arrangement a group of independent agents falls into without a pool; that
 gap is the price of a JVM per agent, and it is the number an operator
@@ -930,11 +1180,20 @@ repository.
 with the pool (3.6 to 5.3\,GB over 32 sessions); a crash of it loses
 every session at once.
 
+\paragraph{Cold starts under load.} A session start is one ML thread's
+work. At 32 workers each starting a session per theory on a CPU-bound
+host, a start took 157\,s at the median against 6\,s alone, two thirds
+of a worker's time; the pool does not reserve CPU for starts. Grouping
+problems by imports and keeping the sessions avoids it.
+
+\paragraph{Memory left by a looping step.} A looping rewrite can leave
+gigabytes in the prover after its undo. The memory gate sees the growth
+but does not recycle the session; the client must release it.
+
 \paragraph{Numbers are tied to a build.} Every figure in
 Sections~\ref{sec:serving} and~\ref{sec:comparison} is for the Isabelle
 build, host and commits in Appendix~\ref{app:bench}; Isabelle2026 was a
-release candidate when they were taken, and the training reader's metrics
-are still to be measured.
+release candidate when they were taken.
 
 \paragraph{Roadmap.} Cancellation and progress can be had by routing
 calls through Isabelle's own query-operation classes, which would also
@@ -960,7 +1219,11 @@ a budget, at the price of project scope and positioned diagnostics. On a
 128\,GB host a session costs 0.9--1.3\,GB and a warm hit 2\,ms. Under a
 48\,GB limit the pool admits 27 HOL-Analysis sessions and refuses the
 next with a reason, where one PIDE MCP process per agent reaches 13 and
-loses four to the kernel. Among Isabelle connectors IPS is the first of
+loses four to the kernel. For the training reader, restoring a
+checkpoint costs 4\,ms where replaying to the same proof state costs 8
+to 93\,s, the in-session verdict agreed with a cold build on all 890
+checks, every looping step returned at its budget, and 32 workers
+verified 3\,181 chunks per minute. Among Isabelle connectors IPS is the first of
 the pooled-service family, and it complements the interactive families
 rather than competing with them: PIDE MCP gives a single agent full
 access to a project at a per-session cost within 0.2--0.4\,GB of IPS's,
@@ -1094,12 +1357,16 @@ Automated tests & about 650 test functions & none \\
 \section{Experiment method and raw results}
 \label{app:bench}
 
-Everything in this appendix is reproducible from
-\code{evaluation/memory\_scaling/} in the IPS repository (one
-\code{config.yaml}, numbered scripts, a deterministic analysis) and the
-raw data: the full results tree is at
+Everything in this appendix is reproducible from the IPS repository
+(\code{evaluation/memory\_scaling/} for the operator's runs,
+\code{evaluation/training\_metrics/} for the training reader's; each
+one \code{config.yaml}, numbered scripts and a deterministic analysis)
+and the raw data: the full results trees are at
 \url{https://github.com/FullBackward/Isabelle-Pool-Server-results}
-and as release asset \code{memscale-2026-10-21b} of the main repository.
+(the memory-scaling tree also as release asset
+\code{memscale-2026-10-21b} of the main repository). The appendix
+keeps the method and the series the body's figures are drawn from; the
+per-cell tables are in the repository.
 Every cell has a manifest (phases, per-session timings, environment,
 workload checksum, the tool's own report) and a samples file with one row
 per second.
@@ -1300,6 +1567,83 @@ HOL: IPS, 7 of 7 others answered, the victim reported ``prover process
 died, the session has been discarded''; PIDE MCP A, 7 of 7, the victim
 ``No running session s7'', the one JVM alive; PIDE MCP B, 7 of 7, the
 same message, all 8 JVMs alive.
+
+\paragraph{Training workloads.}
+\label{app:bench-training}
+The runs of Section~\ref{sec:training-measured} are reproducible from
+\code{evaluation/training\_metrics/} in the IPS repository (one
+\code{config.yaml}, numbered scripts, a deterministic analysis); the raw
+results, every cell's manifest, per-block records, memory and CPU samples
+and the server's reports, are the \code{training-metrics/} tree of the
+results repository above. Same host and Isabelle build as above; IPS
+commit \code{1fe270f}, pool size 40, no pre-warmed sessions,
+\code{parallel\_proofs=2}, memory management on with a 1.5\,GB estimate per
+HOL-Analysis session, four cold builds at a time. PIDE MCP as above with
+\code{parallel\_proofs=2} on its sessions.
+
+\emph{Corpus and census.} The 93 theories of HOL-Analysis in
+Isabelle2026-RC2 with their imports qualified, each split into top-level
+blocks (11\,984; a block is one top-level command with its proof). The
+census replays every theory once at one worker, each on a session with the
+theory's imports, with a 600\,s budget per block; it proved all 11\,984
+blocks, and its per-block times and command counts key every later
+measurement. A block's budget in the experiments is $\min(600,
+\max(30, 2n))$\,s for $n$ census commands.
+
+\emph{T1 throughput and T2 latency.} W workers (1 to 32, three repeats),
+8 theories each from a seeded assignment that is a prefix across W, each
+theory on a fresh session acquired with its imports, replayed block by
+block with \code{verify\_chunk}; the clock runs from the first theory to
+the last. Table~\ref{tab:t1-series} is the full series. The PIDE MCP row
+runs the same assignment at W\,=\,1 and 8 as edit-and-settle.
+\emph{T3 branch cost.} 200 proof states, a third each early, in the middle
+and late in their theories, each on a session created for it: checkpoint,
+verify the next block, three restores each followed by the block, two
+rollbacks each followed by the block, then the prefix replayed in a new
+theory node and in a new session. \emph{T4 agreement.} Part A: each theory
+as written, the census verdict against \code{verify\_bigstep\_text}
+(\code{isabelle build} on the heap). Part B: 200 census-proved theorem
+blocks, seeded, in four forms (unchanged, \code{sorry}, truncated before
+the closing step, first fact name undefined), checked in-session at the
+block's position under its budget and rolled back, and cold with the form
+spliced into its theory, one mutation per build. \emph{T5 bounded step.}
+50 seeds per family placed before census-proved theorems of 9 theories,
+tried at 5\,s, the ones that looped again at 30 and 120\,s while the
+family's count lasts; a 1.5\,s pause after every attempt for the memory
+sampler; at W\,=\,8, two seeds per worker of 120\,s among the worker's
+theories. \emph{T6 rollout loops.} W workers (1, 8, 32; two repeats), three
+theories each from the T1 assignment; whole-proof: the first 8 proved
+theorems of each theory, 8 candidates each (the corpus proof, \code{by
+auto} and \code{by simp} twice, \code{sorry}, the proof truncated, a method
+that fails at once) under 20\,s, a kept one undone by a restore;
+step-level: the first 4 proved theorems of 2 to 40 proof commands, at each
+command two alternatives from \{\code{apply auto}, \code{apply simp},
+\code{apply -}, \code{by auto}, \code{by simp}\} under 10\,s before the
+corpus command. Every cell polls the server's memory tier and samples
+memory and CPU per process once a second.
+
+\begin{table}[!htb]
+\centering\small
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{@{}r rrr rr r rr rr@{}}
+\toprule
+W & \shortstack{chunks/min\\verify only} & \shortstack{commands\\per min} & \shortstack{chunks/min\\incl.\ acquire} & \shortstack{acquire\\share} & \shortstack{census\\work rate} & \shortstack{slowdown\\vs census} & \shortstack{p50\\s} & \shortstack{p95\\s} & \shortstack{host\\CPU \%} & \shortstack{PSS peak\\GB} \\
+\midrule
+1  & 132   & 1\,607  & 113 & 0.10 & 0.97 & 1.02 & 0.41 & 0.92 & 6  & 6.5 \\
+2  & 281   & 3\,713  & 183 & 0.12 & 1.44 & 1.04 & 0.41 & 0.92 & 8  & 7.5 \\
+4  & 474   & 6\,576  & 297 & 0.12 & 2.58 & 1.08 & 0.41 & 1.06 & 18 & 11.3 \\
+8  & 927   & 12\,501 & 497 & 0.14 & 4.45 & 1.17 & 0.42 & 1.22 & 34 & 16.0 \\
+16 & 1\,677 & 22\,353 & 789 & 0.30 & 7.07 & 1.62 & 0.47 & 1.41 & 59 & 26.5 \\
+32 & 3\,181 & 44\,877 & 899 & 0.64 & 8.33 & 3.13 & 0.52 & 1.50 & 73 & 28.3 \\
+\bottomrule
+\end{tabular}
+\caption{T1 at every W (three repeats averaged; no call timed out, no
+  theory skipped). Census work rate: the census time of the cell's
+  theories over the cell's wall time, the number of single-worker replays
+  the cell is worth. Slowdown: the cell's replay time over the census time
+  of the same theories, acquisition included.}
+\label{tab:t1-series}
+\end{table}
 
 \section{Deployment and security}
 \label{app:deploy}

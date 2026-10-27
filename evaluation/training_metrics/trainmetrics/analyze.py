@@ -56,9 +56,13 @@ def plots(
             marker="s",
             label="including acquire + enter",
         )
+        ax.set_xscale("log", base=2)
+        ax.set_xticks(ws)
+        ax.set_xticklabels([str(w) for w in ws])
         ax.set_xlabel("workers W")
         ax.set_ylabel("verified chunks / min")
         ax.grid(True, alpha=0.3)
+        handles, labels = ax.get_legend_handles_labels()
         util = [s.get("host_cpu_util") for s in series]
         if any(u is not None for u in util):
             ax2 = ax.twinx()
@@ -67,10 +71,13 @@ def plots(
                 [100 * (u or 0) for u in util],
                 color="grey",
                 ls="--",
-                label="host CPU %",
+                label="host CPU busy (right)",
             )
             ax2.set_ylabel("host CPU busy %")
-        ax.legend(loc="upper left")
+            ax2.set_ylim(0, 100)
+            more = ax2.get_legend_handles_labels()
+            handles, labels = handles + more[0], labels + more[1]
+        ax.legend(handles, labels, loc="upper left")
         fig.tight_layout()
         path = out / "t1_throughput.png"
         fig.savefig(path, dpi=120)
