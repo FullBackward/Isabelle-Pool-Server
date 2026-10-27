@@ -54,8 +54,8 @@ def snippet_pide(
         "own theory name (D13); PIDE MCP names it after its scratch file, so the corpus' blocks that name "
         "their own theory (36 in 17 files, about 1 %) and the blocks that use them fail there, which "
         "lowers PIDE's verified chunks by that share. Latencies step by the 0.1 s "
-        "poll in both rows (a block settles at the first or the second reading), so a p50 of 0.12 "
-        "against 0.21 s is one poll, not a twofold gap: chunks/min is the comparison.",
+        "poll in both rows (a block settles at the first or the second reading), so p50s that differ "
+        "by up to 0.1 s differ by one poll, not by their ratio: chunks/min is the comparison.",
         "",
         "| W | tool | chunks/min (verify only) | chunks/min (incl. setup) | census work rate | p50 / p95 s "
         "| timeout rate | PIDE / IPS (verify only) |",

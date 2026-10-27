@@ -198,6 +198,13 @@ def _f(v: Any, nd: int = 1) -> str:
     return "-" if v is None else f"{float(v):.{nd}f}"
 
 
+def _why(errors: Sequence[str]) -> str:
+    """The errors of the seeds that did not loop as one table cell: Isabelle's
+    messages span lines, which broke the markdown table of the server run
+    (2026-10-27)."""
+    return "; ".join(" ".join(e.split()).replace("|", "\\|") for e in errors) or "-"
+
+
 def _family_label(name: str, fam: Dict[str, Any]) -> str:
     return f"{name} {fam['seeds']} ({'/'.join(fam['goal_sources'])} goals)"
 
@@ -236,7 +243,7 @@ def _w1_lines(cell: Dict[str, Any], table: Sequence[Dict[str, Any]]) -> List[str
     ]
     for k, v in fams.items():
         lines.append(
-            f"| {k} | {v['not_looping']} | {'; '.join(v['not_looping_errors']) or '-'} | "
+            f"| {k} | {v['not_looping']} | {_why(v['not_looping_errors'])} | "
             f"{sum(v['ended_apart'].values())} | {_f(v['verdict_match_frac'], 3)} | "
             f"{_f(v['recovery_p50_s'], 2)} ({_f(v['census_p50_s'], 2)}) |"
         )

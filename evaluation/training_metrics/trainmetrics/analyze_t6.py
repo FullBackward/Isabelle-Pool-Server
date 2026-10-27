@@ -4,9 +4,12 @@ recomputed from a cell's raw records (``events.jsonl``, ``files.jsonl``,
 ``tiers.jsonl``, ``samples.jsonl``) with the current
 :mod:`trainmetrics.metrics_t6`.
 
-Across cells, per W (repeats averaged): both rates per hour, their speedup
-against W = 1, the per-rollout loop time on the matched files (the W = 1
-cell's, present in every cell, S3) and its slowdown, the setup share
+Across cells, per W (repeats averaged): both rates per hour (not divided into
+a speedup, owner 2026-10-27: a cell at W runs more files than the W = 1 cell
+and each repeat its own seeded files, so a ratio of rates mixes the files'
+proof times and reached 40.8 at W = 32 on the server), the per-rollout loop
+time on the matched files (the W = 1 cell's, present in every cell, S3) and
+its slowdown, the setup share
 (acquire, enter, prefix, close), the timeout share of the rollouts, queueing
 p95, stopped files, outcomes apart, failed integrity checks and the worst
 memory tier. The cell timeout comes from :mod:`trainmetrics.calibrate_t6`."""
@@ -98,7 +101,8 @@ def _mean(xs: Sequence[Any]) -> Optional[float]:
 
 
 def series(rows: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Per W, repeats averaged, with speedup and slowdown against W = 1."""
+    """Per W, repeats averaged, with the slowdown on the matched files against
+    W = 1."""
     out: List[Dict[str, Any]] = []
     for w in sorted({int(r["workers"]) for r in rows}):
         rs = [r for r in rows if int(r["workers"]) == w]
@@ -133,12 +137,6 @@ def series(rows: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
         )
     base = next((s for s in out if s["workers"] == 1), None)
     for s in out:
-        for key, ref, name in (
-            ("loop_rollouts_per_h", base, "loop_speedup"),
-            ("rollouts_per_h", base, "e2e_speedup"),
-        ):
-            den = (ref or {}).get(key)
-            s[name] = round(s[key] / den, 2) if den and s[key] is not None else None
         den = (base or {}).get("matched_per_rollout_s")
         num = s["matched_per_rollout_s"]
         s["matched_slowdown"] = round(num / den, 2) if den and num is not None else None
@@ -203,17 +201,17 @@ def snippet_t6(
         "server's share of a training loop. End-to-end rates include acquisition, entering and replaying "
         "up to each problem; the loop rate counts each worker's loop calls only.",
         "",
-        "| W | reps | rollouts/h end to end | loop rollouts/h | loop speedup | proved/h | problems/h "
+        "| W | reps | rollouts/h end to end | loop rollouts/h | proved/h | problems/h "
         + ("| steps/h " if steps else "")
         + "| per-rollout time on the W = 1 files (s) | slowdown | setup share | timeouts | queue p95 (s) |",
-        "|---|---|---|---|---|---|---|"
+        "|---|---|---|---|---|---|"
         + ("---|" if steps else "")
         + "---|---|---|---|---|",
     ]
     for s in ser:
         lines.append(
             f"| {s['workers']} | {s['reps']} | {_f(s['rollouts_per_h'])} | {_f(s['loop_rollouts_per_h'])} | "
-            f"{_f(s['loop_speedup'], 2)} | {_f(s['proved_per_h'])} | {_f(s['problems_per_h'])} | "
+            f"{_f(s['proved_per_h'])} | {_f(s['problems_per_h'])} | "
             + (f"{_f(s['steps_per_h'])} | " if steps else "")
             + f"{_f(s['matched_per_rollout_s'], 3)} | {_f(s['matched_slowdown'], 2)} | "
             f"{_f(s['setup_share'], 2)} | {_f(s['timeout_share'], 3)} | {_f(s['queue_p95_s'], 3)} |"
@@ -226,6 +224,11 @@ def snippet_t6(
         f"W = {s['workers']}: {_f(s['alternatives_kept_share'], 2)}" for s in ser
     )
     lines += [
+        "",
+        "The rates at different W are not divided into a speedup: each W runs more files than W = 1 "
+        "(and each repeat its own seeded files), so a ratio of rates mixes the files' proof times and "
+        "can exceed W. The per-rollout time on the W = 1 files, present in every cell, is the "
+        "like-for-like comparison: a slowdown of 1.00 means a worker's loop runs as fast as alone.",
         "",
         f"Stopped files: {stopped}; outcomes outside the rollouts (memory, prover death, gone session, "
         f"error): {apart}; failed integrity checks: {failed}. Worst memory tier per W: {tiers}."

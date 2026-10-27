@@ -223,3 +223,12 @@ def test_a_cell_without_a_replay_baseline_says_so():
         analyze_t5._contention_lines(c)
     )  # pylint: disable=protected-access
     assert "No replay baseline at this W" in text and "-x" not in text
+
+
+def test_the_errors_of_seeds_that_did_not_loop_fit_one_table_cell():
+    """The server run of 2026-10-27: multi-line messages broke the table."""
+    msg = "Failed to apply proof method\u2302:\ngoal (1 subgoal):\n 1. a | b"
+    assert analyze_t5._why([msg, "x"]) == (
+        "Failed to apply proof method\u2302: goal (1 subgoal): 1. a \\| b; x"
+    )
+    assert analyze_t5._why([]) == "-"

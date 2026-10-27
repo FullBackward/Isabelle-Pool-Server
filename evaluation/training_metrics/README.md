@@ -134,6 +134,7 @@ Ubuntu server; if the two differ, this README is right.
 | D16 | the splitter cuts outside every `proof` … `qed` and before `private` / `qualified` commands (4 blocks of 3 files ended inside a proof, 10 blocks of 5 files held a `private` lemma; 11 files split anew); the span check accepts the modifier (Isabelle counts it as part of the command); a census after a new commit reruns only the files whose blocks changed |
 | D17 | `census --keep-unchanged`: the owner keeps the unchanged files across a commit that the D16 check refuses (14daab8 removed dead server code, and the server census started again); the log line names the change it overrode |
 | D18 | the PIDE MCP row runs each file on a fresh session, started inside the window and stopped after the file, as IPS acquires one per file (D6): both rows pay the same setup; the per-call difference stays and is stated (IPS's `verify_chunk` undoes a failed chunk and asks whether a proof is still open, about one 0.1 s poll a call) |
+| D19 | T6 reports no speedup across W: a cell at W runs more files than the W = 1 cell and each repeat its own seeded files, so a ratio of rates mixes the files' proof times (40.8 at W = 32 on the server); the per-rollout time on the W = 1 files is the like-for-like comparison |
 
 ## 5. The local container (development only)
 

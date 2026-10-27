@@ -417,7 +417,10 @@ def test_the_t6a_analysis(tmp_path):
     assert n == 2 and "## T6a whole-proof rollouts" in text
     rows = [analyze_t6.cell_row(c) for c in analyze_t6.load_t6_cells(root, "t6a")]
     ser = analyze_t6.series(rows)
-    assert [s["workers"] for s in ser] == [1, 2] and ser[0]["e2e_speedup"] == 1.0
+    assert [s["workers"] for s in ser] == [1, 2]
+    # owner 2026-10-27: no speedup across W (a cell at W runs other files)
+    assert "e2e_speedup" not in ser[0] and "loop_speedup" not in ser[0]
+    assert "speedup" not in text.split("\n")[4] and "not divided into a speedup" in text
     assert "| 1 | 1 |" in text and "| 2 | 1 |" in text
     for name in ("t6a_cells.csv", "t6a_series.csv", "t6a_candidates.csv"):
         assert (tables / name).exists()
