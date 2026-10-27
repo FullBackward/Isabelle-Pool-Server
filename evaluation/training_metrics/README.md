@@ -163,8 +163,8 @@ results/
 
 Hand-over: the release asset (step 12; it goes to `origin`'s repository, `REPO=FullBackward/Isabelle-Pool-Server`
 overrides), and the raw tree copied into `FullBackward/Isabelle-Pool-Server-results`
-under `training-metrics-<date>/` (as the memory-scaling data). The tables and plots the report uses go to
-`docs/report/v2/figures/`; the `fig:rollout` figure is drawn from T6a's call sequence.
+under `training-metrics/` (as the memory-scaling data). The report's source is kept outside this repository
+(Overleaf; the last in-tree copy is commit f6cae10); its figures come from `plots/` of that tree.
 
 ## 7. Layout
 
