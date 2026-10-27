@@ -25,6 +25,7 @@ from server.app.api.v1.schemas.API_models import (
     SessionAcquireRequest,
     SessionCreateRequest,
 )
+from server.app.api.v1.schemas.fill_models import FillSorriesRequest
 from server.app.core import input_guards
 from server.app.core.config import Heap, Server
 from server.app.core.input_guards import (
@@ -161,10 +162,23 @@ def test_bigstep_request_rejects_ml():
     assert ok.theory
 
 
+def test_fill_request_rejects_ml_and_axiomatization():
+    # routes/fill.py loads `text` into the session itself, so the other models'
+    # validators never see it (report recheck 2026-10-27, 3B.2)
+    with pytest.raises(ValidationError, match="code-executing"):
+        FillSorriesRequest(text='lemma x: True\n  sorry\nML ‹OS.Process.system "id"›')
+    with pytest.raises(ValidationError, match="code-executing"):
+        FillSorriesRequest(
+            text='axiomatization where ax: "False"\nlemma x: "P" by (simp add: ax)'
+        )
+    assert FillSorriesRequest(text=GOOD_PROOF).text
+
+
 def test_models_allow_ml_when_policy_permits(monkeypatch):
     monkeypatch.setattr(Server, "ALLOW_ML_COMMANDS", True)
     assert CommandRequest(command="ML ‹1›").command == "ML ‹1›"
     assert BigStepTheoryRequest(theory_name="X", theory="theory X imports Main begin ML ‹1› end")
+    assert FillSorriesRequest(text="ML ‹1›").text == "ML ‹1›"
 
 
 # --------------------------------------------------- import-name injection

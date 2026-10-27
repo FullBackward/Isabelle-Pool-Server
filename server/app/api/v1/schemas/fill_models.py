@@ -3,9 +3,10 @@ Its own module: ``API_models.py`` sits at the source-size gate."""
 
 from typing import Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from server.app.core.config import Memory
+from server.app.core.input_guards import reject_code_execution
 
 
 class FillSorriesRequest(BaseModel):  # pylint: disable=too-few-public-methods
@@ -40,3 +41,12 @@ class FillSorriesRequest(BaseModel):  # pylint: disable=too-few-public-methods
         pattern=r"^[a-z0-9_]+( [a-z0-9_]+)*$",
         description="Optional space-separated prover names (Isabelle default when omitted).",
     )
+
+    @field_validator("text")
+    @classmethod
+    def _no_code_execution(cls, v: str) -> str:
+        # routes/fill.py hands `text` to the session itself (load_document /
+        # verify_chunk), so the validators of the other text models never see
+        # it: with the guard on, this route still accepted ML and
+        # axiomatization until 2026-10-27 (report recheck 3B.2).
+        return reject_code_execution(v, what="fill text")
