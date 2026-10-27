@@ -61,8 +61,9 @@ One command per path. Both end with the same HTTP API on port 8000, and the
 
 Sizing for both: budget **~30 GB disk** (Isabelle + heaps) and **16 GB+ RAM**. Each Isabelle
 session is 1.5–4 GB resident; `ISABELLE_POOL_SIZE × ~4 GB` plus one `isabelle build` must
-fit. The project targets **Isabelle 2026** (`Isabelle2026-RC2` today; `Isabelle2025-2`
-still works). Heaps are version-locked — never share a user-data directory or volume
+fit. The project targets **Isabelle2026** (the 2026 release candidates also build;
+Isabelle2025-2 and earlier are not supported: the PIDE header API changed in 2026-RC1).
+Heaps are version-locked — never share a user-data directory or volume
 between two Isabelle versions.
 
 ### A. Docker

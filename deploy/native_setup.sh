@@ -8,7 +8,7 @@
 #   --system             apt packages (deploy/apt_packages.txt) + Isabelle download to
 #                        /opt/isabelle (mirrors: deploy/isabelle_mirrors.txt) + profile line (sudo)
 #   --isabelle-version V Isabelle distribution for --system (default: ISABELLE_VERSION in .env /
-#                        .env.example, currently Isabelle2026-RC2)
+#                        .env.example, currently Isabelle2026)
 #   --no-venv            use the active Python instead of creating .venv
 #   --systemd            install and enable the systemd unit (deploy/isabelle-pool-server.service) (sudo)
 #   --verify             start the server (or use the systemd one), prove `lemma True by simp`, stop it

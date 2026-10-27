@@ -1,10 +1,11 @@
 # Isabelle Pool Server image — ONE Dockerfile for every Isabelle version.
 #
 #   docker compose build isabelle-pool-server                                  # default version below
-#   docker build -f deploy/Dockerfile --build-arg ISABELLE_VERSION=Isabelle2026-RC2 -t isabelle-pool-server:2026rc2 .
+#   docker build -f deploy/Dockerfile --build-arg ISABELLE_VERSION=Isabelle2026-RC2 -t isabelle-pool-server:2026rc2 .   # a release candidate
 #
-# ISABELLE_VERSION is the distribution name (Isabelle2026-RC2, Isabelle2026,
-# Isabelle2025-2 …). Release candidates live in a per-RC website directory
+# ISABELLE_VERSION is the distribution name (Isabelle2026, or a release
+# candidate such as Isabelle2026-RC2; Isabelle2025-2 and earlier are not
+# supported, see .env.example). Release candidates live in a per-RC website directory
 # (website-<version>/dist/), final releases in dist/; both are tried, on the
 # official host and on mirrors. Build context is the repo root.
 #
@@ -20,7 +21,7 @@ FROM python:3.12-slim
 
 # Default version = ISABELLE_VERSION in .env.example; docker-compose passes the
 # value from .env as this build arg, deploy/native_setup.sh reads the same key.
-ARG ISABELLE_VERSION=Isabelle2026-RC2
+ARG ISABELLE_VERSION=Isabelle2026
 ARG GIT_REVISION=unknown
 
 LABEL org.opencontainers.image.title="Isabelle Pool Server" \

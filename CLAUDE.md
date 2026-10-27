@@ -31,7 +31,7 @@ This is only for the demonstration/test artifacts — not every file touched dur
 
 ## Project Overview
 
-**Isabelle Pool Server** is a containerized system for machine learning research on formal theorem proving. It provides a RESTful API to interact with the Isabelle theorem prover (Isabelle 2026 — currently the RC2 release candidate, selected by the `ISABELLE_VERSION` build arg in `deploy/Dockerfile`; 2025-2 still builds from the same file) through a three-tier architecture:
+**Isabelle Pool Server** is a containerized system for machine learning research on formal theorem proving. It provides a RESTful API to interact with the Isabelle theorem prover (Isabelle2026, selected by the `ISABELLE_VERSION` build arg in `deploy/Dockerfile`; the 2026 release candidates also build, Isabelle2025-2 and earlier do not (the PIDE header API changed in 2026-RC1)) through a three-tier architecture:
 
 1. **Scala/ML backend** (server/repl/) - Isabelle REPL wrapping via Scala/ML, exposing interactive proof state operations
 2. **FastAPI server** (server/) - RESTful HTTP service with session pooling, resource management, and lease-based concurrency
@@ -171,7 +171,7 @@ export PYTHONPATH="$PWD:${PYTHONPATH:-}"
 **Requirements:**
 - Python 3.12+ (3.10+ for local dev, Docker uses 3.12)
 - No JDK: Isabelle bundles its own (a foreign `JAVA_HOME` breaks it)
-- Isabelle 2026 (the version the Dockerfile builds; 2025-2 also works) installed and on PATH as `isabelle`
+- Isabelle2026 (the version the Dockerfile builds; 2025-2 and earlier do not build this backend) installed and on PATH as `isabelle`
 - Scala 3 (compiled by Isabelle's bundled toolchain)
 
 ### Building & Testing

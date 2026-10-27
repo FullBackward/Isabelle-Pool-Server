@@ -46,7 +46,7 @@ Design rationale for the architecture lives in `docs/DESIGN_CHOICES.md`; the liv
 
 ## Technology stack
 
-- **Theorem prover**: Isabelle 2026 — the `ISABELLE_VERSION` build arg in `deploy/Dockerfile` (currently `Isabelle2026-RC2`; `Isabelle2025-2` still builds from the same file). Heaps are version-locked: never share a user-data volume across versions.
+- **Theorem prover**: Isabelle 2026 — the `ISABELLE_VERSION` build arg in `deploy/Dockerfile` (default `Isabelle2026`; the 2026 release candidates also build; `Isabelle2025-2` and earlier do not, the PIDE header API changed in 2026-RC1). Heaps are version-locked: never share a user-data volume across versions.
 - **Python**: 3.12 in Docker; 3.10+ acceptable for local dev. On the maintainer's host Python lives in the conda env `Isabelle Pool Server` (`conda run -n Isabelle Pool Server ...`); in the container it is `/usr/local/bin/python`.
 - **Scala**: Scala 3, compiled by Isabelle itself (`isabelle scala_build` from `server/repl/etc/build.props`; no Gradle/JDK in the install — `build.gradle` is IDE-only). scalafmt 3.8.3.
 - **Interop**: Py4J (`server/repl/src/python/repl_backend_gateway.py` ↔ one shared gateway JVM).

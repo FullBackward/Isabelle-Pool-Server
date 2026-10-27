@@ -9,7 +9,7 @@ services:
       dockerfile: deploy/Dockerfile
       args:
         # Isabelle distribution name (RCs: website-<name>/dist; finals: dist/).
-        ISABELLE_VERSION: ${ISABELLE_VERSION:-Isabelle2026-RC2}
+        ISABELLE_VERSION: ${ISABELLE_VERSION:-Isabelle2026}
         # Commit the image was built from (deploy/setup.sh exports it); shows
         # up as the org.opencontainers.image.revision label so an image can be
         # compared with the checkout: docker inspect --format

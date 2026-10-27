@@ -8,8 +8,9 @@ script step; the scripts are the authoritative version.
 
 Sizing for both paths: ~30 GB disk (Isabelle + heaps), 16 GB+ RAM. Each Isabelle session
 is 1.5–4 GB resident; `ISABELLE_POOL_SIZE × ~4 GB` plus one `isabelle build` must fit.
-Isabelle version: `Isabelle2026-RC2` today (`Isabelle2026` once final; `Isabelle2025-2`
-still works). Heaps are version-locked — never share a user-data directory or volume
+Isabelle version: `Isabelle2026` (the 2026 release candidates also build; `Isabelle2025-2`
+and earlier do not, the PIDE header API changed in 2026-RC1). Heaps are version-locked —
+never share a user-data directory or volume
 between two Isabelle versions.
 
 ---
@@ -90,8 +91,8 @@ the Isabelle user settings), then `exec python -m server.app.main`.
 A different Isabelle version:
 
 ```bash
-docker build -f deploy/Dockerfile --build-arg ISABELLE_VERSION=Isabelle2025-2 \
-  -t isabelle-pool-server:2025-2 .
+docker build -f deploy/Dockerfile --build-arg ISABELLE_VERSION=Isabelle2026-RC2 \
+  -t isabelle-pool-server:2026rc2 .
 ```
 
 ### A4. Prebuild heaps (`--build-heaps "..."`)
@@ -184,7 +185,7 @@ needs Python itself).
 ### B2. Install Isabelle (`--system`, `--isabelle-version`)
 
 ```bash
-VERSION=$(grep ^ISABELLE_VERSION= .env.example | cut -d= -f2)   # Isabelle2026-RC2; or Isabelle2026 / Isabelle2025-2
+VERSION=$(grep ^ISABELLE_VERSION= .env.example | cut -d= -f2)   # Isabelle2026, or a 2026 release candidate
 case "$(uname -m)" in aarch64|arm64) T="${VERSION}_linux_arm.tar.gz";; *) T="${VERSION}_linux.tar.gz";; esac
 # release candidates live under website-<version>/dist/, final releases under dist/
 curl -fLO "https://isabelle.in.tum.de/website-${VERSION}/dist/${T}" \

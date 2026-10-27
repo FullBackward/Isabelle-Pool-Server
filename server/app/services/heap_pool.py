@@ -537,7 +537,7 @@ class HeapPool:
     # ---------------------------------------------------------- deletion
 
     def _isabelle_home_user(self) -> Optional[Path]:
-        """ISABELLE_HOME_USER (e.g. /root/.isabelle/Isabelle2025-2), resolved
+        """ISABELLE_HOME_USER (e.g. /root/.isabelle/Isabelle2026), resolved
         lazily via `isabelle getenv` and cached. None on failure (GC skipped)."""
         if self._home_user is None:
             try:
