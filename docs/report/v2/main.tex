@@ -53,29 +53,29 @@
 
 % ======================================================================
 \begin{abstract}
-We present Isabelle Pool Server (IPS), a verification service for
-Isabelle/HOL built for two users that existing Isabelle connectors do not
-serve: training loops for LLM provers and groups of agents sharing one
-prover host. IPS keeps a pool of warm Isabelle sessions, each a headless
-instance of PIDE, Isabelle's document model, and leases them to clients
-over HTTP, one client per session at a time. Every call runs under a
-wall-clock budget. A session offers three verification modes, one command
-at a time, a proof chunk checked as one transaction, and a whole-file
-build as the final arbiter, together with checkpoints and rollback.
-Clients use a Python client or one of two bundled MCP servers. We
-measured IPS and PIDE MCP, the other headless PIDE connector, on one
-128\,GB host with 1 to 32 concurrent sessions on three heaps. A session
-costs 0.9--1.3\,GB under IPS and 1.3--1.5\,GB under PIDE MCP in its
-intended one-process shape, or 2.7--3.7\,GB when each agent runs its own
-PIDE MCP process. Under a 48\,GB limit, IPS admits 27 HOL-Analysis
-sessions and refuses the next with a reason; one PIDE MCP process per
-agent reaches 13, and the kernel then kills four of them. A released IPS
-session is handed to the next client in 2\,ms. On the 93 theories of
-HOL-Analysis, restoring a checkpoint takes 4\,ms where replaying to the
-same proof state takes 8 to 93\,s, the in-session verdict agreed with a
-cold build on all 890 checks, 597 of them on broken proofs, every looping
-step returned at its budget, and 32 workers verified 3\,181 chunks per
-minute. IPS is free software:
+Training an LLM prover and running groups of proof agents both need
+Isabelle as a service: many clients, a bound on every call, and a verdict
+that can be trusted. Lean has Kimina Lean Server and AXLE for this;
+Isabelle's connectors serve one agent at a time. We present Isabelle Pool
+Server (IPS), a pool of headless sessions of PIDE, Isabelle's document
+model, whose documents the server owns and leases to clients over HTTP,
+one client per session at a time, under a wall-clock budget on every call.
+Because a session is a document rather than a command stream, a failed
+attempt is rolled back as if never submitted, a checkpoint is restored
+exactly, a proof chunk is checked as one edit with parallel proof checking
+on, and a whole file can be rebuilt from a cold heap as the final verdict.
+Clients use a Python client or one of two bundled MCP servers. On one
+128\,GB host with Isabelle2026-RC2 we measured what a training loop and a
+shared host need, and PIDE MCP, the other headless PIDE connector for
+agents, under the same conditions. A session costs 0.9--1.3\,GB and a
+released one is handed to the next client in 2\,ms; under a 48\,GB limit
+the pool admits 27 HOL-Analysis sessions and refuses the next with a
+reason, where one PIDE MCP process per agent reaches 13 and loses four to
+the kernel. On the 93 theories of HOL-Analysis, restoring a checkpoint
+costs 4\,ms where replaying to the same proof state costs 8 to 93\,s, the
+in-session verdict agreed with a cold build on all 890 checks, every
+looping step returned at its budget, and 32 workers did the work of 8.3
+single-worker replays. IPS is free software:
 \url{https://github.com/FullBackward/Isabelle-Pool-Server}.
 \end{abstract}
 
@@ -95,9 +95,10 @@ few Isabelle heaps. Lean has infrastructure for both: Kimina Lean Server
 pools REPL workers for reinforcement
 learning~\cite{santos2025kimina,deepseek2024proverv15}, and AXLE hosts
 isolated, strictly checked verification for agents and training
-alike~\cite{xin2026axle}. Isabelle has neither. Its connectors expose
-PIDE, the document model behind Isabelle's editors~\cite{wenzel2014pide},
-to one agent at a time: Isabelle/Q~\cite{awslabs2026autocorrode} inside a
+alike~\cite{xin2026axle}. Isabelle has neither: its own
+\code{isabelle server} checks theory files for tools, and its agent
+connectors expose PIDE, the document model behind Isabelle's
+editors~\cite{wenzel2014pide}, to one agent at a time: Isabelle/Q~\cite{awslabs2026autocorrode} inside a
 human's editor session, PIDE MCP~\cite{kappelmann2026pidemcp} as a
 headless process per agent.
 
@@ -144,11 +145,121 @@ on them (Section~\ref{sec:readers}). Our contributions are:
     separate the two headless PIDE connectors, what each can do that the
     other cannot, and a feature inventory (Section~\ref{sec:comparison},
     Appendix~\ref{app:inventory}).
-  \item \textbf{An open implementation.} The service, the experiment
-    harness and the raw results are public (Appendix~\ref{app:bench}).
+  \item \textbf{An open implementation and a benchmark.} The service,
+    the harness that drove both tools through one procedure, and the raw
+    results are public (Appendix~\ref{app:bench}).
 \end{enumerate}
-Section~\ref{sec:position} places IPS among
-Isabelle connectors; Section~\ref{sec:limitations} lists its limits.
+Three things here are useful to readers who will never run IPS. The
+sizing numbers of Section~\ref{sec:serving} (memory per session by heap,
+the finding that Poly/ML shares only about 13\,MB of a 0.8--1.4\,GB
+prover, the gateway's growth with the pool) apply to any shared
+Isabelle2026 host. The perspective cost in PIDE MCP
+(Section~\ref{sec:comparison}) is a finding for that tool. And the
+harness that drove both tools through one procedure (census, throughput,
+branch cost, agreement, bounded step, capacity, pressure) is a benchmark a
+third connector can plug into; its agreement result, an interactive PIDE
+verdict matching \code{isabelle build} on 11\,984 blocks and 600
+mutants, is evidence for the whole headless-PIDE family, not for IPS
+alone. Section~\ref{sec:position} first places IPS among Isabelle
+connectors; Section~\ref{sec:guidance} collects the rules a user acts on;
+Section~\ref{sec:limitations} lists the limits.
+
+% ======================================================================
+\section{Isabelle connectors and where IPS sits}
+\label{sec:position}
+
+Connectors between programs and Isabelle fall into families, each built
+for a reader. Kappelmann's taxonomy and
+desiderata~\cite{kappelmann2026pidemcp} supply most of the family names
+and the interactive agent's questions; the training reader's and
+operator's questions are those of Table~\ref{tab:metrics}. Two terms
+recur. A \emph{heap} is a session image: the logic and the theories it
+imports, built once by \code{isabelle build} and loaded by every session
+that starts on it. A \emph{chunk} is a block of Isar text, one or more
+commands, submitted as one unit.
+
+\begin{itemize}
+  \item \textbf{REPL.} PISA and its descendants~\cite{jiang2021lisa},
+    qIsabelle, and the Lean REPL and Pantograph~\cite{aniva2025pantograph}
+    on the Lean side. One prover process per worker, commands submitted
+    one at a time, state held in memory. Built for the training reader
+    and still the most common harness in the lineage. Sequential by
+    construction, so parallel proof checking is lost~\cite{wenzel2012repl},
+    and every branch is a replay or a fresh process.
+  \item \textbf{Batch build.} The agent edits files and runs
+    \code{isabelle build}, as in the Munkres
+    autoformalisation~\cite{bryant2026munkres}. Simple, editor-agnostic,
+    and the only family whose verdict is the cold one by construction.
+    Not incremental: every attempt re-checks the whole development.
+  \item \textbf{Isabelle's own server.} \code{isabelle server}, in the
+    distribution since Isabelle2018: a resident process that manages
+    several logic sessions over a TCP line protocol, checks theory files
+    with \code{use\_theories} under a global time limit and a watchdog,
+    and can cancel a running task. Headless, multi-session and bounded,
+    it is built for tools rather than agents: it checks files, not proof
+    states, and decides nothing about who gets a session or when memory
+    runs out. IPS is built on the same headless session API
+    (Appendix~\ref{app:code}).
+  \item \textbf{LSP.} Isabelle's \code{vscode\_server} and connectors
+    on it, such as Isabelle-MCP; incomplete by the preprint's own
+    assessment~\cite{kappelmann2026pidemcp}. On the Lean side this is the
+    family of lean-lsp-mcp~\cite{dressler2026leanlspmcp}, whose tool names
+    IPS's file MCP server follows.
+  \item \textbf{Editor-attached PIDE.} Isabelle/Q~\cite{awslabs2026autocorrode}
+    attaches an agent to a human's jEdit session. Full PIDE access and
+    co-presence in shared memory, at the price of one session, one
+    editor, one machine. Built for the interactive agent beside a human.
+  \item \textbf{Headless PIDE, one process per agent.} PIDE
+    MCP~\cite{kappelmann2026pidemcp}. Built for the interactive agent
+    without an editor, and the only family meeting all five of the
+    preprint's desiderata. Section~\ref{sec:comparison} measures its cost
+    when many agents share a host.
+  \item \textbf{Pooled service.} Kimina~\cite{santos2025kimina} and
+    AXLE~\cite{xin2026axle} in Lean; IPS in Isabelle. A pool of prover
+    processes behind HTTP, built for the training reader and the
+    operator: throughput, admission, isolation and a bounded call. IPS is
+    the first of this family for Isabelle, and the first in either prover
+    whose sessions are PIDE documents, which gives it checkpoints,
+    rollback and chunk-level parallel checking.
+\end{itemize}
+
+What IPS adds to Isabelle's own server is the list of its contributions:
+a document per session that the server owns, so a chunk is a transaction,
+a checkpoint a snapshot and a restore one edit; leases and their
+reclamation; admission gated on memory; a verdict with stated semantics
+and a cold build as its arbiter; and HTTP and MCP transports. Nothing in
+IPS bypasses PIDE: sessions start, load theories and are edited through
+the API \code{isabelle server} itself uses.
+
+Table~\ref{tab:families} summarises the fit. A tick means the family
+answers that reader's questions as designed; a tilde means it can be
+made to, with work the reader must do; a dash means it does not try. No
+family serves all three readers: the interactive agent wants the whole
+PIDE surface and no timeouts, the training reader a narrow, bounded,
+pooled contract, and the two conflict on document ownership and on time.
+The REPL critique applies to IPS in part: its one-command mode is a REPL
+and inherits the sequential cost (Section~\ref{sec:modes}); its chunk call
+submits a block as one PIDE edit with parallel proofs on, and its
+whole-file check is a batch build.
+
+\begin{table}[!htb]
+\centering\small
+\begin{tabular}{@{}lccc@{}}
+\toprule
+Family & Training reader & Operator & Interactive agent \\
+\midrule
+REPL & \checkmark & $\sim$ & -- \\
+Batch build & $\sim$ & -- & $\sim$ \\
+Isabelle's own server & $\sim$ & $\sim$ & -- \\
+LSP & -- & -- & $\sim$ \\
+Editor-attached PIDE & -- & -- & \checkmark \\
+Headless PIDE per agent & $\sim$ & -- & \checkmark \\
+Pooled service (IPS) & \checkmark & \checkmark & $\sim$ \\
+\bottomrule
+\end{tabular}
+\caption{Which connector family serves which reader.}
+\label{tab:families}
+\end{table}
 
 % ======================================================================
 \section{Requirements and metrics}
@@ -178,9 +289,10 @@ comparison.
 Table~\ref{tab:metrics} turns each reader's questions into the metrics
 that Sections~\ref{sec:training} and~\ref{sec:serving} report, with the
 procedure for each in Appendix~\ref{app:bench}. This version measures
-every metric except the cache hit rate. Agent success on
+every metric except the cache hit rate, the one ``not measured'' row.
+Agent success on
 a benchmark measures the agent and its prompt rather than the service, so
-it appears only as a worked example in Section~\ref{sec:position}.
+it appears only as an anecdote in Appendix~\ref{app:example}.
 
 \begin{table}[t]
 \centering\small
@@ -276,14 +388,16 @@ server, which follows a theory file the agent edits with its own tools.
 The client names the imports it needs. If an idle session with those
 imports exists, it is leased at once; a warm hit takes 2\,ms
 (Section~\ref{sec:serving-measured}). Otherwise the pool starts one, which
-takes 2 to 6 seconds on a built heap, or refuses with an explanation if
-the host is short of memory. Imports from the Isabelle distribution are
+takes 2 to 6 seconds on a built heap and an idle host
+(Section~\ref{sec:training-measured} gives the cost when 32 start at
+once), or refuses with an explanation if the host is short of memory. Imports from the Isabelle distribution are
 always available. Imports from the client's own project need a heap that
 IPS builds once on request and reuses until the project's sources change.
 Leases expire and idle sessions are reclaimed, so a client that fails to
 release does not hold a session indefinitely.
 
 \subsection{Verification modes}
+\label{sec:modes}
 
 \begin{itemize}
   \item \emph{One command at a time}, for a loop that wants the proof
@@ -301,7 +415,30 @@ scope, or a Sledgehammer suggestion without changing the document; take a
 \emph{checkpoint} and later \emph{restore} it, so a search branches and
 backtracks without a new session; or \emph{roll back} the last submission.
 
+Table~\ref{tab:modes} says which mode to use when. The one-command mode
+is a REPL and inherits the sequential cost of one; the chunk mode is the
+call a training loop uses.
+
+\begin{table}[!htb]
+\centering\small
+\begin{tabularx}{\textwidth}{@{}l >{\raggedright\arraybackslash}X >{\raggedright\arraybackslash}X l l l@{}}
+\toprule
+Mode & Use it when & Returns & Undone on failure & Parallel checking & Typical time \\
+\midrule
+One command & the loop wants the proof state after each step & status and messages of that command & yes & no & 0.31\,s \\
+Chunk (\code{verify\_chunk}) & a candidate step or proof is one block & per-command status; \code{success}, \code{proof\_open}, \code{used\_sorry}, \code{timed\_out} & yes, the whole block & within the block & 0.41\,s for 2--9 commands; 23\,ms per command from 10 \\
+Whole file & a verdict must be final & the build's result; cached by content & stateless & the build's & 13.6\,s per HOL-Analysis theory \\
+Batch & many candidates, no session state & one verdict per candidate & stateless & across the pool & as whole file, in parallel \\
+\bottomrule
+\end{tabularx}
+\caption{The verification modes. Times are medians on HOL-Analysis
+  (Section~\ref{sec:training-measured}); the one-command time is the
+  per-call floor.}
+\label{tab:modes}
+\end{table}
+
 \subsection{Verdict semantics}
+\label{sec:verdict}
 
 IPS separates ``did anything error'' from ``is the theorem proved''. A
 chunk \emph{succeeds} when no command in it errored. It is \emph{proved}
@@ -309,6 +446,23 @@ when it succeeded, left no proof open, and used no \code{sorry}; the
 client reads this from three flags in the response. When a verdict
 matters beyond the current loop, the whole-file check is the arbiter,
 because an in-session check can accept a step that a fresh build rejects.
+
+\paragraph{What the verdict certifies.} ``Proved'' says that the submitted
+text checks in the session's context, closes every goal it opens, and
+uses no \code{sorry}; the \code{sorry} check reads the parsed commands,
+\code{sorry} and \code{oops}, not the text, so a comment or a string
+cannot hide or fake one. The whole-file check runs \code{isabelle build}
+with Isabelle's defaults, under which \code{sorry} is an error, so a
+proof the cold build accepts is one Isabelle itself accepts. Neither
+verdict says that the statement proved is the one asked for, and neither
+rejects a new axiom on its own: the command guard refuses
+\code{axiomatization} along with ML and file commands when it is on
+(Appendix~\ref{app:deploy}), so a candidate proof cannot postulate what it
+then uses, and a client that checks whole theories of its own should keep
+the guard on. A strict verdict that compares the statement with a
+reference and rejects any theorem whose oracle set is not empty, which
+Isabelle's \code{thm\_oracles} reports, is on the roadmap
+(Section~\ref{sec:limitations}).
 
 \subsection{Time budgets}
 
@@ -322,6 +476,25 @@ PIDE MCP, which bounds nothing by design (Section~\ref{sec:comparison}).
 Appendix~\ref{app:code} explains how the server keeps these guarantees;
 Appendix~\ref{app:deploy} how it is configured.
 
+\subsection{In PIDE's terms}
+\label{sec:pide-terms}
+
+For a reader who knows PIDE~\cite{wenzel2014pide}: a session's theory is
+one string document node, and the server appends to its text. A chunk is
+one insert at the end of the node. The node is \emph{required} with an
+empty visible range, the \emph{perspective} PIDE uses to decide what to
+print, so PIDE checks every command and prints nothing. Proof states,
+facts in scope and Sledgehammer are query operations run as overlays on
+the node's last command and removed afterwards; the document is never
+edited for them. A call returns when the submission has \emph{settled}:
+every command has a final status. A checkpoint records the node's text
+and the status of its commands; a restore is the edit that takes the text
+back, so PIDE's incremental checking keeps everything before the edit
+point and re-checks nothing. Proof checking is parallel inside a chunk: in
+a headless session any \code{parallel\_proofs} above 0 runs at Isabelle's
+interactive level, which forks the proofs of a command, so the value the
+experiments set (2) is the same checking as 1.
+
 % ======================================================================
 \section{Training workloads}
 \label{sec:training}
@@ -331,6 +504,7 @@ needs from a verification service, how IPS provides it, and what we
 measured.
 
 \subsection{Requirements}
+\label{sec:training-req}
 
 A training loop, whether reinforcement learning, expert iteration or
 search, has one shape: sample candidate steps, submit them, learn from
@@ -339,9 +513,10 @@ the verdicts, repeat. It needs four things from the service.
 \paragraph{Verdicts at the sampler's rate.} Thor issues up to 300 model
 queries per theorem~\cite{jiang2022thor}; DeepSeek-Prover-V2 samples 32
 candidate proofs per problem at every reinforcement-learning
-step~\cite{deepseek2025proverv2}. A Lean pool answers one such request in
-about 0.05 seconds on 64 cores~\cite{santos2025kimina}; that is the
-reference point for an Isabelle service.
+step~\cite{deepseek2025proverv2}. A Lean pool verifies about 20 whole
+proofs per second on 64 cores, 0.05\,s per proof
+amortised~\cite{santos2025kimina}; that is the reference point for an
+Isabelle service.
 
 \paragraph{Cheap branching at a proof state.} Best-first and tree search
 in Thor~\cite{jiang2022thor}, Magnushammer~\cite{mikula2024magnushammer}
@@ -418,78 +593,107 @@ together. Figure~\ref{fig:rollout} shows the loop as a client sees it.
 
 All numbers come from one series of runs on the host of
 Section~\ref{sec:serving-measured} (32 cores, 128\,GB, Isabelle2026-RC2).
-The workload is the HOL-Analysis library: 93 theories, 11\,984 top-level
-blocks, 166\,438 commands. One replay of the library at one worker, the
+The workload is the HOL-Analysis library: its 93 theories apart from the
+collector \code{Analysis.thy}, split into 11\,984 top-level blocks of
+166\,438 commands. One replay of the library at one worker, the
 \emph{census}, proved every block; its times are the reference for every
 slowdown below. Each theory runs on a session acquired with its own
 imports, as in a curriculum whose problems differ in imports. No model
 runs: the candidates are scripted, so the rates are the server's share of
-a training loop. Appendix~\ref{app:bench-training} gives the method and
-the raw results.
+a training loop. $W$ is the number of concurrent workers; the serving
+sections write $k$ for concurrent sessions. Appendix~\ref{app:bench-training}
+gives the method and the raw results.
 
-\paragraph{Throughput.} One worker verified 132 chunks (1\,607 commands)
-per minute. Thirty-two workers verified 3\,181 chunks per minute, 24 times
-as many, while the median call slowed only from 0.41 to 0.52\,s and no
-call timed out (Figure~\ref{fig:throughput}). Counting each theory's
-session acquisition as well, the rate at 32 workers is 899 chunks per
-minute. A cold HOL-Analysis start takes 6\,s on an idle host; it took
-8\,s at 8 workers, 34\,s at 16 and 157\,s at 32 (medians), with no
-request refused, because the host is then CPU-bound: the provers used
-17.7 cores on average and the gateway JVM 4.6, and a start, which is one
-ML thread loading a 1.3\,GB heap, waits behind the parallel proof checking
-of the other sessions. Acquisition is therefore 10--14\,\% of a worker's
-time up to 8 workers, 30\,\% at 16 and 64\,\% at 32. Memory was not the
-limit: 29\,GB at the peak. A loop whose problems share imports keeps its
-sessions and pays none of this (a warm hit takes 2\,ms); one whose
-problems differ in imports should expect the lower curve, or start its
-sessions before the clock.
+\paragraph{Throughput.} One worker verified 132 chunks per minute, 1\,607
+commands. The measure of scaling that counts everything is the census
+work rate: how many single-worker replays of the same theories a cell
+completes per unit of wall time, session starts included. It reaches 8.3
+at 32 workers: a speedup of 8.6 on the single-worker rate, an efficiency
+of 0.27 (Table~\ref{tab:t1-series}). Inside the loop, once a session is
+up, 32 workers verified 3\,181 chunks per minute, 24 times the
+single-worker rate (Figure~\ref{fig:throughput}). The median call time
+rose only from 0.41 to 0.52\,s, and no call timed out. With the
+per-theory session starts counted, the rate at 32 workers is 899 chunks
+per minute. The gap is the starts. A cold HOL-Analysis start takes 6\,s on
+an idle host; it took 8\,s at 8 workers, 35\,s at 16 and 156\,s at 32
+(medians), with no request refused. The host is then CPU-bound: the
+provers used 17.7 cores on average and the gateway JVM 4.6 of the 32. A
+start is one ML thread loading a 1.3\,GB heap, and it waits behind the
+parallel proof checking of the other sessions. Acquisition is therefore
+10--14\,\% of a worker's time up to 8 workers, 30\,\% at 16 and 64\,\% at
+32. Memory was not the limit: 29\,GB at the peak. A loop whose problems
+share imports keeps its sessions and pays none of this; one whose problems
+differ in imports should expect the lower curve, or start its sessions
+before the clock.
+
+Two reference points place these rates. Against the batch tool:
+\code{isabelle build} checks the whole library from sources in 360\,s on
+this host (Table~\ref{tab:acquire}), about 27\,700 commands per minute;
+the replay at 32 workers checks 44\,900 commands per minute inside the
+loop and about 12\,500 end to end. The two are not the same work, since
+the build is bound by the critical path of the theory dependency graph
+and the replay checks every theory against the prebuilt heap, but chunked,
+stepwise checking at 32 workers runs in the batch tool's range. Against
+Lean: 32 workers verify 15 chunks per second end to end and 53 inside the
+loop, with a 0.31\,s floor per call, where Kimina's pool verifies about 20
+whole proofs per second on 64 cores~\cite{santos2025kimina}. A chunk and
+a Lean proof are different units, so this is an order of magnitude, not a
+ranking: IPS is in that class.
 
 \begin{figure}[!htb]
 \centering
 \includegraphics[width=0.8\textwidth]{figures/training_throughput.png}
 \caption{Verified chunks per minute against the number of workers, with
-  and without each theory's session acquisition, and the host's CPU
-  utilisation (dashed, right axis). Three repeats per point, 8 theories
-  per worker.}
+  and without each theory's session start, beside the ideal line ($W$
+  times the single-worker rate) and the host's CPU utilisation (dashed,
+  right axis). Lines are the means of three repeats; the small points are
+  the repeats. Eight theories per worker.}
 \label{fig:throughput}
 \end{figure}
 
 Table~\ref{tab:rollouts} gives the same measurement for two scripted
-rollout loops (Figure~\ref{fig:rollout}): a \emph{whole-proof} loop that
-submits eight candidate proofs per theorem, five of which can prove, and
-restores the checkpoint after each; and a \emph{step-level} loop that at
-every proof command tries two alternatives before the corpus step, with
-a checkpoint and restore around each. At one worker the whole-proof loop
-runs 6\,436 rollouts per hour and the step-level loop 2\,343 verified
-steps per hour; 32 workers run 5.4 and 8.6 times as many. The time a
-worker spends on one rollout does not change with the number of workers
-(the two ``per rollout'' columns): a worker's loop runs as fast at 32 as
-alone, and the rate stops short of 32 times for the reason above, the
-session starts. Checkpoint and restore took 3 and 4\,ms in every cell,
-and no check of the document's source after a restore failed.
+rollout loops (Figure~\ref{fig:rollout}). The \emph{whole-proof} loop
+submits eight candidates per theorem: the corpus proof, which always
+proves; \code{by auto} and \code{by simp} twice each, which prove when
+they happen to; and three that cannot, \code{sorry}, the proof truncated,
+and a method that fails at once. A kept candidate is undone by a restore.
+The \emph{step-level} loop tries two alternatives at every proof command
+before the corpus step, each under a checkpoint. The proved share follows
+from the mix (15\,\% of whole-proof rollouts), not from the server. At one
+worker the whole-proof loop ran 6\,436 rollouts per hour and the
+step-level loop 2\,343 verified steps per hour; 32 workers ran 5.4 and 8.6
+times as many. The time a worker spends on one rollout does not change
+with the number of workers: the server does not slow a worker's loop at
+32. What bounds the end-to-end rate is the session starts (62--68\,\% of a
+worker's time at 32) and workers finishing early: with three theories
+each, one worker's loop ran 26\,s and another's 255\,s in one cell, so a
+fifth of the window at 32 workers, and up to two fifths at 8, had workers
+already done. Checkpoint and restore took 3 and 4\,ms in every cell, and
+all 769 integrity checks of the document's source passed.
 
 \begin{table}[!htb]
 \centering\small
-\setlength{\tabcolsep}{4pt}
-\begin{tabular}{@{}r rrr rrr r@{}}
+\setlength{\tabcolsep}{3.5pt}
+\begin{tabular}{@{}r rrrrr rrrrr@{}}
 \toprule
- & \multicolumn{3}{c}{Whole-proof rollouts} & \multicolumn{3}{c}{Step-level paths} & \\
-\cmidrule(lr){2-4} \cmidrule(lr){5-7}
-W & per hour & proved/h & s per rollout & per hour & steps/h & s per path & Setup share \\
+ & \multicolumn{5}{c}{Whole-proof rollouts} & \multicolumn{5}{c}{Step-level paths} \\
+\cmidrule(lr){2-6} \cmidrule(lr){7-11}
+W & per hour & proved/h & s per rollout & setup & idle & per hour & steps/h & s per path & setup & idle \\
 \midrule
-1  & 6\,436  & 954   & 0.60 & 596   & 2\,343  & 3.67 & 0.22 / 0.36 \\
-8  & 20\,778 & 2\,839 & 0.60 & 1\,613 & 15\,243 & 3.65 & 0.30 / 0.36 \\
-32 & 34\,518 & 4\,798 & 0.61 & 2\,071 & 20\,042 & 3.67 & 0.68 / 0.62 \\
+1  & 6\,436  & 954    & 0.60 & 0.22 & 0.00 & 596    & 2\,343  & 3.67 & 0.36 & 0.00 \\
+8  & 20\,778 & 2\,839 & 0.60 & 0.30 & 0.39 & 1\,613 & 15\,243 & 3.65 & 0.36 & 0.19 \\
+32 & 34\,518 & 4\,798 & 0.61 & 0.68 & 0.21 & 2\,071 & 20\,042 & 3.67 & 0.62 & 0.23 \\
 \bottomrule
 \end{tabular}
-\caption{Scripted rollout loops at W workers, two repeats each. Rates
+\caption{Scripted rollout loops at $W$ workers, two repeats each. Rates
   are end to end: session acquisition, entering the theory and replaying
   up to each problem included. ``s per rollout'' is a worker's loop time
   per rollout on the theories every cell shares, the like-for-like
-  comparison across W. Setup share is the fraction of a worker's time in
-  acquisition, entering and replaying to the problems (whole-proof /
-  step-level). No rollout ended in a memory, prover-death or session
-  error; the candidates' timeout share was 0.5--2\,\%.}
+  comparison across $W$. Setup is the share of a worker's time in
+  acquisition, entering and replaying to the problems; idle the share of
+  the window with workers already finished. No rollout ended in a memory,
+  prover-death or session error; the candidates' timeout share was
+  0.5--2\,\%.}
 \label{tab:rollouts}
 \end{table}
 
@@ -503,20 +707,23 @@ Eight workers add nothing to the median and 0.2--0.3\,s to the p95.
 
 \begin{table}[!htb]
 \centering\small
-\begin{tabular}{@{}l r rr rr r@{}}
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{@{}l r rrr rrr r@{}}
 \toprule
- & & \multicolumn{2}{c}{W = 1} & \multicolumn{2}{c}{W = 8} & \\
-\cmidrule(lr){3-4} \cmidrule(lr){5-6}
-Chunk size & calls (W = 1) & p50 & p95 & p50 & p95 & ms per command \\
+ & & \multicolumn{3}{c}{$W$ = 1} & \multicolumn{3}{c}{$W$ = 8} & \\
+\cmidrule(lr){3-5} \cmidrule(lr){6-8}
+Chunk size & calls ($W$ = 1) & mean & p50 & p95 & mean & p50 & p95 & ms per command \\
 \midrule
-1 command   & 290   & 0.31\,s & 0.63\,s & 0.31\,s & 0.82\,s & 308 \\
-2--9 commands & 2\,006 & 0.41\,s & 0.93\,s & 0.41\,s & 1.03\,s & 144 \\
-10+ commands & 974   & 0.52\,s & 1.28\,s & 0.62\,s & 1.61\,s & 23 \\
+1 command   & 290   & 0.34\,s & 0.31\,s & 0.63\,s & 0.38\,s & 0.31\,s & 0.82\,s & 308 \\
+2--9 commands & 2\,006 & 0.45\,s & 0.41\,s & 0.93\,s & 0.48\,s & 0.41\,s & 1.03\,s & 144 \\
+10+ commands & 974   & 0.66\,s & 0.52\,s & 1.28\,s & 0.73\,s & 0.62\,s & 1.61\,s & 23 \\
 \bottomrule
 \end{tabular}
 \caption{\code{verify\_chunk} latency by chunk size, from the throughput
   cells at 1 and 8 workers (three repeats each; no call timed out). The
-  last column is the p50 per command at W\,=\,1.}
+  medians step by the server's 0.1\,s poll, so a difference of one step
+  is one poll, not a ratio; the means are continuous. The last column is
+  the p50 per command at $W$\,=\,1.}
 \label{tab:latency}
 \end{table}
 
@@ -541,9 +748,11 @@ repeats, and the source matched after all 600 restores and 400 rollbacks.
 \centering
 \includegraphics[width=0.9\textwidth]{figures/training_branch_cost.png}
 \caption{Going back to a proof state, against the number of commands
-  before it: the restore's return time, a rollback, and replaying the
-  prefix in a new theory node on the same session or in a new session
-  (200 states, log scale).}
+  before it, for 200 states: a restore's return, a rollback, and the
+  replay of the prefix in a new theory node on the same session or in a
+  new session. The branch cost proper, the restore plus its deferred
+  settle, is a few milliseconds of noise around the restore's return and
+  is given with its interval in Table~\ref{tab:branch}.}
 \label{fig:branch}
 \end{figure}
 
@@ -577,8 +786,13 @@ and a fact name replaced by an undefined one, were rejected by both in all
 597 applicable cases. No mutant was proved in-session and rejected cold,
 the finding this metric targets, and none was accepted by both. The 693
 cold builds took 13.6\,s at the median and 24\,s at p95, four at a time.
-On this sample the in-session verdict can be read as a reward without a
-cold check; the cold build stays the arbiter where a verdict is final.
+The suite mutates proof text; statements and axioms are unchanged, so the
+result is about the checking, within the scope of
+Section~\ref{sec:verdict}. On this sample the in-session verdict can be
+read as a reward without a cold check. The cold build stays the arbiter
+where a verdict is final, and the \code{metis} incident of
+Section~\ref{sec:training-req} is why: an earlier in-session check accepted
+a call a fresh build rejected, and its cause was not established.
 
 \begin{table}[!htb]
 \centering\small
@@ -595,7 +809,9 @@ A fact name undefined & 197 & 0 & 0 & 0 & 197 \\
 \end{tabular}
 \caption{In-session verdict (success, no open proof, no \code{sorry})
   against a cold build of the same text. ``In-session only'' is the unsafe
-  disagreement. Three blocks have no fact name to replace.}
+  disagreement. The mutations change the proof text only; statements and
+  axioms are as in the library. Three blocks have no fact name to
+  replace.}
 \label{tab:agreement}
 \end{table}
 
@@ -614,10 +830,14 @@ they are counted apart. At 8 workers, with 15 looping steps of 120\,s
 spread over the workers so that up to seven loops ran at once, the other
 workers' blocks ran at the census's speed (median ratio 1.00 over 1\,130
 blocks matched against the 8-worker throughput cell) and waited 4--5\,ms
-for the server. A long rewriting loop does leave
-memory in the prover: 1.2\,GB at the median after a 30\,s loop and 7\,GB
-after 120\,s, which the undo does not reclaim; the \code{metis} loops left
-130\,MB or less.
+for the server. A long rewriting loop does leave memory in the prover:
+1.2\,GB at the median after a 30\,s loop and 7\,GB after 120\,s, which the
+undo does not reclaim; the \code{metis} loops left 130\,MB or less. This
+is the Poly/ML heap, which grows under a long rewrite and is not returned
+to the operating system afterwards. The per-process cap
+(\code{ML\_OPTIONS --maxheap 9216}) bounds it; a prover that reaches the
+cap fails with an out-of-memory error the report names as such, and the
+memory gate sees the growth on the next call.
 
 \begin{table}[!htb]
 \centering\small
@@ -639,24 +859,6 @@ Looping step & Budget & Attempts & Returned at budget & \multicolumn{2}{c}{Undo 
   it. Twelve of the 50 rewrite seeds did not loop and are left out.}
 \label{tab:bounded}
 \end{table}
-
-\subsection{Caveats}
-
-Imports are fixed when a session is acquired, so a curriculum that mixes
-import sets needs a session per set or one session on a superset; at 32
-workers starting a session per theory, the starts take two thirds of a
-worker's time, so a loop should group its problems by imports and keep
-the sessions. A looping rewrite leaves memory in the prover that the undo
-does not reclaim; a loop that sees repeated timeouts on a session should
-release it and acquire a fresh one, which the memory gate will admit on the
-reclaimed memory. The one-command mode is sequential; a loop that wants
-Isabelle's parallel checking should submit chunks. A budget expiry undoes
-the submission silently from the document's point of view: the timeout is
-in the response, and a loop that ignores it submits its next step to an
-older state than it expects. The in-session verdict agreed with the cold
-build on every check here; the cold build remains the arbiter where a
-verdict is final, and a reward computed in-session should still be
-spot-checked against it on a new corpus.
 
 % ======================================================================
 \section{Multi-agent serving}
@@ -724,25 +926,22 @@ Ubuntu host with Isabelle2026-RC2, both tools native and nothing else
 running; Appendix~\ref{app:bench} gives the method, the workloads and the
 per-cell raw results. We took each measurement for IPS and, under
 identical conditions, for PIDE MCP. This section reports the IPS numbers;
-Section~\ref{sec:comparison} reads the two side by side.
+Section~\ref{sec:comparison} reads the two side by side. $k$ is the
+number of concurrent sessions (the training sections write $W$ for
+workers).
 
 \paragraph{Memory measures.} We report memory two ways. The first is the
 \emph{proportional set size} (PSS) of the tool's processes, summed over
-them: PSS counts a physical page shared by $n$ processes as $1/n$ for
-each, so the sum is the memory those processes occupy without counting a
-shared page twice, which a sum of the resident set size (RSS) would do and
-the unique set size (USS) would avoid only by leaving shared pages out.
-For the provers the three agree within 2\,\%: Poly/ML loads the heap image
-into its own memory rather than sharing it with the other provers, so a
-prover shares only about 13\,MB and its cost is almost entirely private.
-The second is
-\emph{host used}, \code{MemTotal} minus \code{MemAvailable}, which is the
-kernel's own account of what the machine has lost, page cache included,
-reported as the change over the cell's baseline. PSS attributes memory to
-processes; host used checks that nothing escaped the attribution. Under a
-memory limit we also read the cgroup's own counters (\code{memory.current},
-\code{memory.peak}, \code{oom\_kill}), since those are what the limit is
-enforced on. Appendix~\ref{app:bench} has the definitions in full.
+them: it counts a page shared by $n$ processes as $1/n$ for each, so the
+sum is the physical memory the processes occupy, whatever is shared. For
+the provers it agrees with the resident and the unique set sizes within
+2\,\%, because Poly/ML reads the heap image into private memory and
+shares only about 13\,MB. The second is \emph{host used},
+\code{MemTotal} minus \code{MemAvailable}, the kernel's own account of
+what the machine has lost, as the change over the cell's baseline; it
+checks that nothing escaped the attribution. Under a memory limit we also
+read the cgroup's counters, which the limit is enforced on.
+Appendix~\ref{app:bench} has the definitions in full.
 
 \paragraph{Capacity.} Figure~\ref{fig:capacity} plots host memory against
 the number of concurrent sessions for three heaps, each session holding a
@@ -821,16 +1020,16 @@ magnitude, which is why the pool and the heap cache exist.
 \midrule
 Warm hit (release, acquire again), p50 & 0.002\,s & 0.002\,s & 0.002\,s \\
 Cold start on a built heap, p50 / p95 & 2.3 / 3.9\,s & 3.4 / 5.1\,s & 6.0 / 8.2\,s \\
-Heap build from sources (once) & 4\,s\footnotemark & 114\,s & 360\,s \\
+Heap build from sources (once) & 4\,s$^{\dagger}$ & 114\,s & 360\,s \\
 \bottomrule
 \end{tabular}
 \caption{Acquire latency under IPS, by case. Warm hits: 4 sessions, 3
   rounds, every acquire reused the session it had released. Cold starts:
-  P1 of the E1 cells. Heap builds: the base heaps on this host.}
+  P1 of the E1 cells. Heap builds: the base heaps on this host.
+  $^{\dagger}$HOL was already built by the Isabelle installation; the
+  figure is the check, not a build.}
 \label{tab:acquire}
 \end{table}
-\footnotetext{HOL was already built by the Isabelle installation; the
-figure is the check, not a build.}
 
 \paragraph{Cache hit rate.} Not measured. It needs a mix of projects with
 their own heaps and a replayed agent workload, which this round did not
@@ -847,7 +1046,9 @@ the next session's 4\,GB estimate would cross the 85\,\% threshold; every
 running session was leased, so none was evictable; retry in 5\,s. No
 process died (\code{oom\_kill} stayed 0; the scope's peak was 38.4\,GB).
 After the client released half of its sessions, the next session was
-admitted and loaded 8.4\,s later.
+admitted and loaded 8.4\,s later. The estimate is a setting: these runs
+used the default 4\,GB per HOL-Analysis session, the training runs of
+Section~\ref{sec:training} 1.5\,GB, closer to the measured 1.3\,GB.
 
 \paragraph{Isolation.} With 8 HOL sessions leased, we killed the newest
 session's prover process with SIGKILL and asked every session to re-check
@@ -858,28 +1059,13 @@ unaffected. A prover death is thus one client's failure, reported as
 such. Cross-lease requests, the other half of isolation, are refused by
 the lease check; we did not measure them here.
 
-\subsection{Caveats}
-
-The trusted-network assumption is real: anyone who can reach the port can
-acquire sessions and, if the ML-command guard is switched off, run
-arbitrary code inside Isabelle. Run IPS behind a network boundary or an
-authenticating reverse proxy. The administrative page inlines its token
-in the rendered page, a known deferred issue
-(Section~\ref{sec:limitations}). All sessions share one server process,
-so recovery after a crash means every client loses its session at once
-and must re-acquire. The admission gate refuses on an \emph{estimate} of
-the next session's size; with 10\,GB still free it refused rather than
-risk a kill, and an operator who wants that margin used can lower the
-estimate. A project heap is rebuilt only on request, so an operator who
-updates a project's sources should trigger the rebuild rather than wait
-for a client to receive a stale-heap error.
-
 % ======================================================================
 \section{Comparison with PIDE MCP}
 \label{sec:comparison}
 
 IPS and PIDE MCP~\cite{kappelmann2026pidemcp} are the two headless PIDE
-connectors for Isabelle. Both start an Isabelle session without an
+connectors for agents in Isabelle (Isabelle's own server checks files for
+tools, Section~\ref{sec:position}). Both start an Isabelle session without an
 editor, drive it through the document model, and expose it to a language
 model over MCP; neither is a REPL. They were built for different readers.
 This section names the design choices on which they differ and why each
@@ -940,9 +1126,11 @@ and keeps their output in the prover's document state. IPS declares its
 nodes required with an empty visible range and computes proof states on
 demand through overlays. The extra memory is the price of output PIDE
 MCP's agents read, not overhead; we infer the cause from the code and did
-not isolate it in a run. The two tools' session options do not explain
-it: IPS's \code{parallel\_proofs=2} can only add memory, and its
-\code{threads} setting has no effect. PIDE MCP's fixed cost is lower (1.9--2.7\,GB against
+not isolate it in a run. We offer it as a finding for that tool: an edit
+that marks a narrower range visible would cut it. The two tools' session options do not explain
+it: both ran \code{parallel\_proofs=2}, which in a headless session is
+the same checking as any value above 0 (Section~\ref{sec:pide-terms}),
+and IPS's \code{threads} setting has no effect. PIDE MCP's fixed cost is lower (1.9--2.7\,GB against
 3.2--3.7\,GB): its JVM starts at 1.5\,GB and grows to 5.1\,GB at 32
 sessions, where the IPS gateway starts at 3.6\,GB and ends at 5.3\,GB.
 For a handful of sessions PIDE MCP A is the smaller deployment; above
@@ -969,7 +1157,7 @@ for both tools, PIDE MCP's edit-and-settle loop (append a block, poll
 \code{get\_state} every 0.1\,s until it settles) and IPS's
 \code{verify\_chunk} were level at one worker: 135 against 132 chunks per
 minute, 116 against 113 with the session starts counted. At eight workers
-IPS verified 926 chunks per minute against 813, and 497 against 381 with
+IPS verified 927 chunks per minute against 813, and 497 against 381 with
 the starts. The two calls do not do the same work. \code{verify\_chunk}
 undoes a chunk that fails and, after one that succeeds, asks the prover
 whether a proof is still open, about one 0.1\,s poll per call, and
@@ -1003,7 +1191,7 @@ their provers. On this test the tools are equal.
  & IPS (pool) & PIDE MCP B (one process per session) \\
 \midrule
 Sessions admitted before the stop & 27 & 13 \\
-How it stopped & 28th refused: HTTP 503, \code{memory\_pressure} & kernel OOM kill inside the scope \\
+How it stopped & 28th refused: HTTP 503, \texttt{memory\_pressure} & kernel OOM kill inside the scope \\
 Scope memory at the stop & 38.4\,GB (78\,\%); peak 38.4\,GB & 48.0\,GB (the limit); peak 48.0\,GB \\
 Processes lost & none & 4 MCP JVMs and 3 provers: 4 of 13 sessions \\
 Recovery after releasing half & 8.4\,s & 8.6\,s \\
@@ -1043,7 +1231,7 @@ PIDE MCP's extension); MCP over stdio.
 On the questions we measured, memory per session, throughput, conduct
 under a limit and isolation, IPS does what it was built for, and PIDE
 MCP in its intended shape is within 0.2--0.4\,GB per session of it and
-level with it on throughput at one worker, 14\,\% behind at eight. The three-fold
+level with it on throughput at one worker and 12\,\% behind at eight. The three-fold
 gap appears only when each agent runs its own PIDE MCP process, the
 arrangement a group of independent agents falls into without a pool; that
 gap is the price of a JVM per agent, and it is the number an operator
@@ -1055,101 +1243,58 @@ the training cluster; the two share enough (headless PIDE, overlays,
 Sledgehammer) that work on one carries to the other.
 
 % ======================================================================
-\section{Related connectors}
-\label{sec:position}
+\section{Guidance for users}
+\label{sec:guidance}
 
-Connectors between agents and Isabelle fall into five families, each
-built for a reader. Kappelmann's taxonomy and
-desiderata~\cite{kappelmann2026pidemcp} supply the family names and the
-interactive agent's questions; the training reader's and operator's
-questions are those of Table~\ref{tab:metrics}.
+The measurements of Sections~\ref{sec:training}
+and~\ref{sec:serving} reduce to a short list of rules. They are collected
+here because they are what a user of IPS acts on.
 
-\begin{itemize}
-  \item \textbf{REPL.} PISA and its descendants~\cite{jiang2021lisa},
-    qIsabelle, and the Lean REPL and Pantograph~\cite{aniva2025pantograph}
-    on the Lean side. One prover process per worker, commands submitted
-    one at a time, state held in memory. Built for the training reader
-    and still the most common harness in the lineage. Sequential by
-    construction, so parallel proof checking is lost~\cite{wenzel2012repl},
-    and every branch is a replay or a fresh process.
-  \item \textbf{Batch build.} The agent edits files and runs
-    \code{isabelle build}, as in the Munkres
-    autoformalisation~\cite{bryant2026munkres}. Simple, editor-agnostic,
-    and the only family whose verdict is the cold one by construction.
-    Not incremental: every attempt re-checks the whole development.
-  \item \textbf{Editor-attached PIDE.} Isabelle/Q~\cite{awslabs2026autocorrode}
-    attaches an agent to a human's jEdit session. Full PIDE access and
-    co-presence in shared memory, at the price of one session, one
-    editor, one machine. Built for the interactive agent beside a human.
-  \item \textbf{Headless PIDE, one process per agent.} PIDE
-    MCP~\cite{kappelmann2026pidemcp}, and Isabelle-MCP as a third-party
-    variant. Built for the interactive agent without an editor, and the
-    only family meeting all five of the preprint's desiderata.
-    Section~\ref{sec:comparison} measures its cost when many agents share
-    a host.
-  \item \textbf{Pooled service.} Kimina~\cite{santos2025kimina} and
-    AXLE~\cite{xin2026axle} in Lean; IPS in Isabelle. A pool of prover
-    processes behind HTTP, built for the training reader and the
-    operator: throughput, admission, isolation and a bounded call. IPS is
-    the first of this family for Isabelle, and the first in either prover
-    whose sessions are PIDE documents, which gives it checkpoints,
-    rollback and chunk-level parallel checking.
+\medskip
+\noindent\fbox{\begin{minipage}{\dimexpr\textwidth-2\fboxsep-2\fboxrule\relax}
+\small
+\textbf{For a training loop}
+\begin{itemize}\setlength{\itemsep}{1pt}
+  \item Group problems by import set and keep each worker's session while
+    the imports repeat. A warm hit costs 2\,ms; a cold start 6\,s alone and
+    minutes when 32 workers start at once.
+  \item Submit chunks, not single commands. One command costs 0.31\,s; a
+    chunk of ten or more commands costs 23\,ms per command, because the
+    prover checks its proofs in parallel.
+  \item Read all three flags: \code{success}, \code{proof\_open},
+    \code{used\_sorry}. Reward only when the first is true and the other
+    two false. The verdict says the text checks in this context and closes
+    its goals; it does not say the statement is the target or that no axiom
+    was added.
+  \item Branch with a checkpoint and a restore (4\,ms), not with a new
+    session (6\,s plus the replay, 8--93\,s on HOL-Analysis).
+  \item Give every submission a budget and expect a timeout to be undone:
+    the timeout is in the response, not in the document, so read it before
+    the next step. After repeated timeouts on one session, release it and acquire a fresh
+    one: a looping rewrite leaves memory in the prover that the undo does
+    not reclaim.
+  \item Cold-check anything you will publish with the whole-file build
+    (13.6\,s per HOL-Analysis theory on this host).
 \end{itemize}
-
-Table~\ref{tab:families} summarises the fit. A tick means the family
-answers that reader's questions as designed; a tilde means it can be
-made to, with work the reader must do; a dash means it does not try. No
-family serves all three readers: the interactive agent wants the whole
-PIDE surface and no timeouts, the training reader a narrow, bounded,
-pooled contract, and the two conflict on document ownership and on time.
-The REPL critique applies to IPS in part. Its one-command mode is a REPL
-and inherits the sequential cost; its chunk call submits a block as one
-PIDE edit with parallel proofs on, and its whole-file check is a batch
-build.
-
-\begin{table}[!htb]
-\centering\small
-\begin{tabular}{@{}lccc@{}}
-\toprule
-Family & Training reader & Operator & Interactive agent \\
-\midrule
-REPL & \checkmark & $\sim$ & -- \\
-Batch build & $\sim$ & -- & $\sim$ \\
-Editor-attached PIDE & -- & -- & \checkmark \\
-Headless PIDE per agent & $\sim$ & -- & \checkmark \\
-Pooled service (IPS) & \checkmark & \checkmark & $\sim$ \\
-\bottomrule
-\end{tabular}
-\caption{Which connector family serves which reader.}
-\label{tab:families}
-\end{table}
-
-\paragraph{A worked example: agents in the loop.} The Isabelle-Humanize
-project\footnote{\url{https://github.com/FullBackward/Isabelle-Humanize}}
-runs a builder/reviewer loop (the RLCR flow of
-humanize2\footnote{\url{https://github.com/humanfia/humanize2}}) on
-competition problems. Two agent seats (opencode on DeepSeek V4 Pro in
-both roles) talk to IPS through the file MCP server over streamable HTTP,
-and the flow uses the IPS whole-file check as the arbiter: a problem
-counts as solved only when \code{isabelle build} passes with no
-\code{sorry} or \code{oops} and the target theorem present. Three
-problems were solved end to end: Putnam 2023 A1 (2 review rounds, 3.3\,h
-wall, about \$3 of model time), Putnam 2023 B5 (5 rounds, 14.3\,h, about
-\$15, with one regression and a replan) and IMO 2026 P1 (one round, a
-1059-line theory with all five \code{sorry}s discharged, 4.2\,h, about
-\$5). A rerun of IMO 2026 P1 on the IPS build with incremental document
-sync and the memory work of this report halved the wall time (7\,391
-against 14\,949\,s) and the agent-active time (117 against 248\,min),
-cut MCP timeouts from 12 to 0 and diagnostics calls from 47 to 18 at a
-median of 0.3\,s, and the arbiter build from 44 to 11\,s. The project's
-own caveats apply: one run per problem, a prompt rule that changed between
-the two IMO runs, costs at a model price that has since changed, and a
-fourth ``solve'' (Putnam 2023 B6) excluded because the benchmark's Isabelle
-statement is degenerate. This is an example, not an evaluation: a few
-problems with one model measure the agent and the prompt as much as the
-connector. It shows that a service built for the first two readers also
-serves the third, and that the service's latency reaches the agent's wall
-clock.
+\textbf{For an operator}
+\begin{itemize}\setlength{\itemsep}{1pt}
+  \item Budget 3.5\,GB for the server and gateway plus 0.9\,GB per HOL,
+    1.1\,GB per HOL-Library and 1.3\,GB per HOL-Analysis session, and
+    leave the admission gate its margin: it refuses when the next
+    session's estimate would cross 85\,\% of the limit.
+  \item Set the per-heap session estimate near the measured cost (the
+    training runs used 1.5\,GB for HOL-Analysis against a 4\,GB default),
+    or the gate refuses with memory to spare.
+  \item Build project heaps on request before clients need them; a stale
+    heap is reported, not rebuilt.
+  \item Run IPS behind a network boundary or an authenticating proxy: there
+    is no authentication, and with the command guard switched off a client
+    can run ML.
+  \item Expect every client to lose its session if the gateway JVM dies;
+    the pool rebuilds, the clients must re-acquire.
+\end{itemize}
+\end{minipage}}
+\medskip
 
 % ======================================================================
 \section{Limitations and roadmap}
@@ -1187,17 +1332,29 @@ of a worker's time; the pool does not reserve CPU for starts. Grouping
 problems by imports and keeping the sessions avoids it.
 
 \paragraph{Memory left by a looping step.} A looping rewrite can leave
-gigabytes in the prover after its undo. The memory gate sees the growth
-but does not recycle the session; the client must release it.
+gigabytes of Poly/ML heap in the prover after its undo, up to the
+per-process cap. The memory gate sees the growth but does not recycle
+the session; the client must release it.
 
 \paragraph{Numbers are tied to a build.} Every figure in
 Sections~\ref{sec:serving} and~\ref{sec:comparison} is for the Isabelle
 build, host and commits in Appendix~\ref{app:bench}; Isabelle2026 was a
-release candidate when they were taken.
+release candidate when they were taken. The census ran at two commits
+(82 theories at \code{28600bb}, 11 at \code{cb03c0e} after a splitter
+fix re-cut their blocks; nothing a replay runs changed between the two)
+and the experiments at \code{1fe270f}.
 
-\paragraph{Roadmap.} Cancellation and progress can be had by routing
-calls through Isabelle's own query-operation classes, which would also
-give sendback resolution for Sledgehammer results. Per-command timing and
+\paragraph{Roadmap.} A strict verdict is the first item: reject any
+theorem whose oracle set is not empty, which Isabelle's
+\code{thm\_oracles} reports and which covers \code{sorry} and every
+unsafe step, and check the statement against a reference, as AXLE's
+strict verifier does for Lean. The cheapest latency win is event-driven
+settle detection: PIDE's commands-changed events in place of the 0.1\,s
+poll would cut the 0.31\,s floor of a call. Cancellation and progress
+can be had by routing calls through Isabelle's own query-operation
+classes, which would also give sendback resolution for Sledgehammer
+results. A session that has timed out repeatedly could be recycled by
+the pool instead of the client. Per-command timing and
 a visible-range perspective are small additions to the report IPS already
 produces. Entity search and shipped agent skills are the two items from
 the headless-PIDE family that cost least to adopt. Packaging the backend
@@ -1209,25 +1366,28 @@ the decision both readers depend on.
 \section{Conclusion}
 \label{sec:conclusion}
 
-IPS is a pooled verification service for Isabelle, built for two readers
-that existing connectors do not serve: a training loop that needs fast,
-bounded, trustworthy verdicts with cheap branching, and an operator who
-needs many agents to share one host predictably. One decision serves
-both: the server owns each session's document as text it appends to,
-which makes rollback and checkpoints cheap and lets every call run under
-a budget, at the price of project scope and positioned diagnostics. On a
-128\,GB host a session costs 0.9--1.3\,GB and a warm hit 2\,ms. Under a
-48\,GB limit the pool admits 27 HOL-Analysis sessions and refuses the
-next with a reason, where one PIDE MCP process per agent reaches 13 and
-loses four to the kernel. For the training reader, restoring a
-checkpoint costs 4\,ms where replaying to the same proof state costs 8
-to 93\,s, the in-session verdict agreed with a cold build on all 890
-checks, every looping step returned at its budget, and 32 workers
-verified 3\,181 chunks per minute. Among Isabelle connectors IPS is the first of
-the pooled-service family, and it complements the interactive families
-rather than competing with them: PIDE MCP gives a single agent full
-access to a project at a per-session cost within 0.2--0.4\,GB of IPS's,
-and IPS gives many clients isolated verification at scale.
+IPS is a pooled verification service for Isabelle built on one decision:
+the server owns each session's PIDE document as text it appends to, and
+leases the session to one client at a time under a budget on every call.
+That makes a failed attempt a rollback, a checkpoint an exact restore, a
+chunk one edit checked with parallel proofs, and a cold build the
+arbiter, at the price of project scope and positioned diagnostics. For a
+training loop, restoring a checkpoint costs 4\,ms where replaying to the
+same proof state costs 8 to 93\,s; the in-session verdict matched a cold
+build on all 890 checks; every looping step returned at its budget; and
+32 workers did the work of 8.3 single-worker replays, 3\,181 verified
+chunks per minute inside the loop against 899 once each theory's session
+start is counted. For an operator, a session costs 0.9--1.3\,GB and a
+warm hit 2\,ms; under a 48\,GB limit the pool admits 27 HOL-Analysis
+sessions and refuses the next with a reason, where one PIDE MCP process
+per agent reaches 13 and loses four to the kernel. Among Isabelle
+connectors IPS is the first of the pooled-service family, built on
+Isabelle's own headless session API, and it complements the interactive
+families rather than competing with them: PIDE MCP gives a single agent
+full access to a project at a per-session cost within 0.2--0.4\,GB of
+IPS's, and IPS gives many clients isolated verification at scale.
+Appendix~\ref{app:bench} with the results repository is sufficient to
+repeat the measurements.
 Appendix~\ref{app:bench} is sufficient to repeat the measurements.
 
 % ======================================================================
@@ -1276,18 +1436,33 @@ async with PoolAsyncClient("http://localhost:8000") as client:
     finally:
         await client.release_session(sid, lease_id=lease)
 \end{verbatim}
-\code{verify\_chunk} returns the per-command report (\code{commands},
-each with \code{status} and messages, plus \code{timed\_out} and
-\code{stuck\_line} on a budget expiry); \code{load\_document} replaces the
-whole document, \code{rollback} undoes the last submission, and
-\code{verify\_bigstep\_text} is the cold build.
+\code{verify\_chunk} returns the verdict flags and the per-command
+report:
+\begin{verbatim}
+{"success": true, "proof_open": false, "pending_qed": false,
+ "used_sorry": false, "timed_out": false, "stuck_line": null,
+ "execution_time": 0.41,
+ "commands": [{"index": 0, "line": 1, "kind": "lemma", "status": "ok",
+               "messages": []}, ...]}
+\end{verbatim}
+On a budget expiry \code{timed\_out} is true and \code{stuck\_line}
+names the command still running; \code{pending\_qed} says the goals are
+discharged and only the closing \code{qed} is missing.
+\code{load\_document} replaces the whole document, \code{rollback}
+undoes the last submission, and \code{verify\_bigstep\_text} is the
+cold build.
 
 \paragraph{The stepwise MCP server (13 tools).} \code{enter\_theory},
 \code{verify\_chunk}, \code{proof\_state}, \code{source},
 \code{diagnostic}, \code{sledgehammer}, \code{checkpoint}, \code{restore},
 \code{rollback}, \code{close\_theory}, \code{verify\_batch},
 \code{list\_my\_sessions}, \code{memory\_status}.
-\code{verify\_chunk} is the only tool that executes Isar.
+\code{verify\_chunk} is the only tool that executes Isar. An agent sees
+the same flags as text: a call with \texttt{lemma l: "x + 0 = x" by
+simp} returns the line \texttt{success=True proof\_open=False
+pending\_qed=False used\_sorry=False timed\_out=False stuck\_line=None
+time=0.41s commands=1}, then one line per command, and a note when the
+proof is still open or only \code{qed} is missing.
 
 \paragraph{The file MCP server.} The agent edits a theory file
 with its own tools; the server re-reads it on every call and keeps the
@@ -1306,11 +1481,18 @@ verification and the whole-file check are stateless routes that take a
 theory and return a verdict. \code{/api/v1/memory} reports the memory
 facts behind every admission decision.
 
+\paragraph{Repeating the measurements.}
+\code{evaluation/memory\_scaling/} and
+\code{evaluation/training\_metrics/} each hold a \code{config.yaml},
+numbered scripts and the analysis; \code{SERVER\_GUIDE.md} in the second
+is the step-by-step procedure for a fresh Ubuntu host.
+
 \section{Feature inventory}
 \label{app:inventory}
 
 Table~\ref{tab:inventory} is the full side-by-side inventory of IPS and
-PIDE MCP, the two headless PIDE connectors of Table~\ref{tab:families},
+PIDE MCP, the two headless PIDE connectors for agents of
+Table~\ref{tab:families},
 at IPS commit \code{6e4dd6f} and PIDE MCP commit \code{dd46315}
 (2026-10-21). The rows were derived from the interaction stack
 (who owns the document, how checking is triggered and reported, how state
@@ -1328,26 +1510,26 @@ Sessions per process & pool with leases & named sessions, own logic and options 
 Pooling, reuse, eviction & yes & no \\
 Memory and CPU governance & admission gate, caps, Sledgehammer semaphore & statistics only \\
 Multi-file project scope & no: one draft node, imports fixed & yes: theories, ML blobs, dependency resolution \\
-Agent file editing & no, read-only by design & \code{edit}, \code{create\_file} \\
+Agent file editing & no, read-only by design & \texttt{edit}, \texttt{create\_file} \\
 Co-presence with a human editor & via disk, file MCP only & via disk, second PIDE process \\
 Visible perspective & no & last read or edited range plus context \\
-Per-command status & command-granularity ranges & with message positions, timing, \code{bad} \\
-Verification with explicit semantics & \code{verify\_chunk} flags; cold build & inferred from counts \\
+Per-command status & command-granularity ranges & with message positions, timing, \texttt{bad} \\
+Verification with explicit semantics & \texttt{verify\_chunk} flags; cold build & inferred from counts \\
 Transactional rollback, checkpoints & yes & no \\
 Non-invasive queries & guarded transient command, overlays & edit into file, read, remove \\
-Sledgehammer & tip and positioned, semaphore; \code{fill\_sorries} job & opt-in extension, early stop \\
-Entity search & hover, definition at a position & \code{find\_entities} over a range \\
+Sledgehammer & tip and positioned, semaphore; \texttt{fill\_sorries} job & opt-in extension, early stop \\
+Entity search & hover, definition at a position & \texttt{find\_entities} over a range \\
 Multi-attempt, batch fan-out & yes & scratch theories \\
 Cancellation of a running call & edit removal on budget expiry & protocol cancellation \\
 Progress notifications & no & yes \\
 Bounded waits & everywhere & none on core tools, by design \\
 Transport & HTTP; MCP stdio and streamable HTTP & MCP stdio \\
-Error model & HTTP status codes; MCP tools return JSON & \code{isError} results, \code{structuredContent} \\
+Error model & HTTP status codes; MCP tools return JSON & \texttt{isError} results, \texttt{structuredContent} \\
 Plugin mechanism & no & Isabelle services \\
 Shipped agent guidance & tool docstrings, one prompt & three skills \\
 Input hardening & ML and IO denylist with policy switch, path roots & none \\
-Observability & metrics, probes, console, \code{/api/v1/memory} & logs, session statistics \\
-Automated tests & about 650 test functions & none \\
+Observability & metrics, probes, console, \texttt{/api/v1/memory} & logs, session statistics \\
+Automated tests & 560 test functions, about 850 cases & none \\
 \bottomrule
 \end{tabularx}
 \caption{Functional coverage of IPS and PIDE MCP.}
@@ -1576,8 +1758,12 @@ The runs of Section~\ref{sec:training-measured} are reproducible from
 \code{config.yaml}, numbered scripts, a deterministic analysis); the raw
 results, every cell's manifest, per-block records, memory and CPU samples
 and the server's reports, are the \code{training-metrics/} tree of the
-results repository above. Same host and Isabelle build as above; IPS
-commit \code{1fe270f}, pool size 40, no pre-warmed sessions,
+results repository above. Same host and Isabelle build as above. IPS
+commit \code{1fe270f} for the experiments; the census ran at
+\code{28600bb} (82 theories) and \code{cb03c0e} (the 11 theories whose
+blocks a splitter fix re-cut; nothing a replay runs changed between the
+two); the analysis is that of commit \code{e144f97}. Pool size 40, no
+pre-warmed sessions,
 \code{parallel\_proofs=2}, memory management on with a 1.5\,GB estimate per
 HOL-Analysis session, four cold builds at a time. PIDE MCP as above with
 \code{parallel\_proofs=2} on its sessions.
@@ -1625,24 +1811,26 @@ memory and CPU per process once a second.
 
 \begin{table}[!htb]
 \centering\small
-\setlength{\tabcolsep}{4pt}
-\begin{tabular}{@{}r rrr rr r rr rr@{}}
+\setlength{\tabcolsep}{3.5pt}
+\begin{tabular}{@{}r rr rr rr r rr rr@{}}
 \toprule
-W & \shortstack{chunks/min\\verify only} & \shortstack{commands\\per min} & \shortstack{chunks/min\\incl.\ acquire} & \shortstack{acquire\\share} & \shortstack{census\\work rate} & \shortstack{slowdown\\vs census} & \shortstack{p50\\s} & \shortstack{p95\\s} & \shortstack{host\\CPU \%} & \shortstack{PSS peak\\GB} \\
+W & \shortstack{chunks/min\\verify only} & \shortstack{repeats\\min--max} & \shortstack{commands\\per min} & \shortstack{chunks/min\\with starts} & \shortstack{acquire\\share} & \shortstack{census\\work rate} & \shortstack{slowdown\\vs census} & \shortstack{p50\\s} & \shortstack{p95\\s} & \shortstack{host\\CPU \%} & \shortstack{PSS peak\\GB} \\
 \midrule
-1  & 132   & 1\,607  & 113 & 0.10 & 0.97 & 1.02 & 0.41 & 0.92 & 6  & 6.5 \\
-2  & 281   & 3\,713  & 183 & 0.12 & 1.44 & 1.04 & 0.41 & 0.92 & 8  & 7.5 \\
-4  & 474   & 6\,576  & 297 & 0.12 & 2.58 & 1.08 & 0.41 & 1.06 & 18 & 11.3 \\
-8  & 927   & 12\,501 & 497 & 0.14 & 4.45 & 1.17 & 0.42 & 1.22 & 34 & 16.0 \\
-16 & 1\,677 & 22\,353 & 789 & 0.30 & 7.07 & 1.62 & 0.47 & 1.41 & 59 & 26.5 \\
-32 & 3\,181 & 44\,877 & 899 & 0.64 & 8.33 & 3.13 & 0.52 & 1.50 & 73 & 28.3 \\
+1  & 132   & 108--132 & 1\,607  & 113 & 0.10 & 0.97 & 1.02 & 0.41 & 0.92 & 6  & 6.5 \\
+2  & 281   & 230--286 & 3\,713  & 183 & 0.12 & 1.44 & 1.04 & 0.41 & 0.92 & 8  & 7.5 \\
+4  & 474   & 469--503 & 6\,576  & 297 & 0.12 & 2.58 & 1.08 & 0.41 & 1.06 & 18 & 11.3 \\
+8  & 927   & 902--975 & 12\,501 & 497 & 0.14 & 4.45 & 1.17 & 0.42 & 1.22 & 34 & 16.0 \\
+16 & 1\,677 & 1\,558--1\,718 & 22\,353 & 789 & 0.30 & 7.07 & 1.62 & 0.47 & 1.41 & 59 & 26.5 \\
+32 & 3\,181 & 3\,162--3\,214 & 44\,877 & 899 & 0.64 & 8.33 & 3.13 & 0.52 & 1.50 & 73 & 28.3 \\
 \bottomrule
 \end{tabular}
-\caption{T1 at every W (three repeats averaged; no call timed out, no
-  theory skipped). Census work rate: the census time of the cell's
-  theories over the cell's wall time, the number of single-worker replays
-  the cell is worth. Slowdown: the cell's replay time over the census time
-  of the same theories, acquisition included.}
+\caption{T1 at every $W$: the mean of three repeats, with the repeats'
+  range of the verify-only rate (no call timed out, no theory skipped).
+  Census work rate: the census time of the cell's theories over the
+  cell's wall time, the number of single-worker replays the cell is
+  worth; speedup and efficiency in the body are on it. Slowdown: the
+  cell's replay time over the census time of the same theories,
+  acquisition included.}
 \label{tab:t1-series}
 \end{table}
 
@@ -1669,8 +1857,9 @@ reads the server's own cgroup, so it sees a Docker memory limit and a
 systemd \code{MemoryMax} alike.
 
 \paragraph{Security envelope.} No authentication; the trust boundary is
-the network. Every endpoint that accepts Isar text rejects ML, setup and
-file-IO commands unless the operator switches the policy off. The
+the network. Every endpoint that accepts Isar text rejects ML, setup, file-IO and
+\code{axiomatization} commands unless the operator switches the policy
+off. The
 diagnostic endpoint accepts only an allowlist of keywords. Heap project
 paths are confined to configured roots, and destructive heap operations
 require an administrative token. Measured against the MCP specification's
@@ -1683,8 +1872,8 @@ to a separate set of sandboxed setups~\cite{schaeffeler2026safe}.
 \label{app:code}
 
 \paragraph{Tiers.} A Scala backend, packaged as an Isabelle component,
-creates headless sessions through Isabelle's server machinery hosted in
-its own process; one backend object per session owns a draft theory node
+creates headless sessions through \code{Headless.Session}, the API
+behind \code{isabelle server}, hosted in its own process; one backend object per session owns a draft theory node
 and the edit and rollback bookkeeping. All backends live in one gateway
 JVM, reached from Python over a bridge whose calls are serialised per
 session, since neither the bridge nor the backend is thread-safe. A
@@ -1743,5 +1932,34 @@ per-command report in \code{document\_utils.scala}; the HTTP layer in
 servers in \code{mcp\_servers/stepwise} and \code{mcp\_servers/lsp}; the
 experiments of Appendix~\ref{app:bench} in
 \code{evaluation/memory\_scaling}.
+
+\section{A worked example: agents in the loop (anecdote)}
+\label{app:example}
+
+The Isabelle-Humanize
+project\footnote{\url{https://github.com/FullBackward/Isabelle-Humanize}}
+runs a builder/reviewer loop (the RLCR flow of
+humanize2\footnote{\url{https://github.com/humanfia/humanize2}}) on
+competition problems. Two agent seats (opencode on DeepSeek V4 Pro in
+both roles) talk to IPS through the file MCP server over streamable HTTP,
+and the flow uses the IPS whole-file check as the arbiter: a problem
+counts as solved only when \code{isabelle build} passes with no
+\code{sorry} or \code{oops} and the target theorem present. Three
+problems were solved end to end: Putnam 2023 A1 (2 review rounds, 3.3\,h
+wall), Putnam 2023 B5 (5 rounds, 14.3\,h, with
+one regression and a replan) and IMO 2026 P1 (one round, a
+1059-line theory with all five \code{sorry}s discharged, 4.2\,h). A rerun of IMO 2026 P1 on the IPS build with incremental document
+sync and the memory work of this report halved the wall time (7\,391
+against 14\,949\,s) and the agent-active time (117 against 248\,min),
+cut MCP timeouts from 12 to 0 and diagnostics calls from 47 to 18 at a
+median of 0.3\,s, and the arbiter build from 44 to 11\,s. The project's
+own caveats apply: one run per problem, a prompt rule that changed between
+the two IMO runs, and a
+fourth ``solve'' (Putnam 2023 B6) excluded because the benchmark's Isabelle
+statement is degenerate. This is an example, not an evaluation: a few
+problems with one model measure the agent and the prompt as much as the
+connector. It shows that a service built for the first two readers also
+serves the third, and that the service's latency reaches the agent's wall
+clock.
 
 \end{document}
