@@ -7,8 +7,9 @@
 # SLOW mirror never "fails", so a plain fallback chain would sit on it for
 # hours (2026-09-27: dist.isabelle.cit.tum.de trickled at 150 KB/s).
 https://isabelle.in.tum.de/website-VERSION/dist
-https://isabelle.sketis.net/website-VERSION/dist
 https://www.cl.cam.ac.uk/research/hvg/Isabelle/dist
 https://proofcraft.systems/isabelle/dist
-https://isabelle.in.tum.de/dist
 https://mirror.clarkson.edu/isabelle/dist
+https://isabelle.sketis.net/website-VERSION/dist
+# last: it redirects to a TUM host that was unreachable on 2026-10-27
+https://isabelle.in.tum.de/dist

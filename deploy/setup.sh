@@ -8,6 +8,7 @@
 #   ./deploy/setup.sh --install-docker  ... first install Docker Engine + Compose (Ubuntu/Debian, sudo)
 #   ./deploy/setup.sh --build-heaps "HOL-Library HOL-Analysis"   ... and prebuild session heaps
 #   ./deploy/setup.sh --no-build        restart without rebuilding the image
+#   ./deploy/setup.sh --isabelle-version Isabelle2026   build for this Isabelle (also written to .env)
 #
 # Everything noisy (docker build, heap builds) goes to logs/setup.log; the
 # terminal shows one line per step. Heaps are built inside the running
@@ -23,7 +24,8 @@ PY_FALLBACK="docker compose exec -T isabelle-pool-server python"
 
 PORT="${ISABELLE_SERVER_PORT:-8000}"
 BASE="http://localhost:${PORT}"
-DO_BUILD=1 DO_VERIFY=0 DO_INSTALL_DOCKER=0 HEAPS=""
+IMAGE="isabelle-pool-server:local"
+DO_BUILD=1 DO_VERIFY=0 DO_INSTALL_DOCKER=0 HEAPS="" WANT_VERSION=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -31,7 +33,8 @@ while [[ $# -gt 0 ]]; do
     --verify) DO_VERIFY=1; shift ;;
     --install-docker) DO_INSTALL_DOCKER=1; shift ;;
     --build-heaps) HEAPS="${2:?--build-heaps needs a quoted list}"; shift 2 ;;
-    -h|--help) sed -n '3,14p' "$0"; exit 0 ;;
+    --isabelle-version) WANT_VERSION="${2:?--isabelle-version needs a value}"; shift 2 ;;
+    -h|--help) sed -n '3,15p' "$0"; exit 0 ;;
     *) echo "unknown flag: $1 (see --help)" >&2; exit 2 ;;
   esac
 done
@@ -80,19 +83,47 @@ if [[ ! -f .env ]]; then
 else
   ok ".env exists, keeping it"
 fi
+# The Isabelle version: --isabelle-version (written to .env so later runs agree),
+# else .env, else .env.example. Compose reads the same key as its build arg.
+if [[ -n "$WANT_VERSION" ]]; then
+  if grep -qE '^ISABELLE_VERSION=' .env; then
+    sed -i "s/^ISABELLE_VERSION=.*/ISABELLE_VERSION=$WANT_VERSION/" .env
+  else
+    printf 'ISABELLE_VERSION=%s\n' "$WANT_VERSION" >> .env
+  fi
+  ok "ISABELLE_VERSION=$WANT_VERSION written to .env"
+fi
+VERSION="$(env_version .env.example .env)"
+[[ -n "$VERSION" ]] || die "ISABELLE_VERSION not set (expected in .env or .env.example)"
+export ISABELLE_VERSION="$VERSION"
 
 if [[ "$DO_BUILD" -eq 1 ]]; then
-  step "building the image"
+  step "building the image for $VERSION"
   # Stamp the image with the commit it was built from (compose build arg ->
   # org.opencontainers.image.revision label), so a stale image is detectable.
   export GIT_REVISION="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
-  note "first build downloads Isabelle (~1.2 GB) and compiles the backend: 10-30 min; later builds are cached"
+  have="$(image_version "$IMAGE")"
+  [[ -z "$have" || "$have" == "$VERSION" ]] || note "the current image is $have: rebuilding for $VERSION (the Isabelle layer is downloaded again, ~1.3 GB)"
+  note "first build downloads Isabelle (~1.3 GB) and compiles the backend: 10-30 min; later builds are cached"
   run_logged "docker compose build" docker compose build isabelle-pool-server
+else
+  step "checking the image"
+  have="$(image_version "$IMAGE")"
+  [[ -n "$have" ]] || die "no image $IMAGE yet; run without --no-build"
+  [[ "$have" == "$VERSION" ]] || die "the image was built for $have but .env says $VERSION; run without --no-build to rebuild"
+  ok "image built for $have"
 fi
 
 step "starting the server"
 run_logged "docker compose up -d" docker compose up -d isabelle-pool-server
 wait_healthz "$BASE" 450 || die "server did not become healthy — check: docker compose logs isabelle-pool-server"
+# What runs must be what was asked for: the launcher's own answer, not the label.
+running="$(docker compose exec -T isabelle-pool-server isabelle version 2>/dev/null | tr -d '\r' || true)"
+[[ "$running" == "$VERSION" ]] || die "the container runs ${running:-an unknown Isabelle}, not $VERSION"
+ok "container runs $running"
+# Heaps are per version: the user volume may hold heaps of other versions only.
+others="$(docker compose exec -T isabelle-pool-server sh -c 'ls /root/.isabelle 2>/dev/null' | tr -d '\r' | grep -E '^Isabelle' | grep -vx "$VERSION" | tr '\n' ' ' || true)"
+[[ -z "$others" ]] || note "the user volume also holds data of: $others (heaps are per version; --build-heaps builds for $VERSION)"
 
 if [[ -n "$HEAPS" ]]; then
   step "prebuilding session heaps (long for Analysis-scale; safe to re-run)"
@@ -108,7 +139,7 @@ fi
 
 cat <<EOT
 
-Isabelle Pool Server is up.
+Isabelle Pool Server is up ($VERSION).
   API:           $BASE/         (health: /healthz, docs: /docs)
   Admin console: $BASE/admin    (token: ISABELLE_ADMIN_TOKEN in .env)
   Logs:          docker compose logs -f isabelle-pool-server   (file: logs/server.log)

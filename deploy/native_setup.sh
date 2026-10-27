@@ -8,7 +8,9 @@
 #   --system             apt packages (deploy/apt_packages.txt) + Isabelle download to
 #                        /opt/isabelle (mirrors: deploy/isabelle_mirrors.txt) + profile line (sudo)
 #   --isabelle-version V Isabelle distribution for --system (default: ISABELLE_VERSION in .env /
-#                        .env.example, currently Isabelle2026)
+#                        .env.example, currently Isabelle2026). Another version already at
+#                        /opt/isabelle is kept at /opt/<its name>; /opt/isabelle becomes a
+#                        symlink to the requested one. Heaps are per version: rebuild them.
 #   --no-venv            use the active Python instead of creating .venv
 #   --systemd            install and enable the systemd unit (deploy/isabelle-pool-server.service) (sudo)
 #   --verify             start the server (or use the systemd one), prove `lemma True by simp`, stop it
@@ -28,17 +30,10 @@ LOG_FILE="logs/native_setup.log"
 
 DO_SYSTEM=0 DO_VENV=1 DO_SYSTEMD=0 DO_VERIFY=0
 # Isabelle version: flag > environment > .env > .env.example (same key the
-# docker-compose build arg reads, so both paths track one setting).
-# Only the files that exist: a missing .env made grep exit 2 and, under
-# `set -euo pipefail`, the script died silently with status 2 before its first
-# step line (fresh checkout on the Ubuntu server, 2026-10-21).
-env_version() {
-  local f
-  for f in "$@"; do
-    [[ -f "$f" ]] && grep -hE '^ISABELLE_VERSION=' "$f" || true
-  done | tail -1 | cut -d= -f2
-}
-ISABELLE_VERSION="${ISABELLE_VERSION:-$(env_version .env .env.example)}"
+# docker-compose build arg reads, so both paths track one setting;
+# env_version in lib.sh skips a missing .env, which once killed this script
+# silently under `set -e`, 2026-10-21).
+ISABELLE_VERSION="${ISABELLE_VERSION:-$(env_version .env.example .env)}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -67,27 +62,49 @@ if [[ "$DO_SYSTEM" -eq 1 ]]; then
     $(list_file deploy/apt_packages.txt) python3 python3-venv python3-pip
 
   step "Isabelle $ISABELLE_VERSION -> /opt/isabelle"
-  if [[ -x /opt/isabelle/bin/isabelle ]]; then
-    ok "already installed: $(ISABELLE_COMPONENTS='' /opt/isabelle/bin/isabelle getenv -b ISABELLE_IDENTIFIER 2>/dev/null || echo /opt/isabelle)"
+  # Each version lives in /opt/<version>; /opt/isabelle is a symlink to the one
+  # in use. A version installed by an older run of this script as a plain
+  # directory is moved aside first, so its heaps (under ~/.isabelle/<version>)
+  # stay usable after switching back.
+  current="$(installed_version /opt/isabelle)"
+  if [[ "$current" == "$ISABELLE_VERSION" ]]; then
+    ok "already installed: $ISABELLE_VERSION"
   else
-    case "$(uname -m)" in
-      aarch64|arm64) TARBALL="${ISABELLE_VERSION}_linux_arm.tar.gz" ;;
-      *)             TARBALL="${ISABELLE_VERSION}_linux.tar.gz" ;;
-    esac
-    TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
-    got=0
-    for base in $(list_file deploy/isabelle_mirrors.txt | sed "s/VERSION/$ISABELLE_VERSION/g"); do
-      printf '    %s ... ' "$base"
-      if curl -fL --retry 2 --retry-connrefused --connect-timeout 20 --speed-limit 1000000 --speed-time 30 \
-           -o "$TMP/$TARBALL" "$base/$TARBALL" >> "$LOG_FILE" 2>&1 && [[ -s "$TMP/$TARBALL" ]]; then
-        printf 'OK\n'; got=1; break
+    if [[ -n "$current" ]]; then
+      if [[ -L /opt/isabelle ]]; then
+        run_logged "unlink /opt/isabelle ($current)" sudo rm /opt/isabelle
+      elif [[ -e "/opt/$current" ]]; then
+        die "/opt/isabelle is $current but /opt/$current exists too; move one of them aside by hand"
+      else
+        run_logged "keep $current at /opt/$current" sudo mv /opt/isabelle "/opt/$current"
       fi
-      printf 'no\n'
-    done
-    [[ "$got" -eq 1 ]] || die "could not download $TARBALL from any mirror in deploy/isabelle_mirrors.txt"
-    run_logged "extract" sudo tar -xf "$TMP/$TARBALL" -C /opt
-    run_logged "install as /opt/isabelle" sudo mv "/opt/$ISABELLE_VERSION" /opt/isabelle
-    run_logged "chown to $USER" sudo chown -R "$USER" /opt/isabelle
+    elif [[ -e /opt/isabelle ]]; then
+      die "/opt/isabelle exists but is not an Isabelle installation; move it aside by hand"
+    fi
+    if [[ -x "/opt/$ISABELLE_VERSION/bin/isabelle" ]]; then
+      ok "$ISABELLE_VERSION already at /opt/$ISABELLE_VERSION"
+    else
+      case "$(uname -m)" in
+        aarch64|arm64) TARBALL="${ISABELLE_VERSION}_linux_arm.tar.gz" ;;
+        *)             TARBALL="${ISABELLE_VERSION}_linux.tar.gz" ;;
+      esac
+      TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
+      got=0
+      for base in $(list_file deploy/isabelle_mirrors.txt | sed "s/VERSION/$ISABELLE_VERSION/g"); do
+        printf '    %s ... ' "$base"
+        if curl -fL --retry 2 --retry-connrefused --connect-timeout 20 --speed-limit 1000000 --speed-time 30 \
+             -o "$TMP/$TARBALL" "$base/$TARBALL" >> "$LOG_FILE" 2>&1 && [[ -s "$TMP/$TARBALL" ]]; then
+          printf 'OK\n'; got=1; break
+        fi
+        printf 'no\n'
+      done
+      [[ "$got" -eq 1 ]] || die "could not download $TARBALL from any mirror in deploy/isabelle_mirrors.txt"
+      run_logged "extract to /opt/$ISABELLE_VERSION" sudo tar -xf "$TMP/$TARBALL" -C /opt
+      [[ -x "/opt/$ISABELLE_VERSION/bin/isabelle" ]] || die "the tarball did not unpack to /opt/$ISABELLE_VERSION"
+      run_logged "chown to $USER" sudo chown -R "$USER" "/opt/$ISABELLE_VERSION"
+    fi
+    run_logged "/opt/isabelle -> /opt/$ISABELLE_VERSION" sudo ln -s "/opt/$ISABELLE_VERSION" /opt/isabelle
+    [[ -z "$current" ]] || note "switched from $current; session heaps are per version, rebuild what you use: isabelle build -b HOL-Library"
   fi
   if ! grep -qs 'ISABELLE_HOME=/opt/isabelle' ~/.profile; then
     printf '\nexport ISABELLE_HOME=/opt/isabelle\nexport PATH="$ISABELLE_HOME/bin:$PATH"\n' >> ~/.profile

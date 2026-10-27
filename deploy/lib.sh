@@ -15,6 +15,9 @@
 #                                   -> release; prints ONE result line
 #   py args...                      python3, else python, else $PY_FALLBACK (a command
 #                                   prefix such as "docker compose exec -T svc python")
+#   env_version FILE...             ISABELLE_VERSION from the last given file that sets it
+#   installed_version DIR           the identifier of the Isabelle installed at DIR, or ""
+#   image_version IMAGE             the Isabelle version an image was built with (its label), or ""
 #
 # The caller sets LOG_FILE (and optionally PY_FALLBACK) before sourcing.
 
@@ -54,6 +57,30 @@ py() {
   elif [[ -n "$PY_FALLBACK" ]]; then $PY_FALLBACK "$@"
   else die "no python on this host (needed to parse JSON)"
   fi
+}
+
+# ISABELLE_VERSION from the last of the given files that sets it, so pass them
+# lowest precedence first: env_version .env.example .env. Missing files are
+# skipped (a plain grep on an absent .env exits 2 under `set -e`).
+env_version() {
+  local f
+  for f in "$@"; do
+    [[ -f "$f" ]] && grep -hE '^ISABELLE_VERSION=' "$f" || true
+  done | tail -1 | cut -d= -f2
+}
+
+# The identifier (Isabelle2026, Isabelle2026-RC2, ...) of an installation,
+# asked of the launcher itself; "" when there is none. ISABELLE_COMPONENTS=''
+# so a stale component registration cannot break the query.
+installed_version() {  # installed_version DIR
+  [[ -x "$1/bin/isabelle" ]] || { echo; return 0; }
+  ISABELLE_COMPONENTS='' "$1/bin/isabelle" getenv -b ISABELLE_IDENTIFIER 2>/dev/null || echo
+}
+
+# The Isabelle version a built image carries (the Dockerfile's label); "" when
+# the image does not exist.
+image_version() {  # image_version IMAGE
+  docker image inspect --format '{{index .Config.Labels "isabelle-pool-server.isabelle_version"}}' "$1" 2>/dev/null || echo
 }
 
 json_field() {  # json_field KEY  < json

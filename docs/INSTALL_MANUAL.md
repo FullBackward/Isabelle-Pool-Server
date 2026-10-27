@@ -88,7 +88,11 @@ re-runs `init` (a no-op when the `isabelle_user_data` volume is already register
 [ISSUES.md](ISSUES.md) Bug 7), runs `ensure_settings.sh` (ML heap cap + JVM GC logging in
 the Isabelle user settings), then `exec python -m server.app.main`.
 
-A different Isabelle version:
+The version comes from `ISABELLE_VERSION` in `.env` (else `.env.example`); `./deploy/setup.sh
+--isabelle-version <V>` writes it there before building. The script refuses `--no-build` when
+the image was built for another version (the image carries it as a label), and after the
+start it asks the container's launcher (`isabelle version`) and stops if the answer differs.
+By hand, another version is one build arg away:
 
 ```bash
 docker build -f deploy/Dockerfile --build-arg ISABELLE_VERSION=Isabelle2026-RC2 \
@@ -123,6 +127,12 @@ curl http://localhost:8000/api/v1/heaps/available
 - **Unit tests in the container:** the image ships the runtime and `mcp` dependencies only, so
   `docker compose exec isabelle-pool-server pip install pytest` once per container, then
   `docker compose exec isabelle-pool-server python -m pytest -q`.
+- **Upgrading Isabelle:** set `ISABELLE_VERSION` in `.env` (or pass `--isabelle-version`) and
+  run `./deploy/setup.sh`: the image is rebuilt (the Isabelle layer is downloaded again), the
+  container recreated, and the entrypoint registers the components under the new
+  `~/.isabelle/<version>/` on the volume (it fetches the py4j and spliff contribs once, so the
+  first start needs the network). Heaps are per version: the old ones stay on the volume
+  unused; rebuild what you need with `--build-heaps`.
 - **After an image rebuild**, if the server fails with `Not found: py4j`: the pre-existing
   volume shadows the component registration. The entrypoint re-registers on every start; the
   manual fix is `docker compose exec isabelle-pool-server ./server/repl/Admin/init`.
@@ -191,10 +201,15 @@ case "$(uname -m)" in aarch64|arm64) T="${VERSION}_linux_arm.tar.gz";; *) T="${V
 curl -fLO "https://isabelle.in.tum.de/website-${VERSION}/dist/${T}" \
   || curl -fLO "https://isabelle.in.tum.de/dist/${T}" \
   || curl -fLO "https://isabelle.sketis.net/website-${VERSION}/dist/${T}"
-sudo mkdir -p /opt && sudo tar -xf "$T" -C /opt && sudo mv "/opt/${VERSION}" /opt/isabelle
-sudo chown -R "$USER" /opt/isabelle
+sudo mkdir -p /opt && sudo tar -xf "$T" -C /opt      # -> /opt/<version>
+sudo chown -R "$USER" "/opt/${VERSION}"
+sudo ln -s "/opt/${VERSION}" /opt/isabelle              # the one in use; switch by re-pointing it
 rm "$T"
 ```
+
+This is the layout `--system` produces: every version under `/opt/<version>`, `/opt/isabelle` a
+symlink to the one in use. A version an older run installed as a plain `/opt/isabelle`
+directory is moved to `/opt/<its name>` the first time the script switches away from it.
 
 Make it permanent for your user (the server, the gateway JVM and the heap pool all resolve
 the launcher from `ISABELLE_HOME`):
@@ -307,10 +322,13 @@ curl http://localhost:8000/api/v1/heaps/available
 - **Upgrading the code:** `git pull`, then `./deploy/native_setup.sh` (re-installs deps,
   recompiles the backend; add `--systemd` to restart the service) — or by hand
   `pip install -e ".[mcp]"`, `isabelle scala_build`, `sudo systemctl restart isabelle-pool-server`.
-- **Upgrading Isabelle:** install the new version at `/opt/isabelle` (B2 or
-  `--system --isabelle-version <V>` after removing the old `/opt/isabelle`), then re-run
-  `./deploy/native_setup.sh` — the user settings and contribs live under
-  `~/.isabelle/<version>/` and are per-version. Old heaps are not reusable.
+- **Upgrading Isabelle:** `./deploy/native_setup.sh --system --isabelle-version <V>` (add
+  `--systemd` to restart the service): the new version goes to `/opt/<V>`, `/opt/isabelle` is
+  re-pointed, the old version stays at `/opt/<old>`, and the script registers the component,
+  recompiles the backend and writes the settings under `~/.isabelle/<V>/`, which are
+  per-version. Heaps are per version too: rebuild what the service uses
+  (`isabelle build -b HOL-Library`); the old ones stay under `~/.isabelle/<old>/`. To go back,
+  run the same command with the old version.
 - **Stuck processes:** `pgrep -af "poly|isabelle"` — after `systemctl stop isabelle-pool-server`
   nothing should remain; if it does, the gateway did not get the signal (check `KillMode`).
 - **Gateway fails to start:** run `./server/repl/Admin/init` again and check

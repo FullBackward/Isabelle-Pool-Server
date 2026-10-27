@@ -78,13 +78,18 @@ The script creates `.env` (with a random `ISABELLE_ADMIN_TOKEN`), builds the ima
 (first time: Isabelle download + backend compile, 10–30 min, output in `logs/setup.log`),
 starts the container, waits for `/healthz`, and with `--verify` proves `lemma True by simp`
 through the API. Other flags: `--build-heaps "HOL-Library HOL-Analysis"` prebuilds session
-heaps for heavy imports; `--no-build` restarts without rebuilding. Then:
+heaps for heavy imports; `--no-build` restarts without rebuilding (refused when the image was
+built for another Isabelle than `.env` names); `--isabelle-version Isabelle2026` picks the
+Isabelle to build and writes it to `.env`. After the start the script checks that the
+container runs that version. Then:
 
 - **Tune `.env`** if needed — `ISABELLE_POOL_SIZE` (sessions, ~4 GB each),
   `ISABELLE_INITIAL_SESSIONS`, `ISABELLE_MEMORY_PRESSURE_THRESHOLD`, `ISABELLE_ML_MAXHEAP_MB`,
   `ISABELLE_ADMIN_TOKEN`; apply with `docker compose up -d --force-recreate isabelle-pool-server`.
 - **Operate:** `docker compose logs -f isabelle-pool-server` (also `logs/server.log`),
-  `docker compose stop isabelle-pool-server`, upgrade with `git pull && ./deploy/setup.sh`.
+  `docker compose stop isabelle-pool-server`, upgrade with `git pull && ./deploy/setup.sh`;
+  a new Isabelle: `./deploy/setup.sh --isabelle-version <V>` (heaps are per version, rebuild
+  them with `--build-heaps`).
 - **Share a ready-made image** (no build, heaps included): `./deploy/export_turnkey.sh --save`
   ([manual A6](docs/INSTALL_MANUAL.md#a6-turnkey-image-no-build-heaps-included)).
 
@@ -96,8 +101,9 @@ cd ~/Isabelle-Pool-Server
 ./deploy/native_setup.sh --system --systemd --verify
 ```
 
-`--system` installs the apt packages and Isabelle (`/opt/isabelle`, `--isabelle-version` to
-pick another release); the script then creates `.venv` and installs the server + client,
+`--system` installs the apt packages and Isabelle (`/opt/<version>`, with `/opt/isabelle` a
+symlink to the one in use; `--isabelle-version` picks another release and switches the
+symlink, keeping the old install); the script then creates `.venv` and installs the server + client,
 registers the Isabelle component and compiles the Scala backend, writes the ML heap cap into
 the Isabelle user settings, creates `.env`, and with
 `--systemd` installs and starts the `isabelle-pool-server` service; `--verify` proves
