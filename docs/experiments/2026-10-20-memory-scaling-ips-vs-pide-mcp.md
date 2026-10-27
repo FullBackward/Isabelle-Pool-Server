@@ -163,15 +163,18 @@ until the tool refuses or something dies; then half the sessions are released an
 | sessions admitted before the stop | **27** | 13 |
 | how it stopped | 28th refused: HTTP 503 `memory_pressure` | kernel OOM kill inside the scope |
 | scope memory at the stop | 38.4 GB used (78 %), peak 38.4 GB | 48.0 GB = the limit (peak = max) |
-| processes lost | none (`oom_kill` 0) | 4 MCP JVMs (+ 3 provers): 4 of 13 sessions dead |
+| processes lost | none (`oom_kill` 0) | 4 MCP JVMs with their 4 provers: 4 of 13 sessions dead |
 | recovery after releasing half | 8.4 s to the next successful load | 8.6 s to the next successful load |
 
 IPS's 503 body says why: `state: warning`, 38 382 MB used of 49 152, 10 770 MB available, and the next
 HOL-Analysis session's 4096 MB estimate does not fit under the 85 % threshold; every running session was
 leased, so nothing was evictable, and the server told the client to retry in 5 s. All 27 sessions stayed
-intact. PIDE MCP B admitted its 13th session only because the kernel freed memory by killing four of the
-existing MCP servers (each a JVM with its prover); those four agents lost their sessions without any
-notification from the tool. `dmesg` was not readable by the unprivileged user; the kill count is the
+intact. PIDE MCP B's scope was at its limit from the 12th session: the kernel first reclaimed the memory of
+running provers (three sat at 16 MB resident, alive but paged out, which the per-session prover count shows
+as a fall to 11 and then 9 with `oom_kill` still 0), and during the 14th load it killed four of the existing
+MCP servers (each a JVM with its prover); those four agents lost their sessions without any notification
+from the tool, and the 14th load completed on the memory they freed. (Corrected 2026-10-27 from the
+per-second samples; the earlier text attributed the fall in the count to kills.) `dmesg` was not readable by the unprivileged user; the kill count is the
 scope's `memory.events oom_kill`.
 
 ## E4 — isolation
