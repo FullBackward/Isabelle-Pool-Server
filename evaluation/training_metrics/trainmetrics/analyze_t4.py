@@ -35,6 +35,8 @@ def build_times(cell: Dict[str, Any]) -> Dict[str, Any]:
     colds = [a.get("cold") or {} for a in cell["part_a"]] + [
         r.get("cold") or {} for r in cell["part_b"] if r["variant"] != "unchanged"
     ]
+    # a block with nothing to mutate (no fact name to replace) has no build
+    colds = [c for c in colds if c]
     ran = [
         float(c["wall_s"])
         for c in colds

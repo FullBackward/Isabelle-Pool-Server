@@ -40,7 +40,7 @@ Ubuntu server; if the two differ, this README is right.
 | 5 | `python -m trainmetrics.calibrate_t6 --cell results/smoke/t6a/w1/rep0 --cell-t6b results/smoke/t6b/w1/rep0 --census results/census/census.json` | seconds | the T6 cell timeouts: set `t6.t6a.cell_timeout_s` and `t6.t6b.cell_timeout_s` in `config.yaml` |
 | 6 | `scripts/10_run_t1_t2.sh` | ~1 h + 20 min | T1 cells `results/t1/w*/rep*`, then the PIDE MCP row `results/pide/w*/rep*` |
 | 7 | `scripts/11_run_t5.sh` | ~1 h | `results/t5/w1/rep0`, `results/t5/w8/rep0` |
-| 8 | `scripts/12_run_t4.sh` | ~1 h | `results/t4/rep0` (94 + 600 cold builds, 4 at a time) |
+| 8 | `scripts/12_run_t4.sh` | ~1 h | `results/t4/rep0` (93 + 597 cold builds, 4 at a time) |
 | 9 | `scripts/13_run_t3.sh` | ~1 h | `results/t3/rep0` (200 states) |
 | 10 | `scripts/14_run_t6.sh` | ~3 h | `results/t6a/w*/rep*`, then `results/t6b/w*/rep*` |
 | 11 | `scripts/20_analyze.sh` | 1 min | `results/tables/*.csv`, `results/plots/*.png`, `results/REPORT_SNIPPET.md` |

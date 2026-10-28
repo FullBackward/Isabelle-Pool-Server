@@ -42,8 +42,9 @@ def _repeat_points(ax: Any, rows: List[Dict[str, Any]]) -> None:
 def _plot_t1(
     series: List[Dict[str, Any]], rows: Optional[List[Dict[str, Any]]], out: Path
 ) -> Optional[str]:
-    """Throughput vs W: the ideal line, the two rates, every repeat as a point,
-    host CPU on the right axis."""
+    """Throughput vs W: linear scaling from W = 1, the two rates, every repeat
+    as a point (the CPU curve was dropped from the figure on 2026-10-28; the
+    series keeps host_cpu_util)."""
     import matplotlib.pyplot as plt  # pylint: disable=import-outside-toplevel
 
     if not series:
@@ -57,14 +58,16 @@ def _plot_t1(
             [w * base for w in ws],
             color="grey",
             ls=":",
-            label="ideal: W x the W = 1 rate",
+            label="linear scaling from W = 1",
         )
-    ax.plot(ws, [s["chunks_per_min"] for s in series], marker="o", label="verify only")
+    ax.plot(
+        ws, [s["chunks_per_min"] for s in series], marker="o", label="verification only"
+    )
     ax.plot(
         ws,
         [s["chunks_per_min_incl_setup"] for s in series],
         marker="s",
-        label="with session starts",
+        label="end to end, session starts included",
     )
     _repeat_points(ax, rows or [])
     ax.set_xscale("log", base=2)
@@ -73,22 +76,7 @@ def _plot_t1(
     ax.set_xlabel("workers W")
     ax.set_ylabel("verified chunks / min")
     ax.grid(True, alpha=0.3)
-    handles, labels = ax.get_legend_handles_labels()
-    util = [s.get("host_cpu_util") for s in series]
-    if any(u is not None for u in util):
-        ax2 = ax.twinx()
-        ax2.plot(
-            ws,
-            [100 * (u or 0) for u in util],
-            color="grey",
-            ls="--",
-            label="host CPU busy (right)",
-        )
-        ax2.set_ylabel("host CPU busy %")
-        ax2.set_ylim(0, 100)
-        more = ax2.get_legend_handles_labels()
-        handles, labels = handles + more[0], labels + more[1]
-    ax.legend(handles, labels, loc="upper left")
+    ax.legend(loc="upper left")
     fig.tight_layout()
     path = out / "t1_throughput.png"
     fig.savefig(path, dpi=120)
@@ -102,9 +90,8 @@ def plots(
     out: Path,
     rows: Optional[List[Dict[str, Any]]] = None,
 ) -> List[str]:
-    """Throughput vs W (the ideal line W x the W = 1 rate, every repeat as a
-    point, host CPU) and T2 latency per class; skipped without matplotlib (as
-    in memscale)."""
+    """Throughput vs W (linear scaling from W = 1, every repeat as a point) and
+    T2 latency per class; skipped without matplotlib (as in memscale)."""
     try:
         import matplotlib  # pylint: disable=import-outside-toplevel
 
