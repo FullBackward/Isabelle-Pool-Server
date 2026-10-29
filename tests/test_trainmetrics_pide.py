@@ -256,6 +256,22 @@ def test_the_pide_row_beside_ips(tmp_path):
     assert n == 1 and "## T1: the PIDE MCP row" in text
     assert "| 2 | IPS | 10 |" in text and "| 2 | PIDE MCP A |" in text
     assert (root / "tables" / "t1_pide_series.csv").exists()
+    assert "t1_pide_latency" not in text  # no IPS cell on disk: nothing to pair
+    # D20: IPS cells with the same blocks pair with the PIDE cell, by block
+    pide_cells = metrics_t12.load_t1_cells(root, "pide")
+    ips_cells = [
+        {
+            "workers": 2,
+            "outcome": "ok",
+            "_replays": [
+                {"stem": rr["stem"], "blocks": [{**b, "wall_s": 0.25} for b in rr["blocks"]]}
+                for rr in pide_cells[0]["_replays"]
+            ],
+        }
+    ]
+    text, _n = analyze_pide.write_pide(root, census, root / "tables", ips, env, ips_cells)
+    assert "| 2 | all | 8 |" in text and "| 2 | 2-9 | 8 |" in text
+    assert (root / "tables" / "t1_pide_latency.csv").exists()
 
 
 def test_the_pide_sessions_get_the_options():
@@ -358,3 +374,53 @@ def test_a_session_that_does_not_start_skips_only_its_file(tmp_path):
     assert first["blocks"] == [] and len(second["blocks"]) == 4
     assert body["acquire_errors"] == 1 and body["outcome"] == "ok"
     assert ("stop", "s0_f1") not in pide.log and pide.session_ids == {}
+
+
+def _cells(walls, proved=None, timed_out=None):
+    """One ok W = 1 cell, one replay of ``Ta`` with these block walls."""
+    proved = proved or [True] * len(walls)
+    timed_out = timed_out or [False] * len(walls)
+    blocks = [
+        {"index": i, "block_sha": f"sha{i}", "wall_s": w, "proved": p, "timed_out": t}
+        for i, (w, p, t) in enumerate(zip(walls, proved, timed_out))
+    ]
+    return [{"workers": 1, "outcome": "ok", "_replays": [{"stem": "Ta", "blocks": blocks}]}]
+
+
+def test_the_paired_latency_pairs_the_blocks_both_rows_proved():
+    """D20: a block's time per tool is the median over its repeats; a block
+    proved under one tool only, or timed out in any repeat, is left out and
+    counted; the sums, the share within one poll and the share IPS was the
+    faster are over the pairs, per size class after the "all" row."""
+    sizes = [1, 4, 12, 4]
+    census = {
+        "census_id": "cid",
+        "files": [
+            {
+                "stem": "Ta",
+                "blocks": [{"index": i, "n_commands": n} for i, n in enumerate(sizes)],
+            }
+        ],
+        "totals": {},
+    }
+    ips = _cells([0.3, 0.5, 1.0, 0.4]) + _cells([0.5, 0.5, 1.2, 0.4])  # medians .4 .5 1.1 .4
+    pide = _cells([0.2, 0.6, 1.1, 0.4], proved=[True, True, True, False])
+    rows = analyze_pide.pair_latency(ips, pide, census)
+    assert [(r["class"], r["pairs"]) for r in rows] == [
+        ("all", 3),
+        ("1", 1),
+        ("2-9", 1),
+        ("10+", 1),
+    ]
+    head = rows[0]
+    assert head["blocks_in_both"] == 4 and head["dropped_one_tool_only"] == 1
+    assert (head["ips_sum_s"], head["pide_sum_s"]) == (2.0, 1.9)
+    assert head["ips_over_pide"] == round(2.0 / 1.9, 4)
+    assert (head["ips_p50_s"], head["pide_p50_s"]) == (0.5, 0.6)
+    assert head["within_one_poll"] == round(2 / 3, 4)  # +0.2, -0.1, 0.0
+    assert head["ips_faster"] == round(1 / 3, 4)
+    assert rows[2]["ips_mean_s"] == 0.5 and rows[3]["diff_p50_s"] == 0.0
+    late = _cells([0.2, 0.6, 1.1, 0.4], timed_out=[False, False, True, False])
+    rows = analyze_pide.pair_latency(ips, late, census)
+    assert rows[0]["pairs"] == 3 and rows[0]["dropped_timed_out"] == 1
+    assert analyze_pide.pair_latency(ips, [], census) == []  # no PIDE cell: no row

@@ -231,7 +231,7 @@ def write_t12(
     made = plots(series, t2, results / "plots", rows)
     text = snippet_t12(series, t2, census) if cells else ""  # no T1 cell: no T1 tables
     ips_env = next((c.get("ips_env") for c in cells if c.get("ips_env")), None)
-    pide_text, n_pide = write_pide(results, census, tables, series, ips_env)
+    pide_text, n_pide = write_pide(results, census, tables, series, ips_env, cells)
     return "\n".join(x for x in (text, pide_text) if x), len(rows), len(made), n_pide
 
 

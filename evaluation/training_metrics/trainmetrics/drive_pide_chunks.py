@@ -21,6 +21,10 @@ census count), so a block's ``n_commands`` is the census count, IPS's unit,
 and PIDE's own delta is kept beside it. A block is *proved* when it settled
 and added no failed, bad or error command; one not settled within the census budget is *timed out* and
 ends its file (PIDE MCP cannot cancel a running command).
+A block that opens an ``instantiation`` fails under this loop: the text is
+closed with ``end`` after every edit, so the instance proof is missing until
+the next block, whose fall of the bad count counts as failed too (with the
+self-naming blocks under 1 % of the blocks; the analysis states it).
 
 The sessions run with ``pide.session_options`` (D12: ``parallel_proofs=2``,
 IPS's ``ISABELLE_PARALLEL_PROOFS``), recorded for uniformity: both tools run
