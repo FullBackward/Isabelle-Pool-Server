@@ -424,3 +424,11 @@ def test_the_paired_latency_pairs_the_blocks_both_rows_proved():
     rows = analyze_pide.pair_latency(ips, late, census)
     assert rows[0]["pairs"] == 3 and rows[0]["dropped_timed_out"] == 1
     assert analyze_pide.pair_latency(ips, [], census) == []  # no PIDE cell: no row
+    qs = analyze_pide.latency_quantiles(ips, pide, census, step=0.25)
+    assert [(r["q"], r["ips_s"], r["pide_s"]) for r in qs] == [
+        (0.0, 0.4, 0.2),
+        (0.25, 0.5, 0.6),
+        (0.5, 0.5, 0.6),
+        (0.75, 1.1, 1.1),
+        (1.0, 1.1, 1.1),
+    ]

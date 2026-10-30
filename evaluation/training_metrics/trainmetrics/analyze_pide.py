@@ -92,22 +92,22 @@ def _pair_row(
     }
 
 
-def pair_latency(  # pylint: disable=too-many-locals
+# W -> (pairs, blocks in both rows, dropped counts)
+Paired = Dict[int, Tuple[List[Pair], int, Dict[str, int]]]
+
+
+def _pairs_by_w(  # pylint: disable=too-many-locals
     ips_cells: Sequence[Dict[str, Any]],
     pide_cells: Sequence[Dict[str, Any]],
     census: Dict[str, Any],
-) -> List[Dict[str, Any]]:
+) -> Paired:
     """Per W, the blocks both rows proved, paired by block (D20): a block's
     time per tool is the median over the repeats that ran it; a block timed
     out in any repeat of either tool, or proved under one tool only (PIDE
-    MCP's scratch names, D13), is left out and counted. One row for all the
-    pairs, then one per size class: the sums and means (the comparison; the
-    0.1 s poll steps both medians), medians, p95s, the paired difference, the
-    share of pairs within one poll of each other and the share with IPS the
-    faster."""
+    MCP's scratch names, D13), is left out and counted."""
     _, idx = census_index(census)
     ips_w, pide_w = _blocks_by_w(ips_cells), _blocks_by_w(pide_cells)
-    out: List[Dict[str, Any]] = []
+    out: Paired = {}
     for w in sorted(set(ips_w) & set(pide_w)):
         ips, pide = ips_w[w], pide_w[w]
         both = sorted(set(ips) & set(pide))
@@ -133,10 +133,50 @@ def pair_latency(  # pylint: disable=too-many-locals
                     None if partial else size_class(n),
                 )
             )
+        out[w] = (pairs, len(both), dropped)
+    return out
+
+
+def pair_latency(
+    ips_cells: Sequence[Dict[str, Any]],
+    pide_cells: Sequence[Dict[str, Any]],
+    census: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    """The paired table (D20): per W, one row for all the pairs, then one per
+    size class: the sums and means (the comparison; the 0.1 s poll steps both
+    medians), medians, p95s, the paired difference, the share of pairs within
+    one poll of each other and the share with IPS the faster."""
+    out: List[Dict[str, Any]] = []
+    for w, (pairs, in_both, dropped) in _pairs_by_w(
+        ips_cells, pide_cells, census
+    ).items():
         for cls in ("all",) + tuple(c for c, _lo, _hi in CLASSES):
             sub = pairs if cls == "all" else [p for p in pairs if p[2] == cls]
             if sub:
-                out.append(_pair_row(w, cls, sub, len(both), dropped))
+                out.append(_pair_row(w, cls, sub, in_both, dropped))
+    return out
+
+
+def latency_quantiles(
+    ips_cells: Sequence[Dict[str, Any]],
+    pide_cells: Sequence[Dict[str, Any]],
+    census: Dict[str, Any],
+    step: float = 0.005,
+) -> List[Dict[str, Any]]:
+    """Per W, the quantiles of both tools' per-call times over the pairs, q
+    from 0 to 1 in steps of ``step`` (the minimum and the maximum included):
+    the data of the report's distribution figure (D20)."""
+    out: List[Dict[str, Any]] = []
+    by_w = _pairs_by_w(ips_cells, pide_cells, census)
+    for w, (pairs, _n, _d) in by_w.items():
+        ia, pb = sorted(p[0] for p in pairs), sorted(p[1] for p in pairs)
+        last = len(ia) - 1
+        for i in range(int(round(1 / step)) + 1):
+            q = i * step
+            k = min(last, int(q * last + 0.5))  # nearest rank, half up
+            out.append(
+                {"workers": w, "q": round(q, 4), "ips_s": ia[k], "pide_s": pb[k]}
+            )
     return out
 
 
@@ -151,7 +191,9 @@ def _paired_lines(paired: Sequence[Dict[str, Any]]) -> List[str]:
     )
     lines = [
         "",
-        "Per call, the same blocks paired (`t1_pide_latency.csv`, D20): a block both "
+        "Per call, the same blocks paired (`t1_pide_latency.csv`; the quantiles behind "
+        "the report's distribution figure in `t1_pide_latency_quantiles.csv`; D20): a "
+        "block both "
         "rows proved, its time per tool the median over the repeats that ran it. The "
         "sums and means are the comparison, the 0.1 s poll steps both medians; *within "
         "one poll* is the share of pairs whose times differ by at most 0.1 s. "
@@ -271,4 +313,12 @@ def write_pide(  # pylint: disable=too-many-arguments,too-many-positional-argume
     )
     if paired:
         write_csv(tables / "t1_pide_latency.csv", paired)
+        write_csv(
+            tables / "t1_pide_latency_quantiles.csv",
+            latency_quantiles(
+                load_t1_cells(results) if ips_cells is None else ips_cells,
+                cells,
+                census,
+            ),
+        )
     return snippet_pide(ser, ips_series, cells, ips_env, paired), len(cells)
